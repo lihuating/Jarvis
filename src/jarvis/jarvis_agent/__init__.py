@@ -1342,7 +1342,9 @@ class Agent:
             import jarvis.jarvis_utils.globals as G
 
             title = f"[bold cyan]{(G.get_current_agent_name() + ' · ') if G.get_current_agent_name() else ''}{self.model.model_name or 'LLM'} {compression_type}摘要[/bold cyan]"
-            PrettyOutput.print_markdown(summary, title=title, border_style="cyan")
+            PrettyOutput.print_markdown(
+                summary, title=title, border_style="cyan", highlight_headings=True
+            )
         except Exception:
             # 如果格式化输出失败，回退到简单打印
             PrettyOutput.auto_print(f"📋 {compression_type}摘要:\n{summary}")

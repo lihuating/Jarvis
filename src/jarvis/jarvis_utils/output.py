@@ -814,6 +814,7 @@ class PrettyOutput:
         title: Optional[str] = None,
         border_style: str = "bright_blue",
         theme: str = "monokai",
+        highlight_headings: bool = False,
     ) -> None:
         """
         使用Panel显示带markdown语法高亮的内容。
@@ -823,14 +824,35 @@ class PrettyOutput:
             title: Panel标题（可选）
             border_style: 边框样式（默认"bright_blue"）
             theme: markdown高亮主题（默认"monokai"）
+            highlight_headings: 为True时使用Markdown渲染，使以##开头的标题行突出显示（默认False）
         """
         from rich.panel import Panel
 
-        # 创建markdown语法高亮对象
-        syntax = Syntax(content, "markdown", theme=theme, word_wrap=True)
+        if highlight_headings:
+            from rich.markdown import Markdown
+            from rich.theme import Theme
 
-        # 创建Panel包装Syntax对象
-        panel = Panel(syntax, title=title, border_style=border_style, expand=True)
+            # 使用 Markdown 渲染，并通过 Theme 让 ## 等标题加粗+亮色突出显示
+            renderable = Markdown(content)
+            heading_theme = Theme(
+                {
+                    "markdown.h1": "bold bright_cyan",
+                    "markdown.h2": "bold bright_cyan",
+                    "markdown.h3": "bold bright_cyan",
+                    "markdown.h4": "bold cyan",
+                    "markdown.h5": "bold cyan",
+                    "markdown.h6": "bold cyan",
+                }
+            )
+            panel = Panel(
+                renderable, title=title, border_style=border_style, expand=True
+            )
+            console.print(panel, theme=heading_theme)
+            return
+        else:
+            renderable = Syntax(content, "markdown", theme=theme, word_wrap=True)
 
-        # 打印Panel
+        panel = Panel(
+            renderable, title=title, border_style=border_style, expand=True
+        )
         console.print(panel)
