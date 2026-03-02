@@ -1114,21 +1114,30 @@ def _get_multiline_input_internal(
             except Exception:
                 pass
 
+    # 快捷键栏：去除背景色（与终端背景一致），说明文字浅青、快捷键组合白色加粗
     style = PromptStyle.from_dict(
         {
-            "prompt": "ansibrightmagenta bold",
-            "bottom-toolbar": "bg:#4b145b #ffd6ff bold",
-            "bt.tip": "bold fg:#ff5f87",
-            "bt.sep": "fg:#ffb3de",
-            "bt.key": "bg:#d7005f #ffffff bold",
-            "bt.label": "fg:#ffd6ff",
+            "prompt": "ansicyan bold",
+            "bottom-toolbar": "bg:default noreverse",
+            "bottom-toolbar.text": "bg:default noreverse",
+            "bt.line": "bg:default fg:#00bcd4 noreverse",
+            "bt.tip": "fg:#00bcd4 bold",
+            "bt.sep": "fg:#00bcd4",
+            "bt.key": "fg:#ffffff bold",
+            "bt.label": "fg:#00bcd4",
             "placeholder": "italic fg:#888888",
         }
     )
 
     def _bottom_toolbar() -> Any:
+        try:
+            cols = os.get_terminal_size().columns
+        except Exception:
+            cols = 80
+        line_str = "─" * max(0, cols) + "\n"
         return FormattedText(
             [
+                ("class:bt.line", line_str),
                 ("class:bt.label", "快捷键: "),
                 ("class:bt.key", "@"),
                 ("class:bt.label", " 文件补全 "),
@@ -1175,6 +1184,14 @@ def _get_multiline_input_internal(
                 buf.cursor_position = cp
         except Exception:
             pass
+
+    # 输入框上方横线（两条横线中间是用户输入）
+    try:
+        cols = os.get_terminal_size().columns
+        sys.stdout.write("\033[36m" + "─" * max(0, cols) + "\033[0m\n")
+        sys.stdout.flush()
+    except Exception:
+        pass
 
     try:
         result = session.prompt(
