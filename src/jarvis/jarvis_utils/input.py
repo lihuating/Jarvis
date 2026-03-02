@@ -969,7 +969,7 @@ def _get_multiline_input_internal(
 
             def _show_notice() -> None:
                 PrettyOutput.auto_print(
-                    "ℹ️ 提示：当前支持多行输入。输入完成请使用 Ctrl+J 或 Ctrl+] 确认；Enter 仅用于换行。"
+                    "ℹ️ 提示：当前支持多行输入。输入完成请使用 Ctrl+J 或 Ctrl+D 确认；Enter 仅用于换行。"
                 )
                 try:
                     input("按回车继续...")
@@ -997,7 +997,7 @@ def _get_multiline_input_internal(
     def _(event: KeyPressEvent) -> None:
         event.current_buffer.validate_and_handle()
 
-    @bindings.add("c-]", filter=has_focus(DEFAULT_BUFFER))
+    @bindings.add("c-d", filter=has_focus(DEFAULT_BUFFER))
     def _(event: KeyPressEvent) -> None:
         event.current_buffer.validate_and_handle()
 
@@ -1133,7 +1133,7 @@ def _get_multiline_input_internal(
                 ("class:bt.key", "@"),
                 ("class:bt.label", " 文件补全 "),
                 ("class:bt.sep", " • "),
-                ("class:bt.key", "Ctrl+J / Ctrl+]"),
+                ("class:bt.key", "Ctrl+J / Ctrl+D"),
                 ("class:bt.label", " 提交 "),
                 ("class:bt.sep", " • "),
                 ("class:bt.key", "Ctrl+O"),
@@ -1211,7 +1211,7 @@ def get_multiline_input(tip: str, print_on_empty: bool = True) -> str:
 
         if user_input == CTRL_O_SENTINEL:
             _show_history_and_copy()
-            tip = "请继续输入（或按Ctrl+J/Ctrl+]确认）:"
+            tip = "请继续输入（或按Ctrl+J/Ctrl+D确认）:"
             continue
         if user_input == CTRL_X_SENTINEL:
             PrettyOutput.auto_print("🛑 用户请求退出程序...")
@@ -1266,7 +1266,7 @@ def get_multiline_input(tip: str, print_on_empty: bool = True) -> str:
                 preset, preset_cursor = _insert_file_path(
                     text, cursor, selected_path, "#"
                 )
-                tip = "已插入文件，继续编辑或按Ctrl+J/Ctrl+]确认:"
+                tip = "已插入文件，继续编辑或按Ctrl+J/Ctrl+D确认:"
             else:
                 # No selection; keep original text and cursor
                 preset = text
@@ -1290,7 +1290,7 @@ def get_multiline_input(tip: str, print_on_empty: bool = True) -> str:
                 sys.stdout.flush()
             except Exception:
                 pass
-            tip = "已插入文件，继续编辑或按Ctrl+J/Ctrl+]确认:"
+            tip = "已插入文件，继续编辑或按Ctrl+J/Ctrl+D确认:"
             continue
         else:
             if not user_input and print_on_empty:

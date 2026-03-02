@@ -138,7 +138,7 @@ class AgentRunLoop:
 
         try:
             user_input = get_multiline_input(
-                "⚠ 检测到中断，请输入补充信息（Ctrl+J/Ctrl+]确认，直接回车跳过）",
+                "⚠ 检测到中断，请输入补充信息（Ctrl+J/Ctrl+D确认，直接回车跳过）",
                 print_on_empty=False,
             )
             if user_input and user_input.strip():
