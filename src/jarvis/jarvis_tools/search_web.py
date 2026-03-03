@@ -200,6 +200,7 @@ class SearchWebTool:
             script = f"""curl -s '{wiki_url}' | python3 -c "
 import json
 import sys
+import urllib.parse
 
 try:
     data = json.load(sys.stdin)
@@ -213,19 +214,22 @@ try:
             for idx, item in enumerate(results[:5], 1):
                 title = item.get('title', '')
                 snippet = item.get('snippet', '')
-                url = f\"https://zh.wikipedia.org/wiki/{urllib.parse.quote(title.replace(' ', '_'))}\" if title else ''
+                url = 'https://zh.wikipedia.org/wiki/' + urllib.parse.quote(title.replace(' ', '_')) if title else ''
                 
-                print(f'  {{idx}}. {{title}}')
+                print('  ' + str(idx) + '. ' + title)
                 if snippet:
-                    print(f'     摘要: {{snippet[:200]}}...' if len(snippet) > 200 else f'     摘要: {{snippet}}')
-                print(f'     URL: {{url}}')
+                    if len(snippet) > 200:
+                        print('     摘要: ' + snippet[:200] + '...')
+                    else:
+                        print('     摘要: ' + snippet)
+                print('     URL: ' + url)
                 print()
         else:
             print('未找到相关结果')
     else:
         print('API返回数据格式错误')
 except Exception as e:
-    print(f'搜索失败: {{str(e)}}')
+    print('搜索失败: ' + str(e))
 " 2>&1"""
 
             result = subprocess.run(
