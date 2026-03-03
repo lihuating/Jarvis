@@ -1244,7 +1244,6 @@ class ToolRegistry(OutputHandlerProtocol):
         """
         if len(output.splitlines()) > 60:
             lines = output.splitlines()
-            PrettyOutput.auto_print("⚠️ 输出太长，截取前后30行")
             return "\n".join(
                 lines[:30] + ["\n...内容太长，已截取前后30行...\n"] + lines[-30:]
             )
@@ -1395,7 +1394,16 @@ class ToolRegistry(OutputHandlerProtocol):
                     tmp_file.flush()
 
                 try:
-                    # 使用上传的文件生成摘要
+                    # 对用户做部分显示，完整内容可通过 Ctrl+R 查看
+                    PrettyOutput.print_truncated_with_expand_hint(
+                        output,
+                        title=name,
+                        visible_before=12,
+                        visible_after=30,
+                        max_lines=60,
+                        expand_hint="输入 Ctrl+R 查看全部",
+                    )
+                    # 返回截断内容供 LLM/会话使用
                     return self._truncate_output(output)
                 finally:
                     # 清理临时文件

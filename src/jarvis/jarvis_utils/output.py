@@ -30,8 +30,9 @@ from rich.text import Text
 from jarvis.jarvis_utils.config import get_pretty_output
 from jarvis.jarvis_utils.config import is_print_error_traceback
 from jarvis.jarvis_utils.globals import console
-from jarvis.jarvis_utils.globals import get_agent_list
 from jarvis.jarvis_utils.globals import get_agent
+from jarvis.jarvis_utils.globals import get_agent_list
+from jarvis.jarvis_utils import globals as jarvis_globals
 
 
 # Rich支持的标准颜色列表
@@ -750,7 +751,6 @@ class PrettyOutput:
         )
         emit_output(event)
 
-    @staticmethod
     # Sink管理（为外部注册自定义后端预留）
     @staticmethod
     def add_sink(sink: OutputSink) -> None:
@@ -855,6 +855,69 @@ class PrettyOutput:
         PrettyOutput._print(
             text=text, output_type=output_type, timestamp=timestamp, lang=lang
         )
+
+    @staticmethod
+    def print_truncated_with_expand_hint(
+        full_content: str,
+        title: Optional[str] = None,
+        visible_before: int = 12,
+        visible_after: int = 30,
+        max_lines: int = 60,
+        output_type: OutputType = OutputType.RESULT,
+        expand_hint: str = "输入 Ctrl+R 查看全部",
+    ) -> None:
+        """对非关键长内容做部分显示，其余隐藏，完整内容可通过 Ctrl+R 查看。
+
+        当行数不超过 max_lines 时直接全文输出；否则只显示前 visible_before 行与后
+        visible_after 行，中间插入“前 N 行已隐藏”的提示，并将全文存入全局供 Ctrl+R 展开。
+        """
+        lines = full_content.splitlines()
+        total = len(lines)
+        if total <= max_lines:
+            PrettyOutput._print(
+                text=full_content, output_type=output_type, timestamp=True, lang=None
+            )
+            jarvis_globals.last_truncated_full_content = None
+            jarvis_globals.last_truncated_title = None
+            return
+        # 需要折叠显示
+        jarvis_globals.last_truncated_full_content = full_content
+        jarvis_globals.last_truncated_title = title
+        head = visible_before
+        tail = visible_after
+        if head + tail >= total:
+            head = max(1, total - tail)
+        hidden_count = total - head - tail
+        mid_hint = f"\n... 前 {hidden_count} 行已隐藏 ...（{expand_hint}）\n"
+        partial_lines = lines[:head] + [mid_hint.strip()] + lines[-tail:]
+        partial_text = "\n".join(partial_lines)
+        PrettyOutput._print(
+            text=partial_text, output_type=output_type, timestamp=True, lang=None
+        )
+
+    @staticmethod
+    def show_last_truncated_full() -> bool:
+        """显示上次通过 print_truncated_with_expand_hint 保存的完整内容。
+
+        供 Ctrl+R 快捷键调用。若有内容则用当前控制台输出并返回 True，否则返回 False。
+        """
+        full = getattr(
+            jarvis_globals, "last_truncated_full_content", None
+        )
+        title = getattr(jarvis_globals, "last_truncated_title", None)
+        if not full:
+            return False
+        if title:
+            PrettyOutput.auto_print(f"📄 完整内容：{title}")
+        PrettyOutput._print(
+            text=full,
+            output_type=OutputType.RESULT,
+            timestamp=True,
+            lang=None,
+        )
+        jarvis_globals.last_truncated_full_content = None
+        jarvis_globals.last_truncated_title = None
+        return True
 
     @staticmethod
     def print_markdown(

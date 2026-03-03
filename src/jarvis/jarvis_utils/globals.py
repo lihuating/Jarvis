@@ -40,6 +40,10 @@ running_agent_stack: List[str] = []  # 正在运行的agent栈（最顶层是当
 g_in_chat: int = 0
 # 表示是否接收到中断信号
 g_interrupt: int = 0
+# 上次“部分显示”时保存的完整内容，供 Ctrl+R 查看全部使用
+last_truncated_full_content: Optional[str] = None
+# 上次截断内容的标题（如工具名），用于展开时显示
+last_truncated_title: Optional[str] = None
 # 使用自定义主题配置rich控制台
 custom_theme = Theme(
     {

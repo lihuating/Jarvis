@@ -1011,6 +1011,21 @@ def _get_multiline_input_internal(
         """Handle Ctrl+X by exiting the prompt and requesting program exit."""
         event.app.exit(result=CTRL_X_SENTINEL)
 
+    # Ctrl+R：显示上次被部分隐藏的完整内容（注意：在 bash 中 Ctrl+R 为反向历史搜索，此处为 Jarvis 专用）
+    @bindings.add("c-r", filter=has_focus(DEFAULT_BUFFER))
+    def _(event: KeyPressEvent) -> None:
+        """Handle Ctrl+R: 显示上次被部分隐藏的完整内容（若有）。"""
+
+        def _show_full() -> None:
+            from jarvis.jarvis_utils.output import PrettyOutput
+
+            if PrettyOutput.show_last_truncated_full():
+                pass  # 已在 show_last_truncated_full 中输出
+            else:
+                PrettyOutput.auto_print("ℹ️ 当前无已隐藏的完整内容可展开")
+
+        run_in_terminal(_show_full)
+
     @bindings.add("c-t", eager=True)
     def _(event: KeyPressEvent) -> None:
         """Return a shell command like '!bash' for upper input_handler to execute.
@@ -1147,6 +1162,9 @@ def _get_multiline_input_internal(
                 ("class:bt.sep", " • "),
                 ("class:bt.key", "Ctrl+O"),
                 ("class:bt.label", " 复制历史信息 "),
+                ("class:bt.sep", " • "),
+                ("class:bt.key", "Ctrl+R"),
+                ("class:bt.label", " 查看全部输出 "),
                 ("class:bt.sep", " • "),
                 ("class:bt.key", "Ctrl+T"),
                 ("class:bt.label", " 终端(!SHELL) "),

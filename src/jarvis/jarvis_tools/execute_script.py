@@ -405,14 +405,40 @@ class ScriptTool:
                 with open(script_path, "w", encoding=enc, errors="ignore") as f:
                     f.write(script_content)
 
-                # Display script content using rich panel before execution
+                # Display script content using rich panel before execution（过长时仅部分显示，Ctrl+R 查看全部）
+                from jarvis.jarvis_utils import globals as jarvis_globals
                 from rich.console import Console
                 from rich.panel import Panel
                 from rich.syntax import Syntax
 
+                _max_script_display_lines = 40
+                _visible_before = 12
+                _visible_after = 20
+                _expand_hint = "输入 Ctrl+R 查看全部"
+                script_lines = script_content.splitlines()
+                script_line_count = len(script_lines)
+
+                if script_line_count > _max_script_display_lines:
+                    jarvis_globals.last_truncated_full_content = script_content
+                    jarvis_globals.last_truncated_title = f"执行脚本 ({interpreter})"
+                    head = _visible_before
+                    tail = min(_visible_after, script_line_count - head)
+                    hidden = script_line_count - head - tail
+                    mid_hint = f"... 前 {hidden} 行已隐藏 ...（{_expand_hint}）"
+                    display_lines = (
+                        script_lines[:head]
+                        + [mid_hint]
+                        + script_lines[-tail:]
+                    )
+                    display_content = "\n".join(display_lines)
+                else:
+                    jarvis_globals.last_truncated_full_content = None
+                    jarvis_globals.last_truncated_title = None
+                    display_content = script_content
+
                 console = Console()
                 syntax = Syntax(
-                    script_content,
+                    display_content,
                     interpreter,
                     theme="monokai",
                     line_numbers=True,
