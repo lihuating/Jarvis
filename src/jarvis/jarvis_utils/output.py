@@ -485,20 +485,28 @@ class ConsoleOutputSink(OutputSink):
                 combined_text.append(header_text)
                 combined_text.append(" ")
 
-                # 第一行：检测并高亮进度信息
+                # 第一行：检测并高亮进度信息；##/### 标题行使用醒目样式
                 first_line = lines[0]
-                colored_first_line = self._highlight_progress_text(
-                    first_line, event.output_type, self._TEXT_COLORS
-                )
+                if first_line.strip().startswith(("#", "##", "###")):
+                    colored_first_line = Text(
+                        first_line, style=RichStyle(bold=True, color="bright_cyan")
+                    )
+                else:
+                    colored_first_line = self._highlight_progress_text(
+                        first_line, event.output_type, self._TEXT_COLORS
+                    )
 
                 combined_text.append(colored_first_line)
                 console.print(combined_text)
 
-                # 后续行使用缩进，保持视觉层次
+                # 后续行使用缩进，保持视觉层次；##/### 标题行加粗+亮青突出显示
                 for line in lines[1:]:
                     if line.strip():  # 非空行
-                        # 检测列表项标记并适当格式化
                         line_stripped = line.strip()
+                        is_heading = line_stripped.startswith(
+                            ("#", "##", "###", "####", "#####", "######")
+                        )
+                        # 检测列表项标记并适当格式化
                         is_list_item = line_stripped.startswith(("- ", "* ", "• ")) or (
                             line_stripped
                             and line_stripped[0].isdigit()
@@ -509,36 +517,76 @@ class ConsoleOutputSink(OutputSink):
                         if line.startswith(("   ", "  ", "\t")):
                             display_line = line
                         else:
-                            display_line = f"   {line}"
+                            display_line = f"   {line}" if not is_heading else line
 
-                        indented_line = Text(
-                            display_line,
-                            style=RichStyle(
-                                color=_safe_color_get(
-                                    self._TEXT_COLORS[event.output_type], "white"
+                        if is_heading:
+                            indented_line = Text(
+                                display_line,
+                                style=RichStyle(bold=True, color="bright_cyan"),
+                            )
+                        else:
+                            indented_line = Text(
+                                display_line,
+                                style=RichStyle(
+                                    color=_safe_color_get(
+                                        self._TEXT_COLORS[event.output_type], "white"
+                                    ),
+                                    dim=not is_list_item
+                                    and line.startswith(
+                                        ("   ", "  ", "\t")
+                                    ),  # 已缩进的非列表项稍微变暗
                                 ),
-                                dim=not is_list_item
-                                and line.startswith(
-                                    ("   ", "  ", "\t")
-                                ),  # 已缩进的非列表项稍微变暗
-                            ),
-                        )
+                            )
                         console.print(indented_line)
                     else:
                         console.print()  # 空行保持原样
             else:
-                # 单行或简单多行：合并header和content在同一行显示
+                # 单行或简单多行：合并header和content；markdown 多行时对 ##/### 标题行突出显示
                 combined_text = Text()
                 combined_text.append(header_text)
                 combined_text.append(" ")
 
-                # 检测并高亮进度信息（单行情况）
-                colored_content = self._highlight_progress_text(
-                    event.text, event.output_type, self._TEXT_COLORS
-                )
-                combined_text.append(colored_content)
-
-                console.print(combined_text)
+                if lang == "markdown" and "\n" in event.text:
+                    # 多行 markdown：首行与 header 同排，后续行逐行输出并高亮 ## 标题
+                    lines = event.text.split("\n")
+                    first_line = lines[0]
+                    if first_line.strip().startswith(("#", "##", "###")):
+                        combined_text.append(
+                            Text(
+                                first_line,
+                                style=RichStyle(bold=True, color="bright_cyan"),
+                            )
+                        )
+                    else:
+                        colored_first = self._highlight_progress_text(
+                            first_line, event.output_type, self._TEXT_COLORS
+                        )
+                        combined_text.append(colored_first)
+                    console.print(combined_text)
+                    for line in lines[1:]:
+                        if line.strip().startswith(
+                            ("#", "##", "###", "####", "#####", "######")
+                        ):
+                            console.print(
+                                Text(
+                                    line,
+                                    style=RichStyle(bold=True, color="bright_cyan"),
+                                )
+                            )
+                        elif line.strip():
+                            colored_line = self._highlight_progress_text(
+                                line, event.output_type, self._TEXT_COLORS
+                            )
+                            console.print(colored_line)
+                        else:
+                            console.print()
+                else:
+                    # 单行或非 markdown：沿用原逻辑
+                    colored_content = self._highlight_progress_text(
+                        event.text, event.output_type, self._TEXT_COLORS
+                    )
+                    combined_text.append(colored_content)
+                    console.print(combined_text)
         else:
             console.print(content)
         if event.traceback or (
@@ -829,10 +877,12 @@ class PrettyOutput:
         from rich.panel import Panel
 
         if highlight_headings:
+            from rich.console import Console as RichConsole
             from rich.markdown import Markdown
             from rich.theme import Theme
 
             # 使用 Markdown 渲染，并通过 Theme 让 ## 等标题加粗+亮色突出显示
+            # Theme 需在构造 Console 时传入，print() 不支持 theme 参数
             renderable = Markdown(content)
             heading_theme = Theme(
                 {
@@ -847,7 +897,7 @@ class PrettyOutput:
             panel = Panel(
                 renderable, title=title, border_style=border_style, expand=True
             )
-            console.print(panel, theme=heading_theme)
+            RichConsole(theme=heading_theme).print(panel)
             return
         else:
             renderable = Syntax(content, "markdown", theme=theme, word_wrap=True)

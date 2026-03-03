@@ -763,14 +763,25 @@ def init_env(
             # 静默失败，不影响正常使用
             pass
 
-    # 5. 检查Jarvis更新（异步执行，避免阻塞）
+    # 5. 检查Jarvis更新（放入后台线程执行，避免阻塞首次输入提示）
     if auto_upgrade:
         try:
-            if _check_jarvis_updates():
-                os.execv(sys.executable, [sys.executable] + sys.argv)
-                sys.exit(0)
+            import threading
+
+            def _run_update_check_then_maybe_restart() -> None:
+                try:
+                    if _check_jarvis_updates():
+                        PrettyOutput.auto_print(
+                            "ℹ️ Jarvis 已有新版本，请退出后重新运行以使用新版本。"
+                        )
+                except Exception:
+                    pass
+
+            _update_thread = threading.Thread(
+                target=_run_update_check_then_maybe_restart, daemon=True
+            )
+            _update_thread.start()
         except Exception:
-            # 静默失败，不影响正常使用
             pass
 
     # 6. 设置tmux窗口平铺布局（统一管理）

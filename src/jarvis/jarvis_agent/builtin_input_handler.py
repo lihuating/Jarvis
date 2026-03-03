@@ -1,5 +1,7 @@
 # -*- coding: utf-8 -*-
+import os
 import re
+import subprocess
 from typing import Any
 from typing import List
 from typing import Optional
@@ -168,6 +170,52 @@ def builtin_input_handler(user_input: str, agent_: Any) -> Tuple[str, bool]:
     from jarvis.jarvis_agent import Agent
 
     agent: Agent = agent_
+    # 以 ! 开头：将后续输入直接作为 shell 命令执行
+    stripped = user_input.strip()
+    if stripped.startswith("!"):
+        cmd = stripped[1:].strip()
+        # 去掉 JARVIS-NOCONFIRM 等注释，得到实际命令
+        if " # " in cmd:
+            cmd = cmd.split(" # ")[0].strip()
+        if cmd:
+            # Ctrl+T 等会启动交互式 shell（如 env terminal=1 bash），需连接终端才能正常使用
+            is_interactive_shell = (
+                "terminal" in cmd  # Ctrl+T 启动的子 shell（含 terminal=1 或 terminal='1'）
+                or cmd.strip().rstrip("&").strip() in ("bash", "zsh", "fish", "sh")
+            )
+            try:
+                if is_interactive_shell:
+                    result = subprocess.run(
+                        cmd,
+                        shell=True,
+                        stdin=None,
+                        stdout=None,
+                        stderr=None,
+                        cwd=os.getcwd(),
+                    )
+                    if result.returncode != 0:
+                        PrettyOutput.auto_print(f"[退出码 {result.returncode}]")
+                else:
+                    result = subprocess.run(
+                        cmd,
+                        shell=True,
+                        capture_output=True,
+                        text=True,
+                        timeout=300,
+                        cwd=os.getcwd(),
+                    )
+                    if result.stdout:
+                        PrettyOutput.auto_print(result.stdout)
+                    if result.stderr:
+                        PrettyOutput.auto_print(result.stderr)
+                    if result.returncode != 0 and not result.stderr and not result.stdout:
+                        PrettyOutput.auto_print(f"[退出码 {result.returncode}]")
+            except subprocess.TimeoutExpired:
+                PrettyOutput.auto_print("⚠️ 命令执行超时（300秒）")
+            except Exception as e:
+                PrettyOutput.auto_print(f"⚠️ 执行命令失败: {e}")
+            return "", True
+        return "", True
     # 查找特殊标记
     special_tags = re.findall(r"'<([^>]+)>'", user_input)
 
@@ -295,9 +343,7 @@ def builtin_input_handler(user_input: str, agent_: Any) -> Tuple[str, bool]:
                 PrettyOutput.auto_print("❌ 恢复会话失败。")
             return "", True
         elif tag == "ListSessions":
-            # 列出所有已保存的会话文件
-            import os
-
+            # 列出所有已保存的会话文件（使用模块顶部 import os，避免与函数内 os 冲突导致 ! 命令报错）
             sessions = agent.session._parse_session_files()
 
             if not sessions:

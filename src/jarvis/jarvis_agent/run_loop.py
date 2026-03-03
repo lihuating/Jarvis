@@ -355,7 +355,10 @@ class AgentRunLoop:
                         model_name = ag.model.model_name
                         title = f"[bold cyan]{(G.get_current_agent_name() + ' · ') if G.get_current_agent_name() else ''}{model_name}[/bold cyan]"
                         PrettyOutput.print_markdown(
-                            filtered_response, title=title, border_style="bright_blue"
+                            filtered_response,
+                            title=title,
+                            border_style="bright_blue",
+                            highlight_headings=True,
                         )
 
                 if ot("!!!SUMMARY!!!") in current_response:
