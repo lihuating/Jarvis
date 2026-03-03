@@ -900,6 +900,8 @@ class PrettyOutput:
         """显示上次通过 print_truncated_with_expand_hint 保存的完整内容。
 
         供 Ctrl+R 快捷键调用。若有内容则用当前控制台输出并返回 True，否则返回 False。
+        
+        注意：显示后不会清除保存的内容，用户可以多次查看。
         """
         full = getattr(
             jarvis_globals, "last_truncated_full_content", None
@@ -908,15 +910,17 @@ class PrettyOutput:
         if not full:
             return False
         if title:
-            PrettyOutput.auto_print(f"📄 完整内容：{title}")
+            PrettyOutput.auto_print(f"\n📄 完整内容：{title}")
+            PrettyOutput.auto_print("─" * 80)
         PrettyOutput._print(
             text=full,
             output_type=OutputType.RESULT,
-            timestamp=True,
+            timestamp=False,  # 不显示时间戳，避免重复
             lang=None,
         )
-        jarvis_globals.last_truncated_full_content = None
-        jarvis_globals.last_truncated_title = None
+        if title:
+            PrettyOutput.auto_print("─" * 80)
+        # 不清除保存的内容，允许用户多次查看
         return True
 
     @staticmethod

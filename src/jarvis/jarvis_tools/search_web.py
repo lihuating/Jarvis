@@ -1,5 +1,6 @@
 """网络搜索工具。"""
 
+import os
 from typing import Any
 from typing import Dict
 from typing import Optional
@@ -175,12 +176,103 @@ class SearchWebTool:
                 "success": False,
             }
 
+    def _search_with_alternative_apis(
+        self,
+        query: str,
+        agent: Agent,
+        site: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        # pylint: disable=too-many-locals, broad-except
+        """使用备用API执行网络搜索（当ddgr不可用时）。
+
+        当前支持：
+        1. Wikipedia API - 用于查询百科信息
+        2. 可以通过execute_script调用其他API
+        """
+        try:
+            # 尝试使用 Wikipedia API
+            # URL encode the query
+            import urllib.parse
+            encoded_query = urllib.parse.quote(query)
+            
+            wiki_url = f"https://zh.wikipedia.org/w/api.php?action=query&list=search&srsearch={encoded_query}&format=json&utf8=&srlimit=5"
+            
+            script = f"""curl -s '{wiki_url}' | python3 -c "
+import json
+import sys
+
+try:
+    data = json.load(sys.stdin)
+    if 'query' in data and 'search' in data['query']:
+        results = data['query']['search']
+        if results:
+            print('📝 查询关键词: {query}')
+            print('📊 搜索结果数:', len(results))
+            print('📄 搜索摘要:')
+            print()
+            for idx, item in enumerate(results[:5], 1):
+                title = item.get('title', '')
+                snippet = item.get('snippet', '')
+                url = f\"https://zh.wikipedia.org/wiki/{urllib.parse.quote(title.replace(' ', '_'))}\" if title else ''
+                
+                print(f'  {{idx}}. {{title}}')
+                if snippet:
+                    print(f'     摘要: {{snippet[:200]}}...' if len(snippet) > 200 else f'     摘要: {{snippet}}')
+                print(f'     URL: {{url}}')
+                print()
+        else:
+            print('未找到相关结果')
+    else:
+        print('API返回数据格式错误')
+except Exception as e:
+    print(f'搜索失败: {{str(e)}}')
+" 2>&1"""
+
+            result = subprocess.run(
+                script,
+                shell=True,
+                capture_output=True,
+                text=True,
+                timeout=30,
+                check=False,
+                cwd=os.getcwd()
+            )
+
+            if result.returncode == 0 and result.stdout:
+                return {
+                    "stdout": result.stdout,
+                    "stderr": "",
+                    "success": True,
+                }
+            else:
+                return {
+                    "stdout": "",
+                    "stderr": f"备用搜索失败: {result.stderr}",
+                    "success": False,
+                }
+
+        except subprocess.TimeoutExpired:
+            return {
+                "stdout": "",
+                "stderr": "备用搜索超时。",
+                "success": False,
+            }
+        except Exception as e:
+            PrettyOutput.auto_print(f"❌ 备用搜索过程中发生错误: {e}")
+            return {
+                "stdout": "",
+                "stderr": f"备用搜索过程中发生错误: {e}",
+                "success": False,
+            }
+
     def execute(self, args: Dict[str, Any]) -> Dict[str, Any]:
         """
         Executes the web search.
 
         Uses ddgr command to search the web and scrape pages for content.
         Supports site-specific search.
+        
+        If ddgr is not available, falls back to alternative APIs like Wikipedia.
         """
         query = args.get("query")
         agent = args.get("agent")
@@ -198,7 +290,36 @@ class SearchWebTool:
         # 提取可选参数
         site = args.get("site")
 
-        return self._search_with_ddgr(query=query, agent=agent, site=site)
+        # 先尝试使用 ddgr
+        result = self._search_with_ddgr(query=query, agent=agent, site=site)
+        
+        # 如果 ddgr 失败，尝试使用备用方案
+        if not result.get("success", False):
+            PrettyOutput.auto_print("⚠️ ddgr 搜索失败，尝试使用备用搜索方案...")
+            
+            # 如果指定了网站搜索，备用方案可能不支持，返回原错误
+            if site:
+                PrettyOutput.auto_print(f"⚠️ 备用方案不支持网站内搜索，建议使用其他方式访问 {site}")
+                return result
+            
+            # 尝试备用搜索
+            backup_result = self._search_with_alternative_apis(
+                query=query, agent=agent, site=site
+            )
+            
+            # 如果备用方案成功，返回备用结果；否则返回原错误
+            if backup_result.get("success", False):
+                return backup_result
+            else:
+                PrettyOutput.auto_print(f"❌ 备用搜索也失败了: {backup_result.get('stderr', 'unknown')}")
+                # 返回组合的错误信息
+                return {
+                    "stdout": "",
+                    "stderr": f"ddgr搜索失败: {result.get('stderr', '')}\n备用搜索失败: {backup_result.get('stderr', '')}",
+                    "success": False,
+                }
+
+        return result
 
     @staticmethod
     def check() -> bool:

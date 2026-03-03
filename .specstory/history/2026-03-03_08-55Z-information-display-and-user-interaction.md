@@ -1537,16 +1537,3 @@ Good. Let me provide a short summary to the user. I could also check if registry
 
 ---
 
-_**User**_
-
-⏰ 18:55:07 │ [1]Jarvis🔊 🛠 执行工具调用 memory [action='save' | memories=list(5 items)]
-⏰ 18:55:07 │ [1]Jarvis🔊 📌 已固定 5 条记忆内容
-⏰ 18:55:07 │ [1]Jarvis🔊 ✅ 执行工具调用 memory 成功 (耗时: 0.02s)
-⏰ 18:55:07 │ [1]Jarvis🔊 🔍 Token限制触发，当前剩余token: 27488/128000 (剩余 21.5%)
-⏰ 18:55:07 │ [1]Jarvis🔊 ⚠ 自适应压缩失败，回退到完整摘要压缩
-⏰ 18:55:07 │ [1]Jarvis🔊 🔍 开始生成对话历史摘要... (原因: Token限制触发)
-⏰ 18:55:21 │ [1]Jarvis🔊 ✅ glm-4.7模型响应完成: 13.26秒 | 轮次: 4/200 | Token: 86.7%
-这种情况是什么意思
-
----
-

@@ -1015,16 +1015,12 @@ def _get_multiline_input_internal(
     @bindings.add("c-r", filter=has_focus(DEFAULT_BUFFER))
     def _(event: KeyPressEvent) -> None:
         """Handle Ctrl+R: 显示上次被部分隐藏的完整内容（若有）。"""
+        from jarvis.jarvis_utils.output import PrettyOutput
 
-        def _show_full() -> None:
-            from jarvis.jarvis_utils.output import PrettyOutput
-
-            if PrettyOutput.show_last_truncated_full():
-                pass  # 已在 show_last_truncated_full 中输出
-            else:
-                PrettyOutput.auto_print("ℹ️ 当前无已隐藏的完整内容可展开")
-
-        run_in_terminal(_show_full)
+        if PrettyOutput.show_last_truncated_full():
+            pass  # 已在 show_last_truncated_full 中输出
+        else:
+            PrettyOutput.auto_print("ℹ️ 当前无已隐藏的完整内容可展开")
 
     @bindings.add("c-t", eager=True)
     def _(event: KeyPressEvent) -> None:
