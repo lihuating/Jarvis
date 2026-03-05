@@ -435,7 +435,8 @@ class ConsoleOutputSink(OutputSink):
             style_obj = self._SECTION_STYLES.get(
                 event.output_type, RichStyle(color="white")
             )
-            text = Text(f"\n{event.section}\n", style=style_obj, justify="center")
+            # 所有章节标题都靠左对齐
+            text = Text(f"\n{event.section}\n", style=style_obj, justify="left")
             if get_pretty_output():
                 console.print(text)
             else:
