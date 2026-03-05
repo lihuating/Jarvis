@@ -29,6 +29,8 @@ from jarvis.jarvis_utils.config import get_tool_load_dirs
 
 # -*- coding: utf-8 -*-
 from jarvis.jarvis_utils.jsonnet_compat import loads as json_loads
+from jarvis.jarvis_utils import globals as jarvis_globals
+from jarvis.jarvis_utils.output import OutputType
 from jarvis.jarvis_utils.output import PrettyOutput
 from jarvis.jarvis_utils.tag import ct
 from jarvis.jarvis_utils.tag import ot
@@ -1383,6 +1385,70 @@ class ToolRegistry(OutputHandlerProtocol):
             # 使用当前模型组（不再从 agent 继承）
             platform = agent_instance.model if agent_instance.model else None
             is_large_content = is_context_overflow(output, platform)
+            output_line_count = len(output.splitlines())
+            output_len = len(output)
+
+            # 通用字符数阈值：超过 2000 字符时折叠显示（避免刷屏）
+            if output_len > 2000 and not is_large_content and output_line_count <= 30:
+                PrettyOutput.push_truncated_to_history(
+                    output,
+                    name,
+                    trigger_context="工具调用结果",
+                    purpose=f"工具「{name}」的返回结果，供模型参考",
+                )
+                jarvis_globals.last_truncated_full_content = output
+                jarvis_globals.last_truncated_title = name
+                history = getattr(jarvis_globals, "truncated_history", [])
+                index = len(history)
+                head_chars, tail_chars = 500, 300
+                if output_len > head_chars + tail_chars + 80:
+                    truncated_display = (
+                        output[:head_chars]
+                        + "\n\n... (输出已折叠，共 {} 字符，按 Ctrl+R 查看全部，对应索引为：{})\n\n".format(
+                            output_len, index
+                        )
+                        + output[-tail_chars:]
+                    )
+                else:
+                    truncated_display = output
+                PrettyOutput._print(
+                    text=truncated_display,
+                    output_type=OutputType.RESULT,
+                    timestamp=True,
+                    lang=None,
+                )
+                return output
+
+            # 少行但很长（如单行 JSON/API 返回），按字符折叠，避免刷屏
+            if output_line_count <= 5 and output_len > 3000:
+                PrettyOutput.push_truncated_to_history(
+                    output,
+                    name,
+                    trigger_context="工具调用结果",
+                    purpose=f"工具「{name}」的返回结果，供模型参考",
+                )
+                jarvis_globals.last_truncated_full_content = output
+                jarvis_globals.last_truncated_title = name
+                history = getattr(jarvis_globals, "truncated_history", [])
+                index = len(history)
+                head_chars, tail_chars = 500, 300
+                if output_len > head_chars + tail_chars + 80:
+                    truncated_display = (
+                        output[:head_chars]
+                        + "\n\n... (输出已折叠，共 {} 字符，按 Ctrl+R 查看全部，对应索引为：{})\n\n".format(
+                            output_len, index
+                        )
+                        + output[-tail_chars:]
+                    )
+                else:
+                    truncated_display = output
+                PrettyOutput._print(
+                    text=truncated_display,
+                    output_type=OutputType.RESULT,
+                    timestamp=True,
+                    lang=None,
+                )
+                return output
 
             if is_large_content:
                 # 创建临时文件
@@ -1401,7 +1467,9 @@ class ToolRegistry(OutputHandlerProtocol):
                         visible_before=12,
                         visible_after=30,
                         max_lines=60,
-                        expand_hint="输入 Ctrl+R 查看全部",
+                        expand_hint="按 Ctrl+R 查看全部",
+                        trigger_context="工具调用结果",
+                        purpose=f"工具「{name}」的返回结果，供模型参考",
                     )
                     # 返回截断内容供 LLM/会话使用
                     return self._truncate_output(output)
@@ -1411,6 +1479,20 @@ class ToolRegistry(OutputHandlerProtocol):
                         os.unlink(output_file)
                     except Exception:
                         pass
+
+            # 步骤执行过程：超过一定行数时仅显示重要信息（前/后若干行），支持 Ctrl+R 查看全部
+            if output_line_count > 30:
+                PrettyOutput.print_truncated_with_expand_hint(
+                    output,
+                    title=name,
+                    visible_before=10,
+                    visible_after=20,
+                    max_lines=30,
+                    expand_hint="按 Ctrl+R 查看全部",
+                    trigger_context="工具调用结果",
+                    purpose=f"工具「{name}」的返回结果，供模型参考",
+                )
+                return output
 
             return output
 

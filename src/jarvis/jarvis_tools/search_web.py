@@ -3,7 +3,9 @@
 import os
 from typing import Any
 from typing import Dict
+from typing import List
 from typing import Optional
+from typing import Tuple
 from jarvis.jarvis_utils.output import PrettyOutput
 
 # -*- coding: utf-8 -*-
@@ -18,6 +20,13 @@ import sys
 from jarvis.jarvis_agent import Agent
 
 # fmt: on
+
+# ddgr 快速探针超时（秒），用于在正式搜索前判断是否可用
+DDGR_PROBE_TIMEOUT = 4
+# ddgr 正式搜索超时（秒），与原先保持一致
+DDGR_SEARCH_TIMEOUT = 30
+# 备用 Wikipedia 探针超时（秒）
+FALLBACK_PROBE_TIMEOUT = 3
 
 
 class SearchWebTool:
@@ -65,6 +74,68 @@ class SearchWebTool:
         # 方法3: 回退到直接使用 ddgr（让 subprocess 处理错误）
         return ["ddgr"]
 
+    def _probe_ddgr_quick(self) -> bool:
+        """快速检测 ddgr 是否可用（短超时探针），避免长时间等待后才发现失败。
+
+        返回:
+            bool: True 表示 ddgr 可执行且能正常返回，False 表示不可用或超时。
+        """
+        try:
+            ddgr_cmd = self._get_ddgr_command()
+            # 使用最小查询触发一次 JSON 输出，超时时间短
+            probe_cmd = ddgr_cmd + ["--json", "--np", "-x", "--num", "1", "test"]
+            r = subprocess.run(
+                probe_cmd,
+                capture_output=True,
+                text=True,
+                timeout=DDGR_PROBE_TIMEOUT,
+                check=False,
+            )
+            if r.returncode != 0:
+                return False
+            try:
+                json.loads(r.stdout)
+                return True
+            except (json.JSONDecodeError, TypeError):
+                return False
+        except (subprocess.TimeoutExpired, FileNotFoundError, Exception):
+            return False
+
+    def _probe_wikipedia_available(self) -> bool:
+        """快速检测备用 Wikipedia 搜索是否可用（curl + 网络可达）。"""
+        if not shutil.which("curl"):
+            return False
+        try:
+            r = subprocess.run(
+                [
+                    "curl",
+                    "-s",
+                    "--max-time",
+                    str(FALLBACK_PROBE_TIMEOUT),
+                    "-o",
+                    os.devnull,
+                    "-w",
+                    "%{http_code}",
+                    "https://zh.wikipedia.org/w/api.php?action=query&list=search&srsearch=test&format=json&srlimit=1",
+                ],
+                capture_output=True,
+                text=True,
+                timeout=FALLBACK_PROBE_TIMEOUT + 2,
+                check=False,
+            )
+            return r.returncode == 0 and r.stdout.strip() == "200"
+        except (subprocess.TimeoutExpired, FileNotFoundError, Exception):
+            return False
+
+    def _get_available_backends(self) -> List[Tuple[str, str]]:
+        """探测当前可用的搜索后端，返回 (后端标识, 显示名称) 列表，顺序为优先使用顺序。"""
+        backends: List[Tuple[str, str]] = []
+        if self._probe_ddgr_quick():
+            backends.append(("ddgr", "ddgr"))
+        if self._probe_wikipedia_available():
+            backends.append(("wikipedia", "Wikipedia"))
+        return backends
+
     def _search_with_ddgr(
         self,
         query: str,
@@ -92,7 +163,11 @@ class SearchWebTool:
             cmd.append(query)
 
             result = subprocess.run(
-                cmd, capture_output=True, text=True, timeout=30, check=False
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=DDGR_SEARCH_TIMEOUT,
+                check=False,
             )
 
             if result.returncode != 0:
@@ -275,8 +350,7 @@ except Exception as e:
 
         Uses ddgr command to search the web and scrape pages for content.
         Supports site-specific search.
-        
-        If ddgr is not available, falls back to alternative APIs like Wikipedia.
+        先快速探测 ddgr 与备用后端可用性，失败时快速切换并反馈当前执行方式。
         """
         query = args.get("query")
         agent = args.get("agent")
@@ -291,39 +365,70 @@ except Exception as e:
                 "success": False,
             }
 
-        # 提取可选参数
         site = args.get("site")
 
-        # 先尝试使用 ddgr
-        result = self._search_with_ddgr(query=query, agent=agent, site=site)
-        
-        # 如果 ddgr 失败，尝试使用备用方案
-        if not result.get("success", False):
-            PrettyOutput.auto_print("⚠️ ddgr 搜索失败，尝试使用备用搜索方案...")
-            
-            # 如果指定了网站搜索，备用方案可能不支持，返回原错误
-            if site:
-                PrettyOutput.auto_print(f"⚠️ 备用方案不支持网站内搜索，建议使用其他方式访问 {site}")
+        # 快速探测可用后端（ddgr + 备用），便于快速失败与切换反馈
+        available = self._get_available_backends()
+        backend_names = [b[1] for b in available]
+
+        if not available:
+            PrettyOutput.auto_print(
+                "❌ 无可用搜索后端：ddgr 不可用且备用 Wikipedia 不可用（请检查 ddgr 安装或网络）。"
+            )
+            return {
+                "stdout": "",
+                "stderr": "无可用搜索后端（ddgr 与 Wikipedia 均不可用）。",
+                "success": False,
+            }
+
+        # 优先使用 ddgr（若探针通过）
+        use_ddgr = any(b[0] == "ddgr" for b in available)
+
+        if use_ddgr:
+            result = self._search_with_ddgr(query=query, agent=agent, site=site)
+            if result.get("success", False):
                 return result
-            
-            # 尝试备用搜索
+            # ddgr 执行失败，快速切换备用并反馈
+            PrettyOutput.auto_print(
+                "⚠️ ddgr 搜索失败（超时或执行错误），正在切换备用搜索…"
+            )
+        else:
+            # 探针阶段已发现 ddgr 不可用，直接使用备用
+            PrettyOutput.auto_print(
+                "⚠️ ddgr 不可用或未安装，使用备用搜索（当前可用: "
+                + ", ".join(backend_names)
+                + "）。"
+            )
+            result = {"success": False, "stderr": "ddgr 不可用（探针未通过）。"}
+
+        if site:
+            PrettyOutput.auto_print(
+                f"⚠️ 备用方案不支持网站内搜索，建议使用其他方式访问 {site}"
+            )
+            return result
+
+        # 尝试备用：仅使用已探测可用的后端
+        if any(b[0] == "wikipedia" for b in available):
+            PrettyOutput.auto_print("🔀 已切换至 Wikipedia 搜索。")
             backup_result = self._search_with_alternative_apis(
                 query=query, agent=agent, site=site
             )
-            
-            # 如果备用方案成功，返回备用结果；否则返回原错误
             if backup_result.get("success", False):
                 return backup_result
-            else:
-                PrettyOutput.auto_print(f"❌ 备用搜索也失败了: {backup_result.get('stderr', 'unknown')}")
-                # 返回组合的错误信息
-                return {
-                    "stdout": "",
-                    "stderr": f"ddgr搜索失败: {result.get('stderr', '')}\n备用搜索失败: {backup_result.get('stderr', '')}",
-                    "success": False,
-                }
+            PrettyOutput.auto_print(
+                f"❌ 备用搜索失败: {backup_result.get('stderr', 'unknown')}"
+            )
+            return {
+                "stdout": "",
+                "stderr": f"ddgr搜索失败: {result.get('stderr', '')}\n备用搜索失败: {backup_result.get('stderr', '')}",
+                "success": False,
+            }
 
-        return result
+        return {
+            "stdout": "",
+            "stderr": result.get("stderr", "ddgr 搜索失败，且无其他可用后端。"),
+            "success": False,
+        }
 
     @staticmethod
     def check() -> bool:

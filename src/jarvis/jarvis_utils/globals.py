@@ -15,6 +15,7 @@ from typing import Any
 from typing import Dict
 from typing import List
 from typing import Optional
+from typing import Tuple
 
 message_history: List[str] = []
 
@@ -44,6 +45,9 @@ g_interrupt: int = 0
 last_truncated_full_content: Optional[str] = None
 # 上次截断内容的标题（如工具名），用于展开时显示
 last_truncated_title: Optional[str] = None
+# 多处折叠历史：列表项为 (完整内容, 摘要)，供 Ctrl+T 历史查看界面使用，最多保留条数
+truncated_history: List[Tuple[str, str]] = []
+TRUNCATED_HISTORY_MAX_SIZE = 30
 # 使用自定义主题配置rich控制台
 custom_theme = Theme(
     {
@@ -53,7 +57,7 @@ custom_theme = Theme(
         "SUCCESS": "green",
         "SYSTEM": "cyan",
         "CODE": "green",
-        "RESULT": "blue",
+        "RESULT": "grey70",
         "PLANNING": "magenta",
         "PROGRESS": "white",
         "DEBUG": "blue",

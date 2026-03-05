@@ -33,6 +33,7 @@ from jarvis.jarvis_utils.globals import console
 from jarvis.jarvis_utils.globals import get_agent
 from jarvis.jarvis_utils.globals import get_agent_list
 from jarvis.jarvis_utils import globals as jarvis_globals
+from jarvis.jarvis_utils.globals import TRUNCATED_HISTORY_MAX_SIZE
 
 
 # Rich支持的标准颜色列表
@@ -352,7 +353,7 @@ class ConsoleOutputSink(OutputSink):
     _TEXT_COLORS = {
         OutputType.SYSTEM: "cyan",
         OutputType.CODE: "green",
-        OutputType.RESULT: "blue",
+        OutputType.RESULT: "grey70",
         OutputType.ERROR: "bright_red",
         OutputType.INFO: "grey70",
         OutputType.PLANNING: "magenta",
@@ -865,11 +866,12 @@ class PrettyOutput:
         max_lines: int = 60,
         output_type: OutputType = OutputType.RESULT,
         expand_hint: str = "输入 Ctrl+R 查看全部",
+        trigger_context: Optional[str] = None,
+        purpose: Optional[str] = None,
     ) -> None:
         """对非关键长内容做部分显示，其余隐藏，完整内容可通过 Ctrl+R 查看。
 
-        当行数不超过 max_lines 时直接全文输出；否则只显示前 visible_before 行与后
-        visible_after 行，中间插入“前 N 行已隐藏”的提示，并将全文存入全局供 Ctrl+R 展开。
+        purpose: 历史列表中显示的摘要（是什么信息、做什么用），便于用户区分。
         """
         lines = full_content.splitlines()
         total = len(lines)
@@ -880,15 +882,23 @@ class PrettyOutput:
             jarvis_globals.last_truncated_full_content = None
             jarvis_globals.last_truncated_title = None
             return
-        # 需要折叠显示
+        # 需要折叠显示：写入历史列表（供 Ctrl+R 历史查看）并保留最近一条
+        PrettyOutput.push_truncated_to_history(
+            full_content,
+            title,
+            trigger_context=trigger_context,
+            purpose=purpose,
+        )
         jarvis_globals.last_truncated_full_content = full_content
         jarvis_globals.last_truncated_title = title
+        history = getattr(jarvis_globals, "truncated_history", [])
+        index = len(history)  # 本条在历史中的序号（1-based 即 index）
         head = visible_before
         tail = visible_after
         if head + tail >= total:
             head = max(1, total - tail)
         hidden_count = total - head - tail
-        mid_hint = f"\n... 前 {hidden_count} 行已隐藏 ...（{expand_hint}）\n"
+        mid_hint = f"\n... 前 {hidden_count} 行已隐藏 ...（{expand_hint}，对应索引为：{index}）\n"
         partial_lines = lines[:head] + [mid_hint.strip()] + lines[-tail:]
         partial_text = "\n".join(partial_lines)
         PrettyOutput._print(
@@ -924,6 +934,100 @@ class PrettyOutput:
         return True
 
     @staticmethod
+    def push_truncated_to_history(
+        full_content: str,
+        title: Optional[str] = None,
+        trigger_context: Optional[str] = None,
+        purpose: Optional[str] = None,
+    ) -> None:
+        """将一次折叠的完整内容与摘要加入历史列表，供 Ctrl+R 历史查看界面使用。
+
+        purpose: 隐藏摘要的完整描述（是什么信息、做什么用），优先于 trigger_context/title。
+        trigger_context: 触发背景，与 title 组合成摘要（当 purpose 未提供时）。
+        """
+        if purpose and purpose.strip():
+            summary = purpose.strip()
+        elif trigger_context and title:
+            summary = f"{trigger_context} · {title}"
+        elif trigger_context:
+            summary = trigger_context
+        elif title:
+            summary = title
+        else:
+            summary = ""
+        if not summary and full_content:
+            first_line = full_content.splitlines()[0].strip() if full_content else ""
+            summary = (first_line[:60] + "…") if len(first_line) > 60 else first_line
+        history = getattr(jarvis_globals, "truncated_history", None)
+        if history is None:
+            return
+        history.append((full_content, summary or "(无标题)"))
+        while len(history) > TRUNCATED_HISTORY_MAX_SIZE:
+            history.pop(0)
+
+    @staticmethod
+    def get_truncated_history() -> List[Tuple[str, str]]:
+        """返回折叠历史列表，每项为 (完整内容, 摘要)。"""
+        return getattr(jarvis_globals, "truncated_history", [])
+
+    @staticmethod
+    def show_truncated_item_by_index(one_based_index: int) -> bool:
+        """根据序号（从 1 开始）显示历史中对应项的完整内容。"""
+        history = PrettyOutput.get_truncated_history()
+        if one_based_index < 1 or one_based_index > len(history):
+            return False
+        full_content, summary = history[one_based_index - 1]
+        if summary:
+            PrettyOutput.auto_print(f"\n📄 完整内容：{summary}")
+            PrettyOutput.auto_print("─" * 80)
+        PrettyOutput._print(
+            text=full_content,
+            output_type=OutputType.RESULT,
+            timestamp=False,
+            lang=None,
+        )
+        if summary:
+            PrettyOutput.auto_print("─" * 80)
+        PrettyOutput.auto_print(
+            "[dim]（已显示完毕，可继续输入或按 Ctrl+J/Ctrl+D 确认）[/dim]"
+        )
+        return True
+
+    @staticmethod
+    def _normalize_markdown_headings(content: str) -> str:
+        """将内容中的标题行规范为 # / ## 格式，便于左对齐与层级显示。
+
+        - 以「数字. 」开头的行（如 1. xxx、2. xxx）规范为二级标题：## 1. xxx
+        - 首个非空、非列表、非已有 # 的短行视为一级标题，补 #
+        """
+        lines = content.splitlines()
+        out: List[str] = []
+        seen_first_heading = False
+        for i, line in enumerate(lines):
+            stripped = line.lstrip()
+            if not stripped:
+                out.append(line)
+                continue
+            if stripped.startswith("#"):
+                seen_first_heading = True
+                out.append(line)
+                continue
+            # 以「数字.」开头（可有可无空格）→ 二级标题 ## N. xxx
+            if re.match(r"^\d+\.\s*", stripped):
+                indent = line[: len(line) - len(stripped)]
+                out.append(indent + "## " + stripped)
+                continue
+            # 首个像标题的短行（无 #、非列表、非数字开头）→ 一级标题 #
+            if not seen_first_heading and 3 <= len(stripped) <= 120:
+                if not re.match(r"^[\d\-\*\]\>]", stripped):
+                    indent = line[: len(line) - len(stripped)]
+                    out.append(indent + "# " + stripped)
+                    seen_first_heading = True
+                    continue
+            out.append(line)
+        return "\n".join(out)
+
+    @staticmethod
     def print_markdown(
         content: str,
         title: Optional[str] = None,
@@ -939,18 +1043,20 @@ class PrettyOutput:
             title: Panel标题（可选）
             border_style: 边框样式（默认"bright_blue"）
             theme: markdown高亮主题（默认"monokai"）
-            highlight_headings: 为True时使用Markdown渲染，使以##开头的标题行突出显示（默认False）
+            highlight_headings: 为True时使用Markdown渲染，标题靠左、## 等突出显示（默认False）
         """
         from rich.panel import Panel
 
         if highlight_headings:
+            from rich.align import Align
             from rich.console import Console as RichConsole
             from rich.markdown import Markdown
             from rich.theme import Theme
 
-            # 使用 Markdown 渲染，并通过 Theme 让 ## 等标题加粗+亮色突出显示
-            # Theme 需在构造 Console 时传入，print() 不支持 theme 参数
-            renderable = Markdown(content)
+            # 规范标题格式（数字开头→## N. xxx），便于统一左对齐与层级
+            content = PrettyOutput._normalize_markdown_headings(content)
+            # 使用 Markdown 渲染，左对齐，避免标题居中
+            renderable = Align.left(Markdown(content))
             heading_theme = Theme(
                 {
                     "markdown.h1": "bold bright_cyan",

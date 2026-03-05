@@ -47,7 +47,9 @@ from prompt_toolkit.styles import Style as PromptStyle
 from jarvis.jarvis_utils.clipboard import copy_to_clipboard
 from jarvis.jarvis_utils.config import get_data_dir
 from jarvis.jarvis_utils.config import get_replace_map
+from jarvis.jarvis_utils.config import get_conversation_turn_threshold
 from jarvis.jarvis_utils.globals import get_message_history
+from jarvis.jarvis_utils.globals import get_current_agent
 from jarvis.jarvis_utils.tag import ot
 from jarvis.jarvis_utils.utils import decode_output
 
@@ -327,6 +329,47 @@ def get_single_line_input(tip: str, default: str = "") -> str:
     )
     prompt = FormattedText([("class:prompt", f"👤 > {tip}")])
     return str(session.prompt(prompt, default=default, style=style))
+
+
+def run_truncated_history_viewer() -> None:
+    """进入历史隐藏查看界面：展示索引与摘要列表，输入序号并回车查看对应完整内容。
+
+    在 run_in_terminal 中执行，故使用内置 input() 读取序号，避免嵌套 asyncio 事件循环。
+    """
+    from rich.console import Console
+    from rich.table import Table
+
+    history = PrettyOutput.get_truncated_history()
+    if not history:
+        PrettyOutput.auto_print("ℹ️ 当前无历史隐藏内容")
+        return
+    console = Console()
+    table = Table(
+        title="📋 历史隐藏查看",
+        show_header=True,
+        header_style="bold magenta",
+        title_style="bold cyan",
+    )
+    table.add_column("索引", style="cyan", width=6)
+    table.add_column("隐藏摘要", style="yellow")
+    for i, (_content, summary) in enumerate(history, 1):
+        row_summary = (
+            (summary[:80] + "…") if len(summary) > 80 else summary
+        )
+        table.add_row(str(i), row_summary)
+    console.print(table)
+    try:
+        line = input("请输入序号 (直接回车退出): ").strip()
+    except (EOFError, KeyboardInterrupt):
+        line = ""
+    if not line:
+        return
+    try:
+        idx = int(line.strip())
+        if not PrettyOutput.show_truncated_item_by_index(idx):
+            PrettyOutput.auto_print("⚠️ 无效序号")
+    except ValueError:
+        PrettyOutput.auto_print("⚠️ 请输入有效数字")
 
 
 def get_choice(tip: str, choices: List[str]) -> str:
@@ -1011,53 +1054,37 @@ def _get_multiline_input_internal(
         """Handle Ctrl+X by exiting the prompt and requesting program exit."""
         event.app.exit(result=CTRL_X_SENTINEL)
 
-    # Ctrl+R：显示上次被部分隐藏的完整内容（注意：在 bash 中 Ctrl+R 为反向历史搜索，此处为 Jarvis 专用）
-    @bindings.add("c-r", filter=has_focus(DEFAULT_BUFFER))
+    # Ctrl+R：进入历史隐藏查看界面（列表 + 输入序号查看，注意在 bash 中 Ctrl+R 为反向历史搜索）
+    @bindings.add("c-r", filter=has_focus(DEFAULT_BUFFER), eager=True)
     def _(event: KeyPressEvent) -> None:
-        """Handle Ctrl+R: 显示上次被部分隐藏的完整内容（若有）。"""
-        from jarvis.jarvis_utils.output import PrettyOutput
+        """Ctrl+R: 进入历史隐藏查看界面，输入序号并回车查看对应完整内容。"""
+        run_in_terminal(run_truncated_history_viewer)
 
-        if PrettyOutput.show_last_truncated_full():
-            pass  # 已在 show_last_truncated_full 中输出
-        else:
-            PrettyOutput.auto_print("ℹ️ 当前无已隐藏的完整内容可展开")
+    def _gen_shell_cmd() -> str:
+        try:
+            if _os.name == "nt":
+                for name in ("pwsh", "powershell", "cmd"):
+                    if name == "cmd" or _shutil.which(name):
+                        if name == "cmd":
+                            return "!cmd /K set terminal=1"
+                        return f"!{name} -NoExit -Command \"$env:terminal='1'\""
+            else:
+                shell_path = os.environ.get("SHELL", "")
+                if shell_path:
+                    base = os.path.basename(shell_path)
+                    if base:
+                        return f"!env terminal=1 {base}"
+                for name in ("fish", "zsh", "bash", "sh"):
+                    if _shutil.which(name):
+                        return f"!env terminal=1 {name}"
+                return "!env terminal=1 bash"
+        except Exception:
+            pass
+        return "!env terminal=1 bash"
 
     @bindings.add("c-t", eager=True)
     def _(event: KeyPressEvent) -> None:
-        """Return a shell command like '!bash' for upper input_handler to execute.
-
-        This binding works globally (without focus filter) so it can be triggered
-        even when LLM is outputting or after interrupting output with Ctrl+C.
-        """
-
-        def _gen_shell_cmd() -> str:
-            try:
-                if _os.name == "nt":
-                    # Prefer PowerShell if available, otherwise fallback to cmd
-                    for name in ("pwsh", "powershell", "cmd"):
-                        if name == "cmd" or _shutil.which(name):
-                            if name == "cmd":
-                                # Keep session open with /K and set env for the spawned shell
-                                return "!cmd /K set terminal=1"
-                            else:
-                                # PowerShell or pwsh: set env then remain in session
-                                return f"!{name} -NoExit -Command \"$env:terminal='1'\""
-                else:
-                    shell_path = os.environ.get("SHELL", "")
-                    if shell_path:
-                        base = os.path.basename(shell_path)
-                        if base:
-                            return f"!env terminal=1 {base}"
-                    for name in ("fish", "zsh", "bash", "sh"):
-                        if _shutil.which(name):
-                            return f"!env terminal=1 {name}"
-                    return "!env terminal=1 bash"
-            except Exception:
-                return "!env terminal=1 bash"
-            # Fallback for all cases
-            return "!env terminal=1 bash"
-
-        # Append a special marker to indicate no-confirm execution in shell_input_handler
+        """Ctrl+T: 打开终端(!SHELL)。"""
         event.app.exit(result=_gen_shell_cmd() + " # JARVIS-NOCONFIRM")
 
     @bindings.add("@", filter=has_focus(DEFAULT_BUFFER), eager=True)
@@ -1146,32 +1173,62 @@ def _get_multiline_input_internal(
         except Exception:
             cols = 80
         line_str = "─" * max(0, cols) + "\n"
-        return FormattedText(
-            [
-                ("class:bt.line", line_str),
-                ("class:bt.label", "快捷键: "),
-                ("class:bt.key", "@"),
-                ("class:bt.label", " 文件补全 "),
-                ("class:bt.sep", " • "),
-                ("class:bt.key", "Ctrl+J / Ctrl+D"),
-                ("class:bt.label", " 提交 "),
-                ("class:bt.sep", " • "),
-                ("class:bt.key", "Ctrl+O"),
-                ("class:bt.label", " 复制历史信息 "),
-                ("class:bt.sep", " • "),
-                ("class:bt.key", "Ctrl+R"),
-                ("class:bt.label", " 查看全部输出 "),
-                ("class:bt.sep", " • "),
-                ("class:bt.key", "Ctrl+T"),
-                ("class:bt.label", " 终端(!SHELL) "),
-                ("class:bt.sep", " • "),
-                ("class:bt.key", "Ctrl+X"),
-                ("class:bt.label", " 退出程序 "),
-                ("class:bt.sep", " • "),
-                ("class:bt.key", "Ctrl+C"),
-                ("class:bt.label", " 取消 "),
-            ]
-        )
+        
+        # 构建基础工具栏内容
+        toolbar_items = [
+            ("class:bt.line", line_str),
+            ("class:bt.label", "快捷键: "),
+            ("class:bt.key", "@"),
+            ("class:bt.label", " 文件补全 "),
+            ("class:bt.sep", " • "),
+            ("class:bt.key", "Ctrl+D"),
+            ("class:bt.label", " 提交 "),
+            ("class:bt.sep", " • "),
+            ("class:bt.key", "Ctrl+O"),
+            ("class:bt.label", " 复制历史信息 "),
+            ("class:bt.sep", " • "),
+            ("class:bt.key", "Ctrl+R"),
+            ("class:bt.label", " 历史隐藏查看 "),
+            ("class:bt.sep", " • "),
+            ("class:bt.key", "Ctrl+T"),
+            ("class:bt.label", " 终端(!SHELL) "),
+            ("class:bt.sep", " • "),
+            ("class:bt.key", "Ctrl+X"),
+            ("class:bt.label", " 退出程序 "),
+            ("class:bt.sep", " • "),
+            ("class:bt.key", "Ctrl+C"),
+            ("class:bt.label", " 取消 "),
+        ]
+        
+        # 获取当前轮次和token信息
+        try:
+            current_agent = get_current_agent()
+            if current_agent and hasattr(current_agent, 'model'):
+                model = current_agent.model
+                if hasattr(model, 'get_conversation_turn'):
+                    current_turn = model.get_conversation_turn()
+                    threshold = get_conversation_turn_threshold()
+                    
+                    # 尝试获取token使用信息
+                    token_percent = 0.0
+                    if hasattr(model, '_get_token_usage_info'):
+                        try:
+                            token_percent, percent_color, progress_bar = model._get_token_usage_info()
+                        except Exception:
+                            token_percent = 0.0
+                    
+                    # 添加右侧的分隔符和状态信息，使用与Ctrl+X相同的样式
+                    toolbar_items.append(("class:bt.sep", " • "))
+                    toolbar_items.append(("class:bt.key", "轮次"))
+                    toolbar_items.append(("class:bt.label", f": {current_turn}/{threshold} "))
+                    if token_percent > 0:
+                        toolbar_items.append(("class:bt.sep", " • "))
+                        toolbar_items.append(("class:bt.key", "Token"))
+                        toolbar_items.append(("class:bt.label", f": {token_percent:.1f}% "))
+        except Exception:
+            pass
+        
+        return FormattedText(toolbar_items)
 
     history_dir = get_data_dir()
     session: PromptSession[Any] = PromptSession(

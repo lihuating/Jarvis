@@ -15,6 +15,7 @@ except ImportError:
 
 from jarvis.jarvis_utils.config import calculate_content_token_limit
 from jarvis.jarvis_utils.embedding import get_context_token_count
+from jarvis.jarvis_utils.output import OutputType
 from jarvis.jarvis_utils.output import PrettyOutput
 
 
@@ -176,13 +177,28 @@ class WebpageTool:
             else:
                 content_md_truncated = content_md
 
-            # 使用print_markdown打印网页内容
-            PrettyOutput.print_markdown(
-                content_md_truncated,
-                title=f"📄 网页内容: {url}",
-                border_style="bright_blue",
-                theme="monokai",
-            )
+            # 网页内容过长时仅显示重要信息，支持 Ctrl+R 查看全部
+            title = f"📄 网页内容: {url}"
+            lines = content_md_truncated.splitlines()
+            if len(lines) > 30:
+                PrettyOutput.print_truncated_with_expand_hint(
+                    content_md_truncated,
+                    title=title,
+                    visible_before=10,
+                    visible_after=20,
+                    max_lines=30,
+                    output_type=OutputType.RESULT,
+                    expand_hint="按 Ctrl+R 查看全部",
+                    trigger_context="网页内容",
+                    purpose="网页正文（Markdown），供模型阅读",
+                )
+            else:
+                PrettyOutput.print_markdown(
+                    content_md_truncated,
+                    title=title,
+                    border_style="bright_blue",
+                    theme="monokai",
+                )
 
             # 直接返回Markdown格式的网页内容
             return {"success": True, "stdout": content_md_truncated, "stderr": ""}

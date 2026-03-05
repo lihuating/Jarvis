@@ -684,6 +684,13 @@ class task_list_manager:
         except (ValueError, AttributeError):
             return 999999
 
+    def _extract_task_sort_key(self, task_id: str) -> int:
+        """从 task_id 中提取数字部分用于排序"""
+        try:
+            return int(task_id.split("-")[1])
+        except (IndexError, ValueError):
+            return 999999
+
     def _print_task_list_status(
         self, task_list_manager: Any, task_list_id: Optional[str] = None
     ) -> None:
@@ -728,15 +735,8 @@ class task_list_manager:
                 table.add_column("依赖", width=12)
 
                 # 按task_id数字部分升序排序
-                def extract_task_number(task_id: str) -> int:
-                    """从task_id中提取数字部分"""
-                    try:
-                        return int(task_id.split("-")[1])
-                    except (IndexError, ValueError):
-                        return 999999
-
                 sorted_tasks = sorted(
-                    tasks, key=lambda t: extract_task_number(t.task_id)
+                    tasks, key=lambda t: self._extract_task_sort_key(t.task_id)
                 )
 
                 # 状态颜色映射
@@ -1129,6 +1129,9 @@ class task_list_manager:
 
             # 打印任务状态（如果操作成功）
             if result and result.get("success"):
+                # 步骤拆分时明确显示「任务步骤拆分」信息
+                if action == "add_tasks":
+                    PrettyOutput.auto_print("\n📋 任务步骤拆分")
                 # 如果有 task_list_id，只打印该任务列表；否则打印所有任务列表
                 self._print_task_list_status(task_list_manager, task_list_id_for_status)
 
@@ -1535,6 +1538,29 @@ class task_list_manager:
                 "stdout": "",
                 "stderr": f"更新任务状态失败: {update_msg}",
             }
+
+        # 显示当前执行步骤（便于用户跟踪多步骤任务）
+        try:
+            task_list = task_list_manager.get_task_list(task_list_id)
+            if task_list:
+                tasks_ordered = sorted(
+                    task_list.tasks.values(),
+                    key=lambda t: self._extract_task_sort_key(t.task_id),
+                )
+                step_index = next(
+                    (i + 1 for i, t in enumerate(tasks_ordered) if t.task_id == task_id),
+                    None,
+                )
+                if step_index is not None:
+                    PrettyOutput.auto_print(
+                        f"\n▶ 执行步骤 [{step_index}/{len(tasks_ordered)}]: {task.task_name}"
+                    )
+                else:
+                    PrettyOutput.auto_print(f"\n▶ 执行步骤: {task.task_name}")
+            else:
+                PrettyOutput.auto_print(f"\n▶ 执行步骤: {task.task_name}")
+        except Exception:
+            PrettyOutput.auto_print(f"\n▶ 执行步骤: {task.task_name}")
 
         # 对于 main 类型的任务，初始化模型调用次数并订阅事件
         if task.agent_type.value == "main":
