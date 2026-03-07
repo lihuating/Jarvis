@@ -9,10 +9,12 @@
 
 import json
 import os
+import threading
 
 from jarvis.jarvis_utils.output import PrettyOutput
 
 # -*- coding: utf-8 -*-
+from jarvis.jarvis_utils.globals import console
 from typing import Any
 from typing import Dict
 from typing import List
@@ -144,8 +146,15 @@ def _load_all_methodologies() -> List[Tuple[str, str]]:
                 except Exception as e:
                     PrettyOutput.auto_print(f"❌ 克隆中心方法论仓库失败: {str(e)}")
 
-    # --- 全局每日更新检查 ---
-    daily_check_git_updates(methodology_dirs, "methodologies")
+    # --- 全局每日更新检查（后台线程执行，避免阻塞）---
+    def check_methodology_updates() -> None:
+        try:
+            daily_check_git_updates(methodology_dirs, "methodologies")
+        except Exception:
+            # 静默失败，不影响正常使用
+            pass
+
+    threading.Thread(target=check_methodology_updates, daemon=True).start()
 
     import glob
 
@@ -221,17 +230,23 @@ def load_methodology(
         methodology_titles = [title for title, _ in methodologies]
 
         # 步骤2：让大模型选择相关性高的方法论
-        selection_prompt = """以下是所有可用的方法论标题：
+        methodology_titles_text = "\n".join(
+            [f"{i}. {title}" for i, title in enumerate(methodology_titles, 1)]
+        )
 
-"""
-        for i, title in enumerate(methodology_titles, 1):
-            selection_prompt += f"{i}. {title}\n"
+        selection_prompt = f"""以下是所有可用的方法论标题：
 
-        selection_prompt += f"""
-以下是可用的工具列表：
+<methodology_titles>
+{methodology_titles_text}
+</methodology_titles>
+
+<available_tools>
 {prompt}
+</available_tools>
 
-用户需求：{user_input}
+<user_requirement>
+{user_input}
+</user_requirement>
 
 请分析用户需求，从上述方法论中选择出与需求相关性较高的方法论（可以选择多个）。
 
@@ -246,7 +261,12 @@ def load_methodology(
 """
 
         # 获取大模型选择的方法论序号（限制输出最大50字）
-        response = platform.chat_until_success(selection_prompt, max_output=50).strip()
+        with console.status(
+            "[bold blue]🔍 正在分析需求并推荐方法论...", spinner="dots"
+        ):
+            response = platform.chat_until_success(
+                selection_prompt, max_output=50
+            ).strip()
 
         # 重置平台，恢复输出
         platform.reset()

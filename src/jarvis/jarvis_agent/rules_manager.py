@@ -2,11 +2,14 @@
 
 import os
 import subprocess
+import threading
 from pathlib import Path
 
 from jarvis.jarvis_utils.output import PrettyOutput
 
 # -*- coding: utf-8 -*-
+from rich.status import Status
+from jarvis.jarvis_utils.globals import console
 from typing import Dict
 from typing import List
 from typing import Optional
@@ -17,6 +20,7 @@ import yaml
 
 from jarvis.jarvis_agent.builtin_rules import get_builtin_rule
 from jarvis.jarvis_agent.builtin_rules import get_builtin_rule_path
+from jarvis.jarvis_platform.registry import PlatformRegistry
 from jarvis.jarvis_utils.template_utils import render_rule_template
 from jarvis.jarvis_utils.config import get_central_rules_repo
 from jarvis.jarvis_utils.config import get_data_dir
@@ -77,43 +81,19 @@ class RulesManager:
                     except Exception as e:
                         PrettyOutput.auto_print(f"❌ 克隆中心规则仓库失败: {str(e)}")
 
-        # 执行每日更新检查（包括中心库）
+        # 执行每日更新检查（后台线程执行，避免阻塞）
         all_dirs_for_update = self.rules_dirs.copy()
         if self.central_repo_path:
             all_dirs_for_update.append(self.central_repo_path)
-        daily_check_git_updates(all_dirs_for_update, "rules")
 
-    def read_project_rule(self) -> Optional[str]:
-        """读取 .jarvis/rule 文件内容，如果存在则返回字符串，否则返回 None"""
-        try:
-            rules_path = os.path.join(self.root_dir, ".jarvis", "rule")
-            if os.path.exists(rules_path) and os.path.isfile(rules_path):
-                with open(rules_path, "r", encoding="utf-8", errors="replace") as f:
-                    content = f.read().strip()
-                # 使用jinja2渲染规则模板
-                if content:
-                    content = render_rule_template(content, os.path.dirname(rules_path))
-                return content if content else None
-        except Exception:
-            # 读取规则失败时忽略，不影响主流程
-            pass
-        return None
+        def check_rules_updates() -> None:
+            try:
+                daily_check_git_updates(all_dirs_for_update, "rules")
+            except Exception:
+                # 静默失败，不影响正常使用
+                pass
 
-    def read_global_rules(self) -> Optional[str]:
-        """读取数据目录 rules 内容，如果存在则返回字符串，否则返回 None"""
-        try:
-            rules_path = os.path.join(get_data_dir(), "rule")
-            if os.path.exists(rules_path) and os.path.isfile(rules_path):
-                with open(rules_path, "r", encoding="utf-8", errors="replace") as f:
-                    content = f.read().strip()
-                # 使用jinja2渲染规则模板
-                if content:
-                    content = render_rule_template(content, os.path.dirname(rules_path))
-                return content if content else None
-        except Exception:
-            # 读取规则失败时忽略，不影响主流程
-            pass
-        return None
+        threading.Thread(target=check_rules_updates, daemon=True).start()
 
     def _read_rule_from_dir(self, rules_dir: str, rule_name: str) -> Optional[str]:
         """从 rules 目录中读取指定名称的规则文件
@@ -167,6 +147,147 @@ class RulesManager:
             # 读取规则失败时忽略，不影响主流程
             pass
         return None
+
+    def _get_all_rules_index(self) -> Optional[str]:
+        """获取所有可用规则的索引
+
+        扫描所有规则来源（内置、项目、全局、中心库等），
+        生成包含描述和路径的索引内容。
+
+        返回:
+            str: 索引内容，如果未找到规则则返回 None
+        """
+        try:
+            # 获取所有可用规则
+            all_rules = self.get_all_available_rule_names()
+
+            if not all_rules:
+                return None
+
+            # 调用内部方法格式化输出
+            return self._format_rules_index(all_rules)
+
+        except Exception as e:
+            # 生成索引失败时忽略，不影响主流程
+            PrettyOutput.auto_print(f"⚠️ 生成规则索引失败: {e}")
+            return None
+
+    def _format_rules_index(self, index: dict) -> str:
+        """格式化规则索引为 Markdown 输出
+
+        Args:
+            index: 规则索引字典（来自 get_all_available_rule_names）
+
+        Returns:
+            格式化后的 Markdown 字符串
+        """
+
+        if not index:
+            return "❌ 未找到任何规则"
+
+        # 格式化为 Markdown 输出
+        output_lines = ["# Jarvis 规则索引\n"]
+
+        # 内置规则
+        if index.get("builtin"):
+            output_lines.append("## 📦 内置规则 (builtin)\n")
+            for rule_name in index["builtin"]:
+                # 去掉 builtin: 前缀
+                name = rule_name.split(":", 1)[1] if ":" in rule_name else rule_name
+                # 获取内置规则路径
+                rule_path = get_builtin_rule_path(name)
+                description = (
+                    self._extract_rule_description(rule_path) if rule_path else ""
+                )
+                if description:
+                    output_lines.append(f"- [{description}]({rule_path})")
+            output_lines.append("")
+
+        # 文件规则（项目、全局、中心库等）
+        if index.get("files"):
+            output_lines.append("## 📁 规则文件 (files)\n")
+            # 按来源分组
+            by_source: dict[str, list[tuple[str, str]]] = {}
+            for rule_name in index["files"]:
+                if ":" in rule_name:
+                    prefix = rule_name.split(":", 1)[0]
+                    name = rule_name.split(":", 1)[1]
+                else:
+                    prefix = "unknown"
+                    name = rule_name
+
+                source_labels = {
+                    "project": "项目",
+                    "global": "全局",
+                    "central": "中心库",
+                    "config0": "配置目录",
+                }
+                label = source_labels.get(prefix, prefix)
+                if label not in by_source:
+                    by_source[label] = []
+                by_source[label].append((rule_name, name))
+
+            # 按来源输出
+            for source, rules_list in sorted(by_source.items()):
+                output_lines.append(f"### {source}\n")
+                for full_name, rel_name in sorted(rules_list, key=lambda x: x[1]):
+                    # 根据前缀确定实际文件路径
+                    rule_path = ""
+                    if full_name.startswith("project:"):
+                        rule_path = os.path.join(
+                            self.root_dir, ".jarvis", "rules", rel_name
+                        )
+                    elif full_name.startswith("global:"):
+                        rule_path = os.path.join(get_data_dir(), "rules", rel_name)
+                    elif full_name.startswith("central:") and self.central_repo_path:
+                        rule_path = os.path.join(
+                            self.central_repo_path, "rules", rel_name
+                        )
+                    elif full_name.startswith("config0:"):
+                        rule_path = os.path.join(self.root_dir, rel_name)
+
+                    description = (
+                        self._extract_rule_description(rule_path) if rule_path else ""
+                    )
+                    if description:
+                        output_lines.append(f"- [{description}]({rule_path})")
+                output_lines.append("")
+
+        # YAML 规则
+        if index.get("yaml"):
+            output_lines.append("## 📝 YAML 规则\n")
+            for rule_name in sorted(index["yaml"]):
+                output_lines.append(f"- {rule_name}")
+            output_lines.append("")
+
+        return "\n".join(output_lines)
+
+    def _extract_rule_description(self, rule_path: str) -> str:
+        """从规则文件中提取描述
+
+        Args:
+            rule_path: 规则文件的绝对路径
+
+        Returns:
+            描述字符串，如果未找到则返回空字符串
+        """
+        try:
+            if not os.path.exists(rule_path):
+                return ""
+            with open(rule_path, "r", encoding="utf-8", errors="replace") as f:
+                content = f.read()
+            # 提取 YAML Front Matter 中的 description
+            if content.startswith("---"):
+                lines = content.split("\n")
+                for i, line in enumerate(lines[1:], 1):
+                    if line.strip() == "---":
+                        break
+                    if line.startswith("description:"):
+                        description = line.split(":", 1)[1].strip()
+                        return description
+            return ""
+        except Exception:
+            return ""
 
     def _get_builtin_rules_index(self) -> Optional[str]:
         """自动从规则文件生成索引（规则名：描述）
@@ -698,20 +819,7 @@ class RulesManager:
         返回:
             (merged_rules, loaded_rule_names): 合并后的规则字符串和已加载的规则名称列表
         """
-        # 加载默认规则
-        self._load_default_rules()
-
         loaded_rule_names: Set[str] = set()
-
-        # 默认规则已通过 _load_default_rules 加载
-        if "global_rule" in self._active_rules:
-            loaded_rule_names.add("global_rule")
-        if "project_rule" in self._active_rules:
-            loaded_rule_names.add("project_rule")
-        # 为了向后兼容，同时返回 builtin_rules_index（旧名称）和 builtin_rules（新名称）
-        if "builtin_rules" in self._active_rules:
-            loaded_rule_names.add("builtin_rules")
-            loaded_rule_names.add("builtin_rules_index")  # 向后兼容
 
         # 如果指定了 rule_names，激活这些规则
         if rule_names:
@@ -812,39 +920,93 @@ class RulesManager:
         combined_parts = []
         for rule_name in sorted(self._active_rules):
             if rule_name in self._loaded_rules:
-                combined_parts.append(self._loaded_rules[rule_name])
+                # 获取规则文件路径
+                rule_path = self.get_rule_file_path(rule_name)
+                # 格式化规则内容和路径
+                if rule_path and rule_path != "--":
+                    rule_content = f"## 规则文件路径: {rule_path}\n\n{self._loaded_rules[rule_name]}"
+                else:
+                    rule_content = self._loaded_rules[rule_name]
+                combined_parts.append(rule_content)
 
         if combined_parts:
             self._merged_rules = "\n\n".join(combined_parts)
         else:
             self._merged_rules = ""
 
-    def _load_default_rules(self) -> None:
-        """加载默认规则（global_rule 和 project_rule）"""
-        # 加载全局规则
-        global_rules = self.read_global_rules()
-        if global_rules:
-            self._loaded_rules["global_rule"] = global_rules
-            self._active_rules.add("global_rule")
-            self.loaded_rules.add("global_rule")
+    def get_rule_file_path(self, rule_name: str) -> str:
+        """获取规则文件的绝对路径
 
-        # 加载项目规则
-        project_rules = self.read_project_rule()
-        if project_rules:
-            self._loaded_rules["project_rule"] = project_rules
-            self._active_rules.add("project_rule")
-            self.loaded_rules.add("project_rule")
+        参数:
+            rule_name: 规则名称（可能包含前缀，如 builtin:, project:, global: 等）
 
-        # 加载内置规则索引
-        builtin_rules_index = self._get_builtin_rules_index()
-        if builtin_rules_index:
-            # 使用 builtin_rules 作为键名（与 BUILTIN_RULES 字典保持一致）
-            self._loaded_rules["builtin_rules"] = builtin_rules_index
-            self._active_rules.add("builtin_rules")
-            self.loaded_rules.add("builtin_rules")
+        返回:
+            str: 规则文件的绝对路径，如果无法获取则返回 "--"
+        """
+        try:
+            # 解析前缀
+            if ":" in rule_name:
+                prefix, actual_name = rule_name.split(":", 1)
 
-        # 合并激活的规则
-        self._merge_active_rules()
+                # 处理 builtin 前缀
+                if prefix == "builtin":
+                    try:
+                        from jarvis.jarvis_utils.template_utils import _get_builtin_dir
+
+                        builtin_dir = _get_builtin_dir()
+                        if builtin_dir is not None:
+                            builtin_rules_dir = builtin_dir / "rules"
+                            return str(builtin_rules_dir / actual_name)
+                    except Exception:
+                        pass
+
+                # 处理 project 前缀
+                elif prefix == "project":
+                    return os.path.join(self.root_dir, ".jarvis", "rules", actual_name)
+
+                # 处理 global 前缀
+                elif prefix == "global":
+                    return os.path.join(get_data_dir(), "rules", actual_name)
+
+                # 处理 central 和 config 前缀
+                elif prefix == "central" or prefix.startswith("config"):
+                    all_rules_dirs = self._get_all_rules_dirs()
+                    target_idx = -1
+                    if prefix == "central" and len(all_rules_dirs) > 0:
+                        target_idx = 0
+                    elif prefix.startswith("config"):
+                        try:
+                            config_num = int(prefix[6:])
+                            target_idx = 2 + config_num
+                        except ValueError:
+                            pass
+
+                    if 0 <= target_idx < len(all_rules_dirs):
+                        return os.path.join(all_rules_dirs[target_idx], actual_name)
+
+                # 处理 yaml 规则
+                elif prefix in ["central_yaml", "project_yaml", "global_yaml"]:
+                    for desc, yaml_path in self._get_all_rules_yaml_files():
+                        if (
+                            (prefix == "central_yaml" and desc == "中心库")
+                            or (prefix == "global_yaml" and desc == "全局")
+                            or (prefix == "project_yaml" and desc == "项目")
+                        ):
+                            return yaml_path
+
+            # 对于内置规则，尝试获取路径
+            try:
+                from jarvis.jarvis_agent.builtin_rules import get_builtin_rule_path
+
+                path = get_builtin_rule_path(rule_name)
+                if path:
+                    return path
+            except Exception:
+                pass
+
+            return "--"
+        except Exception:
+            return "--"
 
     def get_rule_preview(self, rule_name: str) -> str:
         """获取规则内容的前100个字符作为预览
@@ -877,45 +1039,8 @@ class RulesManager:
         返回:
             List[Tuple[str, str, bool, str]]: (规则名称, 内容预览, 是否已加载, 文件路径) 列表
         """
-        import os
-        from jarvis.jarvis_utils.config import get_data_dir
-
         rules_info = []
         available_rules = self.get_all_available_rule_names()
-
-        # 辅助函数：根据规则名称获取文件路径
-        def get_rule_file_path(rule_name: str) -> str:
-            """获取规则文件的绝对路径"""
-            # 处理带前缀的规则名称
-            if ":" in rule_name:
-                prefix, actual_name = rule_name.split(":", 1)
-                if prefix == "project":
-                    return os.path.join(self.root_dir, ".jarvis", "rules", actual_name)
-                elif prefix == "global":
-                    return os.path.join(get_data_dir(), "rules", actual_name)
-                elif prefix == "central":
-                    if self.central_repo_path:
-                        return os.path.join(
-                            self.central_repo_path, "rules", actual_name
-                        )
-                elif prefix.startswith("config"):
-                    all_dirs = self._get_all_rules_dirs()
-                    try:
-                        config_num = int(prefix[6:])
-                        if config_num + 2 < len(all_dirs):
-                            return os.path.join(all_dirs[config_num + 2], actual_name)
-                    except ValueError:
-                        pass
-                elif prefix.endswith("_yaml"):
-                    # YAML规则显示为规则文件路径
-                    for desc, yaml_path in self._get_all_rules_yaml_files():
-                        if (
-                            (prefix == "project_yaml" and desc == "项目")
-                            or (prefix == "global_yaml" and desc == "全局")
-                            or (prefix == "central_yaml" and desc == "中心库")
-                        ):
-                            return yaml_path
-            return "--"
 
         # 处理内置规则
         for rule_name in available_rules.get("builtin", []):
@@ -951,17 +1076,22 @@ class RulesManager:
                 or actual_rule_name in self.loaded_rules
             )
             # 获取内置规则的实际文件路径
-            file_path = get_builtin_rule_path(actual_rule_name) or "内置规则"
+            try:
+                from jarvis.jarvis_agent.builtin_rules import get_builtin_rule_path
+
+                file_path = get_builtin_rule_path(actual_rule_name) or "内置规则"
+            except Exception:
+                file_path = self.get_rule_file_path(rule_name)
             rules_info.append((rule_name, preview, is_loaded, file_path))
 
         # 处理文件规则
         for rule_name in available_rules.get("files", []):
             preview = self.get_rule_preview(rule_name)
+            file_path = self.get_rule_file_path(rule_name)
             # 检查状态：只有明确激活的规则才显示为已激活
             is_loaded = rule_name in self._active_rules
             # 向后兼容：也检查旧的 loaded_rules
             is_loaded = is_loaded or rule_name in self.loaded_rules
-            file_path = get_rule_file_path(rule_name)
             rules_info.append((rule_name, preview, is_loaded, file_path))
 
         # 处理YAML规则
@@ -971,7 +1101,6 @@ class RulesManager:
             is_loaded = rule_name in self._active_rules
             # 向后兼容：也检查旧的 loaded_rules
             is_loaded = is_loaded or rule_name in self.loaded_rules
-            file_path = get_rule_file_path(rule_name)
             rules_info.append((rule_name, preview, is_loaded, file_path))
 
         # 处理项目单个规则文件 .jarvis/rule
@@ -1018,3 +1147,268 @@ class RulesManager:
         rules_info.sort(key=lambda x: (x[2], x[0]))
 
         return rules_info
+
+    def select_rule_by_task(self, task_description: str) -> Optional[List[str]]:
+        """根据任务描述，让模型自动选择最合适的规则（最多3个）
+
+        参数:
+            task_description: 任务描述字符串
+
+        返回:
+            Optional[List[str]]: 推荐的规则名称列表（带前缀，如 builtin:xxx.md），
+                                如果无法选择则返回 None，最多返回3个规则
+        """
+        try:
+            # 获取所有可用规则
+            all_rules_dict = self.get_all_available_rule_names()
+            if not all_rules_dict:
+                PrettyOutput.auto_print("⚠️  无法获取规则索引")
+                return None
+
+            # 将所有规则扁平化为列表，用于编号
+            all_rules_list = []
+            for category, rules in all_rules_dict.items():
+                all_rules_list.extend(rules)
+
+            if not all_rules_list:
+                PrettyOutput.auto_print("⚠️  没有可用的规则")
+                return None
+
+            # 创建 normal 类型的模型
+            registry = PlatformRegistry.get_global_platform_registry()
+            model = registry.create_platform(platform_type="normal")
+            if model is None:
+                PrettyOutput.auto_print("⚠️  无法创建 normal 类型模型")
+                return None
+
+            # 构造编号列表（包含规则名称和描述，供模型选择）
+            numbered_rules = ""
+            for i, rule_name in enumerate(all_rules_list, 1):
+                # 获取规则描述：优先从 YAML Front Matter 提取，否则用内容预览
+                rule_path = self.get_rule_file_path(rule_name)
+                description = ""
+                if rule_path and rule_path != "--":
+                    description = self._extract_rule_description(rule_path)
+                if not description:
+                    preview = self.get_rule_preview(rule_name)
+                    description = (
+                        f"（内容预览: {preview}）"
+                        if preview and preview != "--"
+                        else "（无描述）"
+                    )
+                numbered_rules += f"{i}. {rule_name}\n   描述: {description}\n"
+
+            # 构造 prompt，要求模型返回编号
+            prompt = f"""请根据以下任务描述，从可用规则中选择最合适的规则。
+
+<task_description>
+{task_description}
+</task_description>
+
+<available_rules>
+{numbered_rules}
+</available_rules>
+
+要求：
+1. 仔细分析任务描述，选择最匹配的规则
+2. **数量限制**：最多只能选择1-3个规则，严禁超过3个
+3. 如果有多个规则相关，选择最相关的1-3个规则，不要选择过多
+4. **重要**：如果没有合适的规则或规则与任务无关，可以直接返回 "NONE" 或 "none"
+5. 严格按照以下格式返回序号：<NUM>序号1,序号2,序号3</NUM>
+6. 例如：<NUM>5</NUM> 或 <NUM>3,5,7</NUM> 或 <NUM>none</NUM>
+7. 多个序号之间用逗号分隔，不要有空格
+8. 只返回<NUM>标签内的内容，不要有其他任何输出
+
+选择的规则序号："""
+
+            # 调用模型，限制输出长度
+            model.set_suppress_output(True)
+
+            # 使用 Status 显示进度
+            with Status(
+                "🔍 正在分析任务并选择规则...",
+                spinner="dots",
+                console=console,
+            ):
+                response = model.chat_until_success(prompt, max_output=100).strip()
+
+            # 从响应中提取<NUM>标签内的内容
+            import re
+
+            num_match = re.search(r"<NUM>(.*?)</NUM>", response, re.DOTALL)
+
+            if not num_match:
+                # 如果没有找到<NUM>标签，尝试直接解析响应
+                selected_index_str = response.strip()
+            else:
+                selected_index_str = num_match.group(1).strip()
+
+            # 验证返回值
+            if not selected_index_str or selected_index_str.lower() == "none":
+                PrettyOutput.auto_print("⚠️  未匹配到合适的规则")
+                return None
+
+            # 解析编号（支持多个编号，用逗号分隔）
+            try:
+                # 尝试按逗号分割编号
+                index_strings = selected_index_str.split(",")
+                selected_indices = []
+                for idx_str in index_strings:
+                    idx = int(idx_str.strip())
+                    # 验证编号范围
+                    if 1 <= idx <= len(all_rules_list):
+                        selected_indices.append(idx)
+                    else:
+                        PrettyOutput.auto_print(f"⚠️  模型返回的编号超出范围: {idx}")
+
+                # 如果没有有效编号，返回None
+                if not selected_indices:
+                    return None
+
+                # 限制最多返回3个规则
+                selected_indices = selected_indices[:3]
+            except ValueError:
+                PrettyOutput.auto_print(
+                    f"⚠️  模型返回的编号格式错误: {selected_index_str}"
+                )
+                return None
+
+            # 获取规则名称列表（带前缀）
+            rule_names = []
+            for index in selected_indices:
+                rule_name = all_rules_list[index - 1]
+                # 验证规则是否存在
+                if self.get_named_rule(rule_name):
+                    rule_names.append(rule_name)
+                else:
+                    PrettyOutput.auto_print(f"⚠️  选中的规则不存在: {rule_name}")
+
+            # 返回规则名称列表前，进行内容过滤
+            if rule_names:
+                PrettyOutput.auto_print(f"🔍 初始选择的规则: {', '.join(rule_names)}")
+                # 加载规则内容并进行过滤
+                filtered_rules = self._filter_rules_by_content(
+                    task_description, rule_names
+                )
+                if filtered_rules:
+                    PrettyOutput.auto_print(
+                        f"✅ 过滤后的规则: {', '.join(filtered_rules)}"
+                    )
+                    return filtered_rules
+
+            return None
+
+        except Exception as e:
+            PrettyOutput.auto_print(f"⚠️  根据任务选择规则失败: {e}")
+            return None
+
+    def _filter_rules_by_content(
+        self, task_description: str, rule_names: List[str]
+    ) -> List[str]:
+        """根据规则内容过滤掉不相关的规则
+
+        参数:
+            task_description: 任务描述字符串
+            rule_names: 待过滤的规则名称列表
+
+        返回:
+            List[str]: 过滤后的相关规则名称列表
+        """
+        try:
+            # 加载所有选中规则的内容
+            rules_content = []
+            for rule_name in rule_names:
+                rule_content = self.get_named_rule(rule_name)
+                if rule_content:
+                    # 只使用前 2000 个字符，避免上下文过长
+                    content_preview = (
+                        rule_content[:2000] + "..."
+                        if len(rule_content) > 2000
+                        else rule_content
+                    )
+                    rules_content.append(
+                        f"规则名称：{rule_name}\n规则内容：\n{content_preview}"
+                    )
+                else:
+                    PrettyOutput.auto_print(f"⚠️  无法加载规则内容: {rule_name}")
+
+            if not rules_content:
+                return rule_names  # 如果无法加载内容，返回原始规则
+
+            # 构造过滤 prompt
+            all_rules_text = "\n\n".join(
+                [f"规则{i + 1}:\n{content}" for i, content in enumerate(rules_content)]
+            )
+
+            prompt = f"""请根据任务描述，从以下规则中选择真正相关的规则。
+
+<task_description>
+{task_description}
+</task_description>
+
+<candidate_rules>
+{all_rules_text}
+</candidate_rules>
+
+要求：
+1. 仔细分析每个规则的完整内容，判断其是否真正与任务相关
+2. **保守策略**：如果不确定规则是否相关，倾向于保留该规则
+3. 只选择规则内容确实与任务匹配的规则
+4. 如果没有相关的规则，返回 "none"
+5. 严格按照以下格式返回规则名称：<VALID>规则名称1,规则名称2</VALID>
+6. 例如：<VALID>builtin:xxx.md</VALID> 或 <VALID>project:yyy.md,global:zzz.md</VALID>
+7. 多个规则名称之间用逗号分隔，不要有空格
+8. 只返回<VALID>标签内的内容，不要有其他任何输出
+
+选择的规则名称："""
+
+            # 调用模型进行过滤
+            registry = PlatformRegistry.get_global_platform_registry()
+            model = registry.create_platform(platform_type="normal")
+            if model is None:
+                PrettyOutput.auto_print("⚠️  无法创建 normal 类型模型，跳过过滤")
+                return rule_names
+
+            # 调用模型，限制输出长度
+            model.set_suppress_output(True)
+            # 使用 Status 显示进度
+            with Status(
+                "🔍 正在过滤规则内容...",
+                spinner="dots",
+                console=console,
+            ):
+                response = model.chat_until_success(prompt, max_output=200).strip()
+            model.set_suppress_output(False)
+
+            # 从响应中提取<VALID>标签内的内容
+            import re
+
+            valid_match = re.search(r"<VALID>(.*?)</VALID>", response, re.DOTALL)
+
+            if not valid_match:
+                # 如果没有找到<VALID>标签，尝试直接解析响应
+                valid_rules_str = response.strip()
+            else:
+                valid_rules_str = valid_match.group(1).strip()
+
+            # 验证返回值
+            if not valid_rules_str or valid_rules_str.lower() == "none":
+                return []
+
+            # 解析规则名称
+            valid_rule_names = []
+            for rule_name in valid_rules_str.split(","):
+                rule_name = rule_name.strip()
+                # 验证规则名称是否在原始列表中
+                if rule_name in rule_names:
+                    valid_rule_names.append(rule_name)
+                else:
+                    PrettyOutput.auto_print(
+                        f"⚠️  模型返回的规则名称不在原始列表中: {rule_name}"
+                    )
+
+            return valid_rule_names if valid_rule_names else rule_names
+
+        except Exception as e:
+            PrettyOutput.auto_print(f"⚠️  规则内容过滤失败: {e}，使用原始规则列表")
+            return rule_names

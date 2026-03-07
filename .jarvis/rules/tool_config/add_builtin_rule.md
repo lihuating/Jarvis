@@ -1,5 +1,5 @@
 ---
-description: 添加内置规则规则。适用于添加内置规则、规则管理、内置规则配置等场景
+description: 当需要添加新的内置规则、管理内置规则系统或配置内置规则时使用此规范——指导如何在Jarvis系统中添加和管理适用于所有项目的内置规则。包括：创建新的内置规则文件；确定规则的合适位置（builtin/rules/目录）；遵循内置规则的命名规范；选择合适的规则分类体系；编写符合要求的YAML头部；定义规则的description和触发条件；组织规则的内容结构；管理内置规则的索引；配置规则的加载和依赖；确保规则适用于所有项目。每当用户提及"添加内置规则"、"创建内置规则"、"内置规则管理"、"系统规则"、"全局规则"、"builtin规则"或需要添加内置规则、管理内置规则、配置内置规则时触发，无论规则的类型和用途是什么。如果需要创建、管理或配置Jarvis的内置规则，请使用此规范。
 ---
 
 # 新增内置规则规范
@@ -37,28 +37,6 @@ description: 添加内置规则规则。适用于添加内置规则、规则管�
   - `tool_config`（工具配置）
   - `ui_design`（UI 设计）
 - **可以创建新的分类目录**，根据实际需求组织规则
-
-### 2. 规则注册（必须遵守）
-
-**位置规范：**
-
-- **必须**：创建规则文件后，必须将规则注册到内置规则列表中
-- **注册文件位置：** `{{ jarvis_src_dir }}/builtin/rules/builtin_rules.md`
-
-**注册要求：**
-
-- **必须**：按照 `{{ jarvis_src_dir }}/builtin/rules/builtin_rules.md` 的格式添加规则条目
-- **必须**：提供规则的简短描述和文件路径
-- **必须**：将规则添加到合适的分类下
-- **必须**：使用 `{% raw %}{{ jarvis_src_dir }}{% endraw %}/builtin/rules/` 变量引用路径
-
-**注册示例：**
-
-```markdown
-## 工具配置 (tool_config/)
-
-- [规则名称]({% raw %}{{ jarvis_src_dir }}{% endraw %}/builtin/rules/tool_config/rule_name.md) - 规则简短描述
-```
 
 ### 3. 文件命名规范（必须遵守）
 
@@ -131,7 +109,6 @@ description: 添加内置规则规则。适用于添加内置规则、规则管�
 1. **单一职责**：每个规则只属于一个分类
 2. **核心主题**：选择规则最核心的主题对应的分类
 3. **避免歧义**：如果规则涉及多个领域，选择最主要的应用场景
-4. **参考现有**：优先参考 `{{ jarvis_src_dir }}/builtin/rules/builtin_rules.md` 中同类规则所在的分类
 
 ### 5. 文件格式要求（必须遵守）
 
@@ -202,13 +179,13 @@ description: 添加内置规则规则。适用于添加内置规则、规则管�
 
 内置规则文件中可以使用以下 Jinja2 模板变量：
 
-| 变量名                                       | 说明                 | 示例值                         |
-| -------------------------------------------- | -------------------- | ------------------------------ |
-| `{% raw %}{{ rule_file_dir }}{% endraw %}`   | 当前规则文件所在目录 | `/path/to/builtin/rules`       |
-| `{% raw %}{{ git_root_dir }}{% endraw %}`    | Git 仓库根目录       | `/home/user/project`           |
-| `{% raw %}{{ current_dir }}{% endraw %}`     | 当前工作目录         | `/home/user/project/src`       |
-| `{% raw %}{{ jarvis_src_dir }}{% endraw %}`  | Jarvis 源码目录      | `/home/user/jarvis`            |
-| `{% raw %}{{ jarvis_data_dir }}{% endraw %}` | Jarvis 数据目录      | `/home/user/.jarvis`           |
+| 变量名                                       | 说明                 | 示例值                   |
+| -------------------------------------------- | -------------------- | ------------------------ |
+| `{% raw %}{{ rule_file_dir }}{% endraw %}`   | 当前规则文件所在目录 | `/path/to/builtin/rules` |
+| `{% raw %}{{ git_root_dir }}{% endraw %}`    | Git 仓库根目录       | `/home/user/project`     |
+| `{% raw %}{{ current_dir }}{% endraw %}`     | 当前工作目录         | `/home/user/project/src` |
+| `{% raw %}{{ jarvis_src_dir }}{% endraw %}`  | Jarvis 源码目录      | `/home/user/jarvis`      |
+| `{% raw %}{{ jarvis_data_dir }}{% endraw %}` | Jarvis 数据目录      | `/home/user/.jarvis`     |
 
 ### 变量使用示例
 
@@ -237,6 +214,10 @@ description: 添加内置规则规则。适用于添加内置规则、规则管�
 以下是一个完整的内置规则文件模板，可直接复制使用：
 
 ````markdown
+---
+description: 简要描述规则的用途、适用场景和预触发条件。
+---
+
 # [规则名称]
 
 ## 规则简介
@@ -281,8 +262,7 @@ description: 添加内置规则规则。适用于添加内置规则、规则管�
 在完成任务后，你必须确认：
 
 - [ ] 规则文件已创建在 `{{ jarvis_src_dir }}/builtin/rules/` 目录
-- [ ] 规则已注册到 `{{ jarvis_src_dir }}/builtin/rules/builtin_rules.md` 文件
-- [ ] 规则注册格式符合规范
+- [ ] 规则格式符合规范
 
 ## 相关资源
 
@@ -400,21 +380,11 @@ touch {{ jarvis_src_dir }}/builtin/rules/code_quality/python_coding_style.md
 - [ ] 所有函数长度不超过 50 行
 ````
 
-### 步骤 3：注册规则
-
-在 `{{ jarvis_src_dir }}/builtin/rules/builtin_rules.md` 中添加：
-
-```markdown
-## 代码质量 (code_quality/)
-
-- [Python 编码规范]({% raw %}{{ jarvis_src_dir }}{% endraw %}/builtin/rules/code_quality/python_coding_style.md) - Python 代码编码规范和最佳实践
-```
-
 ## 常见问题
 
 ### Q1：如何删除不再需要的内置规则？
 
-**A：** 需要谨慎操作。1）确认没有项目依赖该规则；2）删除规则文件；3）从 `{{ jarvis_src_dir }}/builtin/rules/builtin_rules.md` 中移除注册；4）提交 PR 并经过代码审查。
+**A：** 需要谨慎操作。1）确认没有项目依赖该规则；2）删除规则文件；3）提交 PR 并经过代码审查。
 
 ## 检查清单
 
@@ -422,8 +392,6 @@ touch {{ jarvis_src_dir }}/builtin/rules/code_quality/python_coding_style.md
 
 - [ ] 规则文件已创建在 `{{ jarvis_src_dir }}/builtin/rules/<category>/` 目录
 - [ ] 文件命名符合规范（小写、下划线、.md 后缀）
-- [ ] 规则已注册到 `{{ jarvis_src_dir }}/builtin/rules/builtin_rules.md`
-- [ ] 注册格式正确，使用了 `{% raw %}{{ jarvis_src_dir }}{% endraw %}/builtin/rules/` 变量
 - [ ] 规则内容完整，包含必要的章节
 - [ ] 规则使用 `load_rule` 工具可以正常加载
 - [ ] 规则内容与其他规则保持一致的风格

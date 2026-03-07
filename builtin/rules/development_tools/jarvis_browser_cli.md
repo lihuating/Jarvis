@@ -1,5 +1,5 @@
 ---
-description: Jarvis Browser CLI使用指南，浏览器自动化命令行工具，支持35+命令和守护进程模式。适用于浏览器自动化、网页测试、数据采集等场景
+description: 当需要使用Jarvis Browser CLI进行浏览器自动化时使用此规则——Jarvis Browser CLI使用指南，浏览器自动化命令行工具，支持35+命令和守护进程模式。包括：启动和管理浏览器会话；执行页面导航和URL跳转；获取页面文本和元素内容；执行点击、输入等页面交互；进行页面截图和PDF导出；执行JavaScript代码；处理cookie和localStorage；使用守护进程模式管理会话；进行网页自动化测试；执行数据采集和爬虫任务；处理动态页面和异步加载。每当用户提及"浏览器自动化"、"网页测试"、" jb "、" jarvis-browser "、" Playwright "、"浏览器测试"、"网页爬虫"、"数据采集"或需要浏览器自动化、网页操作、Playwright使用时触发，无论网页类型和自动化复杂度如何。如果需要使用Jarvis Browser CLI进行浏览器自动化，请使用此规则。
 ---
 
 # Jarvis Browser CLI (jb) 使用指南
@@ -910,7 +910,36 @@ jb click --selector 'div:nth-child(3)' --browser-id demo
 jb click --selector '#submit-button' --browser-id demo
 ```
 
-### 4. 错误处理
+### 4. 优先使用 Index 而非选择器
+
+对于元素操作，**推荐优先使用 `--index` 参数而不是 `--selector`**。通过 `list-interactables` 命令获取元素编号，然后使用编号进行操作：
+
+```bash
+# 首先列出可交互元素
+jb list-interactables --browser-id demo
+
+# 使用 index 操作（推荐）
+jb click --index 3 --browser-id demo
+jb type --index 5 --text 'user@example.com' --browser-id demo
+
+# 而不是使用选择器（不推荐，除非必要）
+jb click --selector 'div.form:nth-child(2) > button.submit' --browser-id demo
+```
+
+**优势：**
+
+- **更稳定可靠**：`list-interactables` 会智能选择最合适的选择器（优先级：`#id` > `[name]` > `[placeholder]` > `[aria-label]` > `[data-testid]` 等），比手工构造选择器更准确
+- **避免脆弱选择器**：无需编写可能随页面结构变化的复杂 CSS/XPath 选择器
+- **便于调试**：index 清晰直观，便于看到操作的是哪个元素
+- **减少错误**：避免因选择器编写错误导致的元素未找到问题
+
+**何时使用选择器：**
+
+- 当知道明确的 `id` 或稳定的属性时（如 `#submit-button`）
+- 当元素不在可交互列表中时
+- 当需要等待元素出现然后操作时（结合 `waitforselector`）
+
+### 5. 错误处理
 
 所有命令返回 JSON 格式的响应：
 
@@ -922,7 +951,7 @@ jb click --selector '#submit-button' --browser-id demo
 }
 ```
 
-### 5. 调试技巧
+### 6. 调试技巧
 
 使用 `getelementinfo` 和 `console` 来调试：
 
@@ -937,7 +966,7 @@ jb console --browser-id demo
 jb eval --code 'console.log("debug"); document.title' --browser-id demo
 ```
 
-### 6. 性能优化
+### 7. 性能优化
 
 对于大型页面，考虑使用无头模式：
 
@@ -945,7 +974,7 @@ jb eval --code 'console.log("debug"); document.title' --browser-id demo
 jb launch --browser-id demo
 ```
 
-### 7. 会话管理
+### 8. 会话管理
 
 定期检查活动会话：
 
@@ -1025,7 +1054,7 @@ jb waitforselector --selector '#loading' --wait-state hidden --browser-id demo
 | --------------------- | ----------------- | --------------------------------------------------------- |
 | daemon                | 启动守护进程      | 无                                                        |
 | daemon-stop           | 关闭守护进程      | 无                                                        |
-| launch                | 启动浏览器        | --browser-id                                             |
+| launch                | 启动浏览器        | --browser-id                                              |
 | close                 | 关闭浏览器        | --browser-id                                              |
 | list                  | 列出浏览器        | 无                                                        |
 | navigate              | 导航到 URL        | --url (必需), --browser-id                                |

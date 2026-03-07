@@ -27,7 +27,7 @@ class PostInstallCommand(install):
 
 setup(
     name="jarvis-ai-assistant",
-    version="2.0.15",
+    version="2.0.19",
     author="skyfire",
     author_email="skyfireitdiy@hotmail.com",
     description="An AI assistant that uses various tools to interact with the system",
@@ -52,6 +52,8 @@ setup(
         "rich==14.0.0",
         "python-Levenshtein==0.25.1",
         "tiktoken==0.7.0",
+        "markitdown>=0.0.1",
+        "defusedxml",
         "pillow==10.2.0",
         "openai==1.78.1",
         "python-lsp-server>=1.14.0",

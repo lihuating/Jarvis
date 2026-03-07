@@ -4,6 +4,8 @@ import json
 import os
 import subprocess
 from datetime import datetime
+from rich.status import Status
+from jarvis.jarvis_utils.globals import console
 from typing import TYPE_CHECKING
 from typing import Any
 from typing import Dict
@@ -85,8 +87,10 @@ class SessionManager:
 
             # 调用模型生成
             response = ""
-            for chunk in cheap_model.chat(prompt):
-                response += chunk
+            with Status("正在生成会话名称...", console=console) as status:
+                for chunk in cheap_model.chat(prompt):
+                    response += chunk
+                    status.update(f"正在生成会话名称... ({len(response)} 字符)")
 
             # 清理响应
             session_name = response.strip()
@@ -1115,6 +1119,7 @@ class SessionManager:
                 "recent_memories": getattr(self.agent, "recent_memories", []),
                 "MAX_RECENT_MEMORIES": getattr(self.agent, "MAX_RECENT_MEMORIES", 10),
                 "memory_tags": list(getattr(self.agent, "memory_tags", set())),
+                "first": getattr(self.agent, "first", True),
             },
             "metadata": {
                 "agent_name": self.agent_name,
@@ -1255,16 +1260,9 @@ class SessionManager:
 
             # 恢复Agent运行时状态
             agent_runtime_state = state_data.get("agent_runtime", {})
+            # 恢复会话后，将 first 标志设置为 False，避免重复执行首次运行初始化
+            self.agent.first = False
             if agent_runtime_state:
-                self.agent._addon_prompt_skip_rounds = agent_runtime_state.get(
-                    "addon_prompt_skip_rounds", 0
-                )
-                self.agent._no_tool_call_count = agent_runtime_state.get(
-                    "no_tool_call_count", 0
-                )
-                self.agent._last_response_content = agent_runtime_state.get(
-                    "last_response_content", ""
-                )
                 # 恢复最近记忆队列
                 self.agent.recent_memories = agent_runtime_state.get(
                     "recent_memories", []

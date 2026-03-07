@@ -1,0 +1,14 @@
+{
+  "memories": {
+    "d2d84165-0842-4454-ba32-fbfad39b802b": {
+      "id": "d2d84165-0842-4454-ba32-fbfad39b802b",
+      "text": "## Jarvis 字体颜色方案\n\n### 一、Rich 标准颜色集合\nblack, red, green, yellow, blue, magenta, cyan, white,\nbright_black, bright_red, bright_green, bright_yellow, bright_blue, bright_magenta, bright_cyan, bright_white,\ndark_red, dark_green, dark_yellow, dark_blue, dark_magenta, dark_cyan,\ngrey0, grey100, grey50, grey70, grey30\n\n### 二、输出类型颜色映射\n- SYSTEM (🤖): cyan / cyan - AI助手消息\n- CODE (📝): green / green - 代码相关输出\n- RESULT (✨): blue / blue - 工具执行结果\n- ERROR (❌): bright_red / bright_red - 错误信息（闪烁、加粗）\n- INFO (ℹ️): grey70 / grey70 - 系统提示\n- PLANNING (📋): magenta / magenta - 任务规划（加粗）\n- PROGRESS (⏳): grey50 / grey50 - 执行进度（变暗、隐藏）\n- SUCCESS (✅): bright_green / bright_green - 成功信息（加粗）\n- WARNING (⚠️): bright_yellow / bright_yellow - 警告信息（闪烁、加粗）\n- DEBUG (🔍): grey50 / grey30 - 调试信息（变暗）\n- USER (👤): bright_green / bright_green - 用户输入\n- TOOL (🔧): green / green - 工具调用\n- START (🚀): bright_cyan / bright_cyan - 任务开始（加粗）\n- TARGET (🎯): bright_magenta / bright_magenta - 目标任务（加粗）\n- STOP (🛑): bright_red / bright_red - 任务停止（加粗）\n- RETRY (🔄): grey70 / grey70 - 重试操作（加粗）\n- ROLLBACK (🔙): grey70 / grey70 - 回滚操作（加粗）\n- DIRECTORY (📁): cyan / cyan - 目录相关\n- STATISTICS (📊): grey58 / grey58 - 统计信息\n- CHEAP_MODEL (💰): grey58 / grey58 - 便宜模型\n- NORMAL_MODEL (⭐): bright_blue / bright_blue - 普通模型\n- SMART_MODEL (🧠): bright_magenta / bright_magenta - 智能模型（加粗）\n\n### 三、底部工具栏颜色\n- 提示符 (👤 >): ansicyan bold\n- 分隔线 (─): #00bcd4 (青色)\n- 快捷键 (Ctrl+X等): fg:#ffffff bold (白色加粗)\n- 标签文字: #00bcd4 (浅青色)\n- 占位符: fg:#888888 italic (灰色斜体)\n\n### 四、对话面板颜色\n- 完成状态: bold green (绿色加粗)\n- 进行中状态: yellow (黄色)\n- 面板边框: cyan (青色)\n- 标题: bold cyan (青色加粗)\n\n### 五、Token 进度条颜色\n- < 80%: green (正常)\n- 80-90%: yellow (警告)\n- ≥ 90%: red (危险)\n\n### 六、Markdown 标题颜色\n- H1-H3: bold bright_cyan (亮青色加粗)\n- H4-H6: bold cyan (青色加粗)\n\n### 七、颜色使用策略\n高亮强调色: bright_red, bright_green, bright_yellow, bright_cyan, bright_magenta, bright_blue\n普通信息色: red, green, yellow, blue, magenta, cyan\n灰度色: grey30, grey50, grey58, grey70, grey100\n特殊样式: 加粗(bold)、闪烁(blink)、变暗(dim)、隐藏(conceal)、圆圈(encircle)",
+      "associations": [],
+      "metadata": {
+        "createdAt": "2026-03-04T03:04:17.903Z",
+        "lastAccessed": "2026-03-04T03:04:17.903Z",
+        "accessCount": 0
+      }
+    }
+  }
+}
