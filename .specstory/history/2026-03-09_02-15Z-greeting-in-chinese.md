@@ -1029,3 +1029,126 @@ Tool use: **read_file_v2**
 
 ---
 
+<think><details><summary>Thought Process</summary>
+I need to see how ToolRegistry loads builtin tools - is task_list_manager in the default builtin list? When Agent is created with use_tools=None, we pass use_tools or [] = [], and set_use_tools([]) is called. In set_use_tools, "if use_tools: handler.use_tools(use_tools)" - when use_tools is [], we don't call handler.use_tools, so the registry keeps its initial state. So I need to see _load_builtin_tools to see what's in the default set.
+</details></think>
+
+---
+
+
+
+
+
+---
+
+Tool use: **read_file_v2**
+
+---
+
+Tool use: **read_lints**
+
+---
+
+<think><details><summary>Thought Process</summary>
+So ToolRegistry loads all .py files from the tools directory (except base.py, __init__.py, registry.py). So task_list_manager.py is loaded and task_list_manager is in the default builtin set. When Agent is created with use_tools=None:
+- _init_handlers gets use_tools or [] = []
+- set_use_tools([]) is called
+- if use_tools: ... is False for [], so handler.use_tools(use_tools) is NOT called
+- So the ToolRegistry still has all builtin tools (including task_list_manager)
+
+So jvs (generic agent) DOES have task_list_manager available by default. Good.
+
+But wait - maybe there's tool filtering? Let me check - when run() is called, does it filter tools? I saw TOOL_FILTERED and tool_filter_threshold earlier. If the first turn filters tools and the model doesn't include task_list_manager in the selected set, then the model wouldn't have access to it. So the issue could be either:
+1. Model had the tool but chose not to use it (just wrote text) - we addressed with prompt
+2. Tool was filtered out - would need to ensure task_list_manager is in required or not filtered
+
+Let me check if task_list_manager can be filtered out.
+</details></think>
+
+---
+
+
+
+
+
+---
+
+Tool use: **ripgrep_raw_search**
+
+---
+
+Tool use: **read_file_v2**
+
+---
+
+<think><details><summary>Thought Process</summary>
+So when tool filtering happens (get_tool_filter_threshold), the model selects a subset of tools. If task_list_manager is not in the selected set, the model wouldn't have it. The prompt_manager only injects the task_list_manager_guide when task_list_tool = tool_registry.get_tool("task_list_manager") exists - i.e. when the tool is currently in the registry. So after filtering, if task_list_manager was filtered out, the guide wouldn't be in the prompt either. So for the user's case, either:
+1. No filtering was done (threshold not met or disabled), so all tools including task_list_manager were available - model just didn't use it
+2. Filtering was done and task_list_manager was not in the selected set - then model couldn't use it
+
+I've done the check. Let me summarize for the user:
+- Lint: no errors
+- prompt_manager: numbering 1-5 is correct, new item 2 is clear
+- jvs default tools: when use_tools is None/[], set_use_tools([]) doesn't call handler.use_tools(), so registry keeps all builtin tools (task_list_manager included)
+- Tool filtering: if threshold is set, first turn can filter tools; if task_list_manager is not selected, model won't have it. We could suggest adding task_list_manager to _required_tools so it's never filtered out - but that might not be desired for all scenarios. I'll mention it as optional.
+</details></think>
+
+---
+
+
+检查结果如下：
+
+---
+
+## 1. 修改文件 Lint
+
+- **prompt_manager.py**、**output.py**、**task_list_manager.py**：无新的 Lint 报错。
+
+---
+
+## 2. prompt_manager.py 修改
+
+- **编号**：强制流程为 1→2→3→4→5，顺序正确。
+- **新增第 2 条**：「任务理解/任务拆解必须落盘」表述清楚，与「必须同时调用 add_tasks」一致。
+- **注入条件**：仅在 `tool_registry.get_tool("task_list_manager")` 存在时注入 `<task_list_manager_guide>`，逻辑正确。
+
+---
+
+## 3. 通用 Agent (jvs) 是否默认带 task_list_manager
+
+- **结论：默认会带上。**
+- **依据**：
+  - `AgentManager.initialize()` 未传 `use_tools` → `Agent(..., use_tools=None)`。
+  - `_init_handlers(..., use_tools or [])` 得到 `[]`。
+  - `set_use_tools([])` 里是 `if use_tools: handler.use_tools(use_tools)`，空列表不会调用 `handler.use_tools()`。
+  - 因此 **ToolRegistry 保持初始状态**：`_load_builtin_tools()` 会加载 `jarvis_tools/*.py`（含 `task_list_manager.py`），所以 jvs 默认就包含 `task_list_manager`。
+
+---
+
+## 4. 工具过滤对 task_list_manager 的影响
+
+- 若配置了 **tool_filter_threshold**，首轮会按任务做工具筛选，模型只看到被选中的工具。
+- 若 **task_list_manager 未被选中**，模型无法调用它，也就不会出现 Plan 列表。
+- **可选增强**：若希望「多步任务」场景下尽量出现 Plan 列表，可把 `task_list_manager` 加入 ToolRegistry 的 **必选工具**（`_required_tools`），这样即使用户开启了工具过滤，该工具也不会被筛掉。当前代码里未把 `task_list_manager` 设为必选，需要的话可以再加这一步。
+
+---
+
+## 5. 小结
+
+| 项目           | 结果 |
+|----------------|------|
+| Lint           | 通过 |
+| prompt_manager | 编号与文案正确，逻辑正确 |
+| jvs 默认工具   | 含 task_list_manager |
+| 工具过滤       | 可能筛掉 task_list_manager，可选：加入必选工具 |
+
+当前实现与预期一致；若你希望即使用户开启工具过滤也保证能出现 Plan 列表，可以再改 registry 把 `task_list_manager` 设为必选工具。需要的话我可以按你仓库里的 registry 结构写出具体改法（含要改的文件和代码片段）。
+
+---
+
+_**User**_
+
+所有输出的文字中，所有的标题都靠左显示
+
+---
+

@@ -548,6 +548,7 @@ commit信息
                     f"[bold]提交消息:[/bold]\n{commit_message}",
                     title="Git Commit Result",
                     border_style="green",
+                    title_align="left",
                 )
             )
 
@@ -565,6 +566,7 @@ commit信息
                     f"[bold red]❌ 提交失败[/bold red]\n\n{str(e)}",
                     title="Git Commit Error",
                     border_style="red",
+                    title_align="left",
                 )
             )
             return {

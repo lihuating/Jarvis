@@ -516,11 +516,13 @@ class ConsoleOutputSink(OutputSink):
                             and ". " in line_stripped[:5]
                         )
 
-                        # 如果已经是缩进的，保持原样；否则添加缩进
+                        # 如果已经是缩进的，保持原样；标题和列表项（1. / - * •）靠左不缩进，其余续行缩进
                         if line.startswith(("   ", "  ", "\t")):
                             display_line = line
+                        elif is_heading or is_list_item:
+                            display_line = line
                         else:
-                            display_line = f"   {line}" if not is_heading else line
+                            display_line = f"   {line}"
 
                         if is_heading:
                             indented_line = Text(
@@ -803,7 +805,7 @@ class PrettyOutput:
             # 使用ANSI转义序列设置颜色
             colored_lines.append(f"\033[38;2;{r};{g};{b}m{line}\033[0m")
         colored_text = Text(
-            "\n".join(colored_lines), style=OutputType.TOOL.value, justify="center"
+            "\n".join(colored_lines), style=OutputType.TOOL.value, justify="left"
         )
         # 直接输出渐变文本，不再使用Panel包装
         console.print(colored_text)
@@ -1107,13 +1109,28 @@ class PrettyOutput:
         if highlight_headings:
             from rich.align import Align
             from rich.console import Console as RichConsole
+            from rich.console import ConsoleOptions
+            from rich.console import RenderResult
             from rich.markdown import Markdown
+            from rich.markdown import Heading
             from rich.theme import Theme
+
+            # 自定义 Heading：强制所有级别标题左对齐（Rich 默认 h1 居中）
+            class _LeftHeading(Heading):
+                def __rich_console__(
+                    self, console, options: ConsoleOptions
+                ) -> RenderResult:
+                    text = self.text.copy()
+                    text.justify = "left"
+                    yield text
+
+            class _LeftMarkdown(Markdown):
+                elements = {**Markdown.elements, "heading_open": _LeftHeading}
 
             # 规范标题格式（数字开头→## N. xxx），便于统一左对齐与层级
             content = PrettyOutput._normalize_markdown_headings(content)
-            # 使用 Markdown 渲染，左对齐，避免标题居中
-            renderable = Align.left(Markdown(content))
+            # 使用自定义 Markdown 渲染，标题全部靠左
+            renderable = Align.left(_LeftMarkdown(content))
             heading_theme = Theme(
                 {
                     "markdown.h1": "bold bright_cyan",
@@ -1125,7 +1142,11 @@ class PrettyOutput:
                 }
             )
             panel = Panel(
-                renderable, title=title, border_style=border_style, expand=True
+                renderable,
+                title=title,
+                border_style=border_style,
+                expand=True,
+                title_align="left",
             )
             RichConsole(theme=heading_theme).print(panel)
             return
@@ -1133,7 +1154,11 @@ class PrettyOutput:
             renderable = Syntax(content, "markdown", theme=theme, word_wrap=True)
 
         panel = Panel(
-            renderable, title=title, border_style=border_style, expand=True
+            renderable,
+            title=title,
+            border_style=border_style,
+            expand=True,
+            title_align="left",
         )
         console.print(panel)
 
@@ -1194,10 +1219,11 @@ class PrettyOutput:
             return "", time.time() - start_time
 
         text_content = Text(overflow="fold")
+        # 不显示标题/副标题，仅保留封闭边框
         panel = Panel(
             text_content,
-            title=f"[bold cyan]{title}[/bold cyan]",
-            subtitle="[yellow]正在回答... (按 Ctrl+C 中断)[/yellow]",
+            title=None,
+            subtitle=None,
             border_style="cyan",
             box=box.ROUNDED,
             expand=True,
@@ -1308,11 +1334,10 @@ class PrettyOutput:
 
                         # 重建panel对象，确保panel始终引用最新的text_content
                         # 这样无论内容是否超出高度，流式输出都能正常刷新
-                        current_subtitle = panel.subtitle
                         panel = Panel(
                             text_content,
-                            title=panel.title,
-                            subtitle=current_subtitle,
+                            title=None,
+                            subtitle=None,
                             border_style="cyan",
                             box=box.ROUNDED,
                             expand=True,
@@ -1345,11 +1370,10 @@ class PrettyOutput:
                 else:
                     # 如果没有提供 panel_lock，直接更新
                     text_content = final_text
-                    current_subtitle = panel.subtitle
                     panel = Panel(
                         text_content,
-                        title=panel.title,
-                        subtitle=current_subtitle,
+                        title=None,
+                        subtitle=None,
                         border_style="cyan",
                         box=box.ROUNDED,
                         expand=True,
