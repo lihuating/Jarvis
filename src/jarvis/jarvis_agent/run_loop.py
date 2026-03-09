@@ -11,6 +11,7 @@ AgentRunLoop: 承载 Agent 的主运行循环逻辑。
 import asyncio
 import os
 import re
+import threading
 from enum import Enum
 from typing import TYPE_CHECKING
 from typing import Any
@@ -414,9 +415,38 @@ class AgentRunLoop:
                 except Exception:
                     pass
 
+                stop_event = None
+                tool_thread = None
                 try:
-                    need_return, tool_prompt = ag._call_tools(current_response)
+                    stop_event = threading.Event()
+                    result_holder = [None]
+                    exception_holder = [None]
+
+                    def _run_tools():
+                        try:
+                            result_holder[0] = ag._call_tools(current_response)
+                        except Exception as e:
+                            exception_holder[0] = e
+                        finally:
+                            stop_event.set()
+
+                    tool_thread = threading.Thread(target=_run_tools, daemon=True)
+                    tool_thread.start()
+                    try:
+                        PrettyOutput.show_thinking_until(stop_event)
+                    except KeyboardInterrupt:
+                        stop_event.set()
+                        raise
+                    stop_event.set()
+                    tool_thread.join(timeout=120)
+                    if exception_holder[0] is not None:
+                        raise exception_holder[0]
+                    need_return, tool_prompt = result_holder[0]
                 except KeyboardInterrupt:
+                    if stop_event is not None:
+                        stop_event.set()
+                    if tool_thread is not None:
+                        tool_thread.join(timeout=5)
                     # 获取用户补充信息并继续执行
                     addon_info = self._handle_interrupt_with_input()
                     if addon_info:

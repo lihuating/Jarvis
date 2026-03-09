@@ -1163,6 +1163,39 @@ class PrettyOutput:
         console.print(panel)
 
     @staticmethod
+    def show_thinking_until(
+        stop_event, interval: float = 0.4, delay_seconds: float = 3.0
+    ) -> None:
+        """在等待期间显示「思考中」+ 动态点，直到 stop_event 被设置。
+
+        仅当持续 delay_seconds 秒以上无结果时才显示，避免短暂等待时刷屏。
+        使用单行文本、无边框，字体不加粗。
+
+        参数:
+            stop_event: threading.Event，当阻塞操作完成时调用 set()
+            interval: 动态点刷新间隔（秒）
+            delay_seconds: 超过该秒数无输出后才显示思考中（默认 3 秒）
+        """
+        import threading
+        import time
+        from rich.live import Live
+        from rich.text import Text
+
+        if not (hasattr(stop_event, "wait") and hasattr(stop_event, "set")):
+            return
+        # 先等待 delay_seconds 秒，若期间已完成则直接返回，不显示思考中
+        if stop_event.wait(timeout=delay_seconds):
+            return
+        thinking_dots = 0
+        text_content = Text("思考中.", style="bright_cyan")
+        with Live(text_content, refresh_per_second=4, transient=True) as live:
+            while not stop_event.wait(interval):
+                thinking_dots = (thinking_dots + 1) % 4
+                dots_str = "." * (thinking_dots + 1)
+                text_content = Text(f"思考中{dots_str}", style="bright_cyan")
+                live.update(text_content)
+
+    @staticmethod
     def stream_chat_with_panel(
         chat_iterator,
         title: str,
@@ -1198,6 +1231,7 @@ class PrettyOutput:
         返回:
             Tuple[str, float]: (响应内容, 耗时)
         """
+        import threading
         import time
         from rich.live import Live
         from rich.panel import Panel
@@ -1206,20 +1240,46 @@ class PrettyOutput:
         from jarvis.jarvis_utils.globals import get_interrupt
         from jarvis.jarvis_utils.config import is_immediate_abort
 
-        first_chunk = None
+        # 用于后台线程存放首个 chunk 或 StopIteration
+        first_chunk_result = [None]
+        stop_iteration_flag = [False]
 
-        # 获取第一个 chunk
-        try:
-            while True:
-                first_chunk = next(chat_iterator)
-                if first_chunk:
-                    break
-        except StopIteration:
+        def _fetch_first_chunk():
+            try:
+                chunk = next(chat_iterator)
+                first_chunk_result[0] = chunk if chunk else ""
+            except StopIteration:
+                stop_iteration_flag[0] = True
+                first_chunk_result[0] = None
+
+        fetch_thread = threading.Thread(target=_fetch_first_chunk, daemon=True)
+        fetch_thread.start()
+
+        # 仅当持续 3 秒以上无首个 chunk 时才显示「思考中」，单行、无边框、不加粗
+        thinking_delay = 3.0
+        elapsed = 0.0
+        check_interval = 0.2
+        while elapsed < thinking_delay and fetch_thread.is_alive():
+            time.sleep(check_interval)
+            elapsed += check_interval
+        if fetch_thread.is_alive():
+            thinking_dots = 0
+            text_content = Text("思考中.", style="bright_cyan")
+            with Live(text_content, refresh_per_second=4, transient=True) as live:
+                while fetch_thread.is_alive():
+                    thinking_dots = (thinking_dots + 1) % 4
+                    dots_str = "." * (thinking_dots + 1)
+                    text_content = Text(f"思考中{dots_str}", style="bright_cyan")
+                    live.update(text_content)
+                    time.sleep(0.4)
+        fetch_thread.join()
+
+        if stop_iteration_flag[0]:
             append_session_history(message, "")
             return "", time.time() - start_time
 
+        first_chunk = first_chunk_result[0] or ""
         text_content = Text(overflow="fold")
-        # 不显示标题/副标题，仅保留封闭边框
         panel = Panel(
             text_content,
             title=None,

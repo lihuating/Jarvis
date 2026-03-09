@@ -4,6 +4,7 @@
 负责处理任务分析和方法论生成功能
 """
 
+import threading
 from typing import Any, List
 
 from jarvis.jarvis_agent.events import AFTER_TOOL_CALL
@@ -103,7 +104,26 @@ class TaskAnalyzer:
                 )
             except Exception:
                 pass
-            need_return, tool_prompt = self.agent._call_tools(response)
+            stop_event = threading.Event()
+            result_holder = [None]
+            exception_holder = [None]
+
+            def _run_tools():
+                try:
+                    result_holder[0] = self.agent._call_tools(response)
+                except Exception as e:
+                    exception_holder[0] = e
+                finally:
+                    stop_event.set()
+
+            tool_thread = threading.Thread(target=_run_tools, daemon=True)
+            tool_thread.start()
+            PrettyOutput.show_thinking_until(stop_event)
+            stop_event.set()
+            tool_thread.join(timeout=120)
+            if exception_holder[0] is not None:
+                raise exception_holder[0]
+            need_return, tool_prompt = result_holder[0]
             self.agent.session.prompt = tool_prompt
             try:
                 self.agent.event_bus.emit(
