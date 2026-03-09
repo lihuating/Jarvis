@@ -1122,7 +1122,8 @@ class PrettyOutput:
         from rich.panel import Panel
         from rich.text import Text
         from rich import box
-        from jarvis.jarvis_utils.globals import get_interrupt, is_immediate_abort
+        from jarvis.jarvis_utils.globals import get_interrupt
+        from jarvis.jarvis_utils.config import is_immediate_abort
 
         first_chunk = None
 
