@@ -694,18 +694,13 @@ class task_list_manager:
     def _print_task_list_status(
         self, task_list_manager: Any, task_list_id: Optional[str] = None
     ) -> None:
-        """打印任务列表状态
+        """打印任务列表状态（Plan 风格待办列表，便于用户知晓任务拆解与执行进度）
 
         参数:
             task_list_manager: 任务列表管理器实例
             task_list_id: 任务列表ID（如果为None，则不打印）
         """
         try:
-            from rich.console import Console
-            from rich.table import Table
-
-            console = Console()
-
             # 确定要打印的任务列表
             task_lists_to_print = {}
             if task_list_id:
@@ -716,77 +711,12 @@ class task_list_manager:
             if not task_lists_to_print:
                 return
 
-            for tlist_id, task_list in task_lists_to_print.items():
-                tasks = list(task_list.tasks.values())
-                if not tasks:
-                    continue
-
-                # 创建表格
-                table = Table(
-                    title=f"任务列表状态: {tlist_id}",
-                    show_header=True,
-                    header_style="bold magenta",
-                    title_style="bold cyan",
-                )
-                table.add_column("任务ID", style="cyan", width=12)
-                table.add_column("任务名称", style="yellow", width=30)
-                table.add_column("状态", style="bold", width=12)
-                table.add_column("Agent类型", width=10)
-                table.add_column("依赖", width=12)
-
-                # 按task_id数字部分升序排序
-                sorted_tasks = sorted(
-                    tasks, key=lambda t: self._extract_task_sort_key(t.task_id)
-                )
-
-                # 状态颜色映射
-                status_colors = {
-                    TaskStatus.PENDING: "yellow",
-                    TaskStatus.RUNNING: "blue",
-                    TaskStatus.COMPLETED: "green",
-                    TaskStatus.FAILED: "red",
-                    TaskStatus.ABANDONED: "dim",
-                }
-
-                for task in sorted_tasks:
-                    status_color = status_colors.get(task.status, "white")
-                    status_text = (
-                        f"[{status_color}]{task.status.value}[/{status_color}]"
-                    )
-
-                    # 格式化依赖
-                    deps_text = ", ".join(task.dependencies[:3])
-                    if len(task.dependencies) > 3:
-                        deps_text += f" (+{len(task.dependencies) - 3})"
-
-                    table.add_row(
-                        task.task_id,
-                        task.task_name[:28] + "..."
-                        if len(task.task_name) > 30
-                        else task.task_name,
-                        status_text,
-                        task.agent_type.value,
-                        deps_text if task.dependencies else "-",
-                    )
-
-                console.print(table)
-
-                # 打印统计信息
+            for tlist_id in task_lists_to_print:
                 summary = task_list_manager.get_task_list_summary(tlist_id)
-                if summary:
-                    stats_text = (
-                        f"📊 总计: {summary['total_tasks']} | "
-                        f"⏳ 待执行: {summary['pending']} | "
-                        f"🔄 执行中: {summary['running']} | "
-                        f"✅ 已完成: {summary['completed']} | "
-                        f"❌ 失败: {summary['failed']} | "
-                        f"🚫 已放弃: {summary['abandoned']}"
-                    )
-                    console.print(f"[dim]{stats_text}[/dim]")
-                    console.print()  # 空行
+                if summary and summary.get("tasks"):
+                    PrettyOutput.print_task_list_plan_status(summary)
 
         except Exception as e:
-            # 打印详细错误信息，帮助调试
             import traceback
 
             PrettyOutput.auto_print(f"⚠️ 打印任务状态失败: {e}")

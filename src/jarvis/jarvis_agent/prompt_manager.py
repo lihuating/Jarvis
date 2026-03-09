@@ -65,9 +65,10 @@ class PromptManager:
 
 **🚨 强制使用流程：**
 1. **第一步：识别是否需要拆分** - 如果任务符合上述类型，立即使用 `add_tasks` 创建任务列表
-2. **同时拆分任务** - 在 `add_tasks` 时同时提供 `main_goal` 和 `tasks_info`，一次性创建并添加所有子任务
-3. **强制准备additional_info** - 每次使用 `execute_task` 前必须准备详细的 additional_info 参数
-4. **执行任务** - 使用 `execute_task` 逐个执行任务，系统会自动创建子 Agent
+2. **任务理解/任务拆解必须落盘** - 当你在回复中做了「任务理解」或「任务拆解」并列出 2 个及以上子步骤时，**必须同时调用** `task_list_manager` 的 `add_tasks` 创建正式任务列表，这样用户才能看到待办列表与执行进度（✔/☐ 格式）；仅用文字列出步骤而不调用工具，用户端不会显示进度。
+3. **同时拆分任务** - 在 `add_tasks` 时同时提供 `main_goal` 和 `tasks_info`，一次性创建并添加所有子任务
+4. **强制准备additional_info** - 每次使用 `execute_task` 前必须准备详细的 additional_info 参数
+5. **执行任务** - 使用 `execute_task` 逐个执行任务，系统会自动创建子 Agent
 
 **核心功能：**
 - 创建任务列表并添加任务：使用 `add_tasks` 操作，可同时提供 `tasks_info` 一次性创建并添加所有任务

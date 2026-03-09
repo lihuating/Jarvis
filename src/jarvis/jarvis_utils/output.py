@@ -859,6 +859,62 @@ class PrettyOutput:
         )
 
     @staticmethod
+    def print_task_list_plan_status(summary: Dict[str, Any]) -> None:
+        """以 Plan 风格打印待办事项列表，便于用户查看任务拆解与执行进度。
+
+        格式示例：
+          ✔  Plan 更新待办事项列表（2个待处理，1个进行中，1个已完成）
+             ·已更新待办事项列表
+               ⎿ ✔ 已完成的任务名
+                 ☐ 待执行的任务名
+
+        参数：
+            summary: get_task_list_summary 返回的字典，需包含 pending, running,
+                     completed, failed, abandoned, tasks（tasks 中每项含 task_name, status）
+        """
+        if not summary or "tasks" not in summary:
+            return
+        pending = summary.get("pending", 0)
+        running = summary.get("running", 0)
+        completed = summary.get("completed", 0)
+        failed = summary.get("failed", 0)
+        abandoned = summary.get("abandoned", 0)
+        parts = [f"{pending}个待处理", f"{running}个进行中", f"{completed}个已完成"]
+        if failed:
+            parts.append(f"{failed}个失败")
+        if abandoned:
+            parts.append(f"{abandoned}个已放弃")
+        count_str = "，".join(parts)
+        line1 = f"  ✔  Plan 更新待办事项列表（{count_str}）"
+        line2 = "     ·已更新待办事项列表"
+
+        def _task_sort_key(t: Dict[str, Any]) -> int:
+            tid = t.get("task_id", "")
+            try:
+                return int(tid.split("-")[1])
+            except (IndexError, ValueError):
+                return 999999
+
+        tasks = sorted(summary["tasks"], key=_task_sort_key)
+        completed_status = "completed"
+        lines = [line1, line2]
+        for i, t in enumerate(tasks):
+            name = (t.get("task_name") or "").strip()
+            status = (t.get("status") or "").strip().lower()
+            mark = "✔ " if status == completed_status else "☐ "
+            # 第一项带树形符 ⎿，后续项仅缩进（与示例格式一致）
+            prefix = "       ⎿ " if i == 0 else "         "
+            lines.append(f"{prefix}{mark}{name}")
+
+        block = "\n".join(lines)
+        PrettyOutput._print(
+            text=f"\n{block}",
+            output_type=OutputType.PLANNING,
+            timestamp=True,
+            lang=None,
+        )
+
+    @staticmethod
     def print_truncated_with_expand_hint(
         full_content: str,
         title: Optional[str] = None,
