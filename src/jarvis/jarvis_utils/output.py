@@ -1080,3 +1080,289 @@ class PrettyOutput:
             renderable, title=title, border_style=border_style, expand=True
         )
         console.print(panel)
+
+    @staticmethod
+    def stream_chat_with_panel(
+        chat_iterator,
+        title: str,
+        status_message: str,
+        get_used_token_count,
+        get_conversation_turn,
+        get_platform_max_input_token_count,
+        get_context_token_count,
+        append_session_history,
+        start_time: float,
+        message: str,
+        max_output: int = 0,
+        check_interrupt=None,
+        panel_lock=None,
+    ) -> Tuple[str, float]:
+        """使用面板显示流式聊天输出。
+
+        参数:
+            chat_iterator: 聊天迭代器
+            title: 面板标题
+            status_message: 状态消息
+            get_used_token_count: 获取已使用 token 数的函数
+            get_conversation_turn: 获取对话轮次的函数
+            get_platform_max_input_token_count: 获取平台最大输入 token 数的函数
+            get_context_token_count: 获取上下文 token 数的函数
+            append_session_history: 添加会话历史的函数
+            start_time: 开始时间
+            message: 用户消息
+            max_output: 最大输出长度
+            check_interrupt: 检查中断的函数
+            panel_lock: 面板锁
+
+        返回:
+            Tuple[str, float]: (响应内容, 耗时)
+        """
+        import time
+        from rich.live import Live
+        from rich.panel import Panel
+        from rich.text import Text
+        from rich import box
+        from jarvis.jarvis_utils.globals import get_interrupt, is_immediate_abort
+
+        first_chunk = None
+
+        # 获取第一个 chunk
+        try:
+            while True:
+                first_chunk = next(chat_iterator)
+                if first_chunk:
+                    break
+        except StopIteration:
+            append_session_history(message, "")
+            return "", time.time() - start_time
+
+        text_content = Text(overflow="fold")
+        panel = Panel(
+            text_content,
+            title=f"[bold cyan]{title}[/bold cyan]",
+            subtitle="[yellow]正在回答... (按 Ctrl+C 中断)[/yellow]",
+            border_style="cyan",
+            box=box.ROUNDED,
+            expand=True,
+        )
+
+        response = ""
+        last_subtitle_update_time = time.time()
+        subtitle_update_interval = 1  # subtitle 更新间隔（秒）
+        update_count = 0  # 更新计数器
+
+        def _update_panel_subtitle_with_token(
+            panel_obj: Panel, response_text: str, is_completed: bool = False
+        ):
+            """更新面板的 subtitle，显示 token 信息。"""
+            try:
+                threshold = 100  # 默认阈值
+                try:
+                    max_input = get_platform_max_input_token_count()
+                    current_context = get_context_token_count()
+                    threshold = max_input - current_context if max_input else 100
+                except Exception:
+                    pass
+
+                current_time = time.time()
+                duration = current_time - start_time
+
+                try:
+                    used_tokens = get_used_token_count()
+                    conversation_turn = get_conversation_turn()
+
+                    if is_completed:
+                        panel_obj.subtitle = (
+                            f"[bold green]✓ {current_time:.0f} | "
+                            f"({conversation_turn}/{threshold}) | "
+                            f"tokens: {used_tokens} | "
+                            f"耗时: {duration:.2f}秒[/bold green]"
+                        )
+                    else:
+                        panel_obj.subtitle = (
+                            f"[yellow]{current_time:.0f} | "
+                            f"({conversation_turn}/{threshold}) | "
+                            f"tokens: {used_tokens} | "
+                            f"正在回答... (按 Ctrl+C 中断)[/yellow]"
+                        )
+                except Exception:
+                    # 如果获取 token 信息失败，使用简化版本
+                    if is_completed:
+                        panel_obj.subtitle = (
+                            f"[bold green]✓ {current_time:.0f} | "
+                            f"耗时: {duration:.2f}秒[/bold green]"
+                        )
+                    else:
+                        panel_obj.subtitle = (
+                            f"[yellow]{current_time:.0f} | "
+                            f"正在回答... (按 Ctrl+C 中断)[/yellow]"
+                        )
+            except Exception:
+                # 如果更新 subtitle 失败，使用默认值
+                current_time = time.time()
+                duration = current_time - start_time
+                if is_completed:
+                    panel_obj.subtitle = (
+                        f"[bold green]✓ 耗时: {duration:.2f}秒[/bold green]"
+                    )
+                else:
+                    panel_obj.subtitle = (
+                        f"[yellow]正在回答... (按 Ctrl+C 中断)[/yellow]"
+                    )
+
+        with Live(panel, refresh_per_second=4, transient=True) as live:
+
+            def _update_panel_content(content: str, update_subtitle: bool = False):
+                nonlocal response, last_subtitle_update_time, update_count, text_content, panel
+
+                # 在锁外进行文本拼接和wrap计算，避免与console内部锁冲突
+                # 获取当前文本并添加新内容，创建新的 Text 对象
+                # 避免在原 Text 对象上调用 append()，防止与 Live 内部线程并发访问导致不一致
+                current_text = text_content.plain
+                new_content = current_text + content
+                new_text_obj = Text(new_content, overflow="fold", style="bright_white")
+                update_count += 1
+
+                # Scrolling Logic - 只在内容超过一定行数时才应用滚动
+                max_text_height = console.height - 5
+                if max_text_height <= 0:
+                    max_text_height = 1
+
+                lines = new_text_obj.wrap(
+                    console,
+                    console.width - 4 if console.width > 4 else 1,
+                )
+
+                # 只在内容超过最大高度时才截取，减少不必要的操作
+                final_text = new_text_obj
+                if len(lines) > max_text_height:
+                    # 创建新的Text对象，避免直接修改plain属性导致内部状态不一致
+                    # 这确保了Rich内部spans列表与文本内容保持同步
+                    final_text = Text(
+                        "\n".join([line.plain for line in lines[-max_text_height:]]),
+                        overflow="fold",
+                    )
+
+                # 使用锁保护 panel 更新，避免与 Live 内部线程冲突
+                if panel_lock:
+                    with panel_lock:
+                        # 在锁内只更新text_content和panel
+                        text_content = final_text
+
+                        # 重建panel对象，确保panel始终引用最新的text_content
+                        # 这样无论内容是否超出高度，流式输出都能正常刷新
+                        current_subtitle = panel.subtitle
+                        panel = Panel(
+                            text_content,
+                            title=panel.title,
+                            subtitle=current_subtitle,
+                            border_style="cyan",
+                            box=box.ROUNDED,
+                            expand=True,
+                        )
+
+                        # 只在需要时更新 subtitle（减少更新频率，避免重复渲染标题）
+                        # 策略：每 10 次内容更新或每 3 秒更新一次 subtitle
+                        current_time = time.time()
+                        should_update_subtitle = (
+                            update_subtitle
+                            or update_count % 10 == 0  # 每 10 次更新一次
+                            or (current_time - last_subtitle_update_time)
+                            >= subtitle_update_interval
+                        )
+
+                        if should_update_subtitle:
+                            _update_panel_subtitle_with_token(
+                                panel, response, is_completed=False
+                            )
+                            last_subtitle_update_time = current_time
+
+                        # 更新 panel（只更新内容，subtitle 更新频率已降低）
+                        # 添加异常处理，防止 rich 内部线程冲突导致的 IndexError
+                        try:
+                            live.update(panel)
+                        except (IndexError, RuntimeError):
+                            # 忽略 rich 内部错误，避免影响主流程
+                            # 这些错误通常是由于 Live 内部线程与主线程的时序冲突导致的
+                            pass
+                else:
+                    # 如果没有提供 panel_lock，直接更新
+                    text_content = final_text
+                    current_subtitle = panel.subtitle
+                    panel = Panel(
+                        text_content,
+                        title=panel.title,
+                        subtitle=current_subtitle,
+                        border_style="cyan",
+                        box=box.ROUNDED,
+                        expand=True,
+                    )
+
+                    current_time = time.time()
+                    should_update_subtitle = (
+                        update_subtitle
+                        or update_count % 10 == 0
+                        or (current_time - last_subtitle_update_time)
+                        >= subtitle_update_interval
+                    )
+
+                    if should_update_subtitle:
+                        _update_panel_subtitle_with_token(
+                            panel, response, is_completed=False
+                        )
+                        last_subtitle_update_time = current_time
+
+                    try:
+                        live.update(panel)
+                    except (IndexError, RuntimeError):
+                        pass
+
+            # Process first chunk
+            response += first_chunk
+            if first_chunk:
+                _update_panel_content(
+                    first_chunk, update_subtitle=True
+                )  # 第一次更新时更新 subtitle
+
+            # 缓存机制：降低更新频率，减少界面闪烁
+            buffer = ""
+            last_update_time = time.time()
+            update_interval = 1
+            min_buffer_size = 1
+
+            def _flush_buffer():
+                nonlocal buffer, last_update_time
+                if buffer:
+                    _update_panel_content(buffer)
+                    buffer = ""
+                    last_update_time = time.time()
+
+            # Process rest of the chunks
+            for s in chat_iterator:
+                if not s:
+                    continue
+                response += s
+                buffer += s
+
+                current_time = time.time()
+                should_update = (
+                    len(buffer) >= min_buffer_size
+                    or (current_time - last_update_time) >= update_interval
+                )
+
+                if should_update:
+                    _flush_buffer()
+
+                # 检查中断
+                try:
+                    if is_immediate_abort() and (check_interrupt and check_interrupt()):
+                        _flush_buffer()
+                        append_session_history(message, response)
+                        return response, time.time() - start_time
+                except Exception:
+                    pass
+
+            _flush_buffer()
+            # 在结束前，将面板内容替换为完整响应，确保最后一次渲染的 panel 显示全部内容
+
+        return response, time.time() - start_time
