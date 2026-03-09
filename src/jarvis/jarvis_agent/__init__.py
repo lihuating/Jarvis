@@ -17,11 +17,6 @@ from typing import Tuple
 from typing import Union
 
 # 第三方库导入
-from rich.align import Align
-from rich.console import Console
-from rich.panel import Panel
-from rich.text import Text
-
 from jarvis.jarvis_agent.builtin_input_handler import builtin_input_handler
 from jarvis.jarvis_agent.event_bus import EventBus
 from jarvis.jarvis_agent.events import AFTER_ADDON_PROMPT
@@ -209,27 +204,11 @@ def show_agent_startup_stats(
                 f"💭  短期记忆: [bold blue]{short_term_memory_count}[/bold blue]"
             )
 
-        stats_text = Text.from_markup(" | ".join(stats_parts), justify="center")
-
-        # 创建包含欢迎信息和统计信息的面板内容
-        panel_content = Text()
-        panel_content.append(welcome_message, style="bold white")
-        panel_content.append("\n")
-        panel_content.append(f"📁  工作目录: {current_dir}", style="dim white")
-        panel_content.append("\n\n")
-        panel_content.append(stats_text)
-        panel_content.justify = "center"
-
-        panel = Panel(
-            panel_content,
-            title="✨ Jarvis 资源概览 ✨",
-            title_align="center",
-            border_style="blue",
-            expand=False,
+        PrettyOutput.print_resource_overview_panel(
+            welcome_message=welcome_message,
+            current_dir=current_dir,
+            stats_parts=stats_parts,
         )
-
-        console = Console()
-        console.print(Align.center(panel))
 
     except Exception as e:
         PrettyOutput.auto_print(f"⚠️ 加载统计信息失败: {e}")
@@ -490,6 +469,7 @@ class Agent:
         allow_savesession: bool = False,
         rule_names: Optional[str] = None,
         optimize_system_prompt: bool = False,
+        enable_auto_rule_select: bool = True,
         **kwargs: Any,
     ):
         """初始化Jarvis Agent实例
@@ -512,6 +492,7 @@ class Agent:
             allow_savesession: 是否允许使用SaveSession命令（默认False，仅jvs/jca主程序传入True）
             rule_names: 规则名称列表（逗号分隔），用于加载指定的规则
             optimize_system_prompt: 如果为True，将在第一次run()时使用用户输入来优化系统提示词
+            enable_auto_rule_select: 是否启用自动规则选择（默认True）
         """
         # 基础属性初始化
         self._init_base_attributes(
@@ -550,7 +531,13 @@ class Agent:
         )
 
         # 事件总线和管理器初始化
-        self._init_managers(rule_names)
+        self._init_managers()
+        # 保存是否启用自动规则选择的标志
+        self._enable_auto_rule_select = enable_auto_rule_select
+        # 加载规则内容（确保 loaded_rules 和 loaded_rule_names 被初始化）
+        self.loaded_rules, self.loaded_rule_names = self.rules_manager.load_all_rules(
+            rule_names
+        )
 
         # 工具和系统提示词设置
         self._setup_tools_and_prompt()
@@ -777,12 +764,8 @@ class Agent:
                 self.auto_complete or (self.non_interactive or False)
             )
 
-    def _init_managers(self, rule_names: Optional[str] = None) -> None:
-        """初始化事件总线和管理器
-
-        参数:
-            rule_names: 规则名称列表（逗号分隔）
-        """
+    def _init_managers(self) -> None:
+        """初始化事件总线和管理器"""
         # 初始化事件总线（需先于管理器，以便管理器在构造中安全订阅事件）
         self.event_bus = EventBus()
 
@@ -801,10 +784,6 @@ class Agent:
         # 初始化规则管理器（如果子类已经创建，则不覆盖）
         if not hasattr(self, "rules_manager"):
             self.rules_manager = RulesManager(root_dir)
-        # 无条件加载规则内容（确保 loaded_rules 和 loaded_rule_names 被初始化）
-        self.loaded_rules, self.loaded_rule_names = self.rules_manager.load_all_rules(
-            rule_names
-        )
 
     def _setup_tools_and_prompt(self) -> None:
         """设置工具和系统提示词"""
@@ -1342,9 +1321,7 @@ class Agent:
             import jarvis.jarvis_utils.globals as G
 
             title = f"[bold cyan]{(G.get_current_agent_name() + ' · ') if G.get_current_agent_name() else ''}{self.model.model_name or 'LLM'} {compression_type}摘要[/bold cyan]"
-            PrettyOutput.print_markdown(
-                summary, title=title, border_style="cyan", highlight_headings=True
-            )
+            PrettyOutput.print_markdown(summary, title=title, border_style="cyan")
         except Exception:
             # 如果格式化输出失败，回退到简单打印
             PrettyOutput.auto_print(f"📋 {compression_type}摘要:\n{summary}")
@@ -1815,6 +1792,23 @@ class Agent:
         # 获取任务列表信息
         task_list_info = self._get_task_list_info()
 
+        # 获取激活的规则信息（文件路径和描述）
+        rules_section = ""
+        active_rule_infos = []
+        for rule_name in sorted(self.rules_manager._active_rules):
+            rule_path = self.rules_manager.get_rule_file_path(rule_name)
+            description = self.rules_manager._extract_rule_description(rule_path)
+            if description:
+                active_rule_infos.append(
+                    f"- {rule_name}: {description} (路径: {rule_path})"
+                )
+            else:
+                active_rule_infos.append(f"- {rule_name} (路径: {rule_path})")
+
+        if active_rule_infos:
+            rules_info = "\n".join(active_rule_infos)
+            rules_section = f"\n\n\n**📋 当前激活的规则列表：**\n\n{rules_info}\n\n提示：如需查看规则详细内容，请使用 `load_rule` 工具加载对应的规则文件。\n\n"
+
         # 获取会话文件路径信息
         session_file_info = ""
         try:
@@ -1843,7 +1837,7 @@ class Agent:
 
 <content>
 {summary}
-</content>
+</content>{rules_section}
 
 **⚠️ 重要系统约束提醒（总结后必须严格遵守）：**
 1. **每次只能执行一个工具调用**：每个响应必须包含且仅包含一个工具调用（任务完成时除外）。同时调用多个工具会导致错误。
@@ -2121,10 +2115,13 @@ class Agent:
                 self._system_prompt_optimized = True
 
         # 根据当前模式生成额外说明，供 LLM 感知执行策略
+        # 延迟导入CodeAgent以避免循环依赖
         try:
-            # 延迟导入CodeAgent以避免循环依赖
             from jarvis.jarvis_code_agent.code_agent import CodeAgent
+        except ImportError:
+            CodeAgent = None
 
+        try:
             # 保存原始任务目标（用于长期运行时的上下文保持）
             # 只在第一次运行时设置原始任务目标，确保交互模式下后续输入不会覆盖原始目标
             if not self.original_user_input:
@@ -2155,14 +2152,23 @@ class Agent:
             # 将非交互模式说明添加到用户输入中
             enhanced_input = user_input + non_interactive_note
 
+            # 先设置 session.prompt，确保 _first_run() 中可以访问到用户输入
+            # 注意：此时还没有添加已激活的规则内容，规则内容会在之后追加
+            self.session.prompt = enhanced_input
+
+            # 首次运行初始化（包括自动规则选择）
+            # 必须在获取规则内容之前执行，否则规则索引会被错误的规则内容覆盖
+            if self.first:
+                self._first_run()
+
             # 将已激活的规则内容添加到用户输入的最前面
             active_rules_content = self.rules_manager.get_active_rules_content()
             if active_rules_content:
                 enhanced_input = (
                     f"<rules>\n{active_rules_content}\n</rules>\n\n{enhanced_input}"
                 )
-
-            self.session.prompt = enhanced_input
+                # 更新 session.prompt，添加规则内容
+                self.session.prompt = enhanced_input
 
             # 关键流程：直接调用 memory_manager 重置任务状态
             try:
@@ -2325,7 +2331,7 @@ class Agent:
             LoopAction.CONTINUE 或 LoopAction.COMPLETE（兼容旧字符串值 "continue"/"complete"）
         """
         user_input = self._multiline_input(
-            f"{self.name}: 请输入，或输入空行来结束当前任务", False
+            f"{self.name}: 请输入（Ctrl+C 结束当前任务）", False
         )
 
         if user_input:
@@ -2355,6 +2361,10 @@ class Agent:
         # 处理文件上传和方法论加载
         self.file_methodology_manager.handle_files_and_methodology()
 
+        # 自动选择并加载规则（如果用户未指定规则且启用了自动规则选择）
+        if self.session.prompt and self._enable_auto_rule_select:
+            self.auto_select_and_load_rules(self.session.prompt)
+
         # 添加记忆标签提示
         if memory_tags_prompt:
             self.session.prompt = f"{self.session.prompt}{memory_tags_prompt}"
@@ -2380,6 +2390,58 @@ class Agent:
             temp_model.set_system_prompt(system_prompt)
         temp_model.set_suppress_output(False)  # 关闭抑制输出，显示压缩过程
         return temp_model
+
+    def _has_user_specified_rules(self) -> bool:
+        """判断用户是否已指定规则
+
+        用户指定规则的方式：
+        1. 命令行参数 rule_names
+        2. input 标记 '<rule:xxx>'
+
+        返回:
+            bool: 如果用户已指定规则（非默认规则），返回 True
+        """
+        from jarvis.jarvis_utils.config import get_default_rule_names
+
+        # 默认规则（来自配置 default_rule_names，不视为用户指定）
+        default_rules = set(get_default_rule_names())
+
+        # 检查 loaded_rule_names 中是否有非默认规则
+        for rule_name in self.loaded_rule_names:
+            if rule_name not in default_rules:
+                return True
+
+        return False
+
+    def auto_select_and_load_rules(self, task_description: str) -> None:
+        """根据任务描述自动选择并加载规则（最多3个）
+
+        参数:
+            task_description: 任务描述字符串
+        """
+        try:
+            # 如果用户已指定规则，跳过自动选择
+            if self._has_user_specified_rules():
+                PrettyOutput.auto_print("ℹ️  用户已指定规则，跳过自动规则选择")
+                return
+
+            # 调用规则选择方法（内部已包含内容过滤）
+            selected_rules = self.rules_manager.select_rule_by_task(task_description)
+
+            # 如果成功选择了规则，将其激活
+            if selected_rules:
+                # 遍历规则列表并激活
+                for rule_name in selected_rules:
+                    # 使用 activate_rule 方法激活规则（内部会检查重复并自动合并）
+                    if self.rules_manager.activate_rule(rule_name):
+                        PrettyOutput.auto_print(
+                            f"✅ 已根据任务自动选择规则: {rule_name}"
+                        )
+                    else:
+                        PrettyOutput.auto_print(f"ℹ️  规则已存在或激活失败: {rule_name}")
+        except Exception as e:
+            # 规则选择失败不影响主流程，静默处理
+            PrettyOutput.auto_print(f"⚠️  自动选择规则失败: {e}")
 
     def _filter_tools_if_needed(self, task: str) -> None:
         """如果工具数量超过阈值，使用大模型筛选相关工具
