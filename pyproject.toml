@@ -117,6 +117,7 @@ dependencies = [
         "tree-sitter-php==0.24.1",
         "tree-sitter-sql==0.3.11",
     ]
+    rust = ["jarvis-rust-tools>=0.1.0"]
 
     [project.urls]
     Homepage = "https://github.com/skyfireitdiy/Jarvis.git"

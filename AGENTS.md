@@ -8,6 +8,7 @@
 - **AI 应用开发 SDK**：提供强大而灵活的基础组件，帮助开发者快速构建专业的 AI 应用
 - **高度可编程**：以纯 Python SDK 形式提供，开发者可以自由组合各种能力
 - **工具生态丰富**：内置 30+ 工具（代码分析、文件操作、命令执行等），支持自定义扩展
+- **聚焦代码开发**：专为代码任务优化，提供完整的代码分析、编辑、验证、提交工作流
 
 ### 主要技术栈
 - **编程语言**：Python 3.12
@@ -17,12 +18,13 @@
   - 浏览器自动化：Playwright (1.48.0)
   - Web 框架：FastAPI (0.115.12)、Uvicorn (0.33.0)
   - 终端 UI：Rich (14.0.0)、Prompt Toolkit (3.0.50)
+  - Windows 自动化：pywinauto (>=0.6.9)
   - 其他：requests、pyyaml、tiktoken、pillow、markitdown、jsonnet、ddgr、typer、pathspec、plotext 等
 
 ### 项目版本
 - **当前版本**：2.0.19
 - **许可证**：MIT
-- **支持平台**：Linux（主要）、Windows（通过 WSL）、macOS
+- **支持平台**：Linux（主要）、Windows（通过 WSL 或原生，支持 GUI 自动化）、macOS
 
 ## 项目结构
 
@@ -31,7 +33,7 @@ Jarvis/
 ├── src/jarvis/                    # 源代码目录
 │   ├── jarvis_agent/             # 通用 AI 代理核心
 │   ├── jarvis_code_agent/        # 代码专用代理
-│   ├── jarvis_browser/           # 浏览器自动化工具
+│   ├── jarvis_browser/           # 浏览器自动化工具（基于 Playwright）
 │   ├── jarvis_c2rust/            # C→Rust 迁移套件
 │   ├── jarvis_config/            # 配置管理
 │   ├── jarvis_git_utils/         # Git 工具集
@@ -41,14 +43,14 @@ Jarvis/
 │   ├── jarvis_mcp/               # MCP 客户端
 │   ├── jarvis_memory_organizer/  # 记忆管理
 │   ├── jarvis_methodology/       # 方法论知识库
-│   ├── jarvis_platform/          # LLM 平台抽象层
+│   ├── jarvis_platform/          # LLM 平台抽象层（OpenAI、Claude）
 │   ├── jarvis_platform_manager/  # 平台管理器
 │   ├── jarvis_rules_index/       # 规则索引管理
 │   ├── jarvis_sec/               # 安全分析套件
 │   ├── jarvis_smart_shell/       # 智能Shell
 │   ├── jarvis_tools/             # 工具系统
 │   ├── jarvis_utils/             # 通用工具
-│   ├── jarvis_windows/           # Windows 桌面自动化
+│   ├── jarvis_windows/           # Windows 桌面自动化工具
 │   ├── jarvis_data/              # 数据配置
 │   └── scripts/                  # 脚本工具
 ├── tests/                        # 测试套件
@@ -70,7 +72,7 @@ Jarvis/
 │   ├── regression/               # 回归测试
 │   ├── security/                 # 安全测试
 │   └── test_utils/               # 测试工具
-├── docs/                         # 文档
+├── docs/                         # 文档（使用 MkDocs 构建）
 │   ├── jarvis_book/             # Jarvis Book 官方文档
 │   ├── images/
 │   └── ...
@@ -88,11 +90,13 @@ Jarvis/
 │   ├── memory/                   # 记忆存储
 │   ├── methodologies/            # 方法论
 │   ├── evolution/                # 进化记录
+│   ├── sessions/                 # 会话文件
 │   └── ...
 ├── pyproject.toml                # 项目配置（现代）
 ├── setup.py                      # 项目配置（传统）
 ├── Dockerfile                    # Docker 镜像
 ├── docker-compose.yml            # Docker Compose 配置
+├── mkdocs.yml                    # MkDocs 文档配置
 └── README.md                     # 项目说明
 ```
 
@@ -106,14 +110,25 @@ Jarvis/
 - 支持工具调用、记忆管理、任务规划等核心功能
 - 通过 system_prompt 定义行为，可快速定制专用 Agent
 - 内置 ARCHER 工作流（Analyze → Rule → Collect → Hypothesize → Execute → Review）
+- 支持非交互模式和任务派发模式
 
 **关键类**：
 - `Agent`：基础代理类
-- `SessionManager`：会话管理
+- `AgentRunLoop`：主运行循环
+- `SessionManager`：会话管理（自动保存、自动清理、智能恢复）
 - `MemoryManager`：记忆管理（三层架构：短期、项目长期、全局长期）
 - `TaskListManager`：任务列表管理
-- `RulesManager`：规则管理器
+- `RulesManager`：规则管理器（支持自动规则选择）
 - `TaskAnalyzer`：任务分析器
+
+**新特性（v2.0.16+）**：
+- 会话自动保存和清理
+- 会话名称智能生成
+- 历史会话智能检测
+- Git 一致性检查
+- 规则激活反馈
+- 自动规则选择
+- Agent 性格系统
 
 ### 2. CodeAgent（代码专用代理）
 **位置**：`src/jarvis/jarvis_code_agent/`
@@ -125,6 +140,7 @@ Jarvis/
 - 自动进行代码审查和构建验证
 - 支持会话自动保存和恢复
 - 支持默认规则配置
+- 支持连续任务执行
 
 **关键管理器**：
 - `BuildValidationManager`：构建验证
@@ -133,24 +149,33 @@ Jarvis/
 - `ImpactManager`：影响分析
 - `GitManager`：Git 操作
 
+**新特性（v2.0.16+）**：
+- 默认规则配置
+- 连续任务支持
+- 内置命令优先处理
+- 静态检查优化
+- 代码格式化工具支持
+
 ### 3. 工具系统
 **位置**：`src/jarvis/jarvis_tools/`
 
 **内置工具类别**：
 - 文件操作：`read_code`、`edit_file`、`write_file`、`list_directory`
 - 代码分析：`search_file_content`、`glob`、符号查找、LSP 代码分析
-- 命令执行：`run_shell_command`、`execute_script`
+- 命令执行：`run_shell_command`、`execute_script`（支持 Windows PowerShell）
 - Git 操作：`git_commit`、`git_squash`
 - 记忆管理：`memory`（save/retrieve/clear）
 - 方法论：`methodology`（load/apply）
-- 浏览器：浏览器自动化命令（35+）
+- 浏览器：浏览器自动化命令（41+）
 - Windows：Windows 桌面自动化命令（13+）
-- 其他：PPT 生成、Markdown 处理、文件编码检测等
+- PPT：PowerPoint 生成和编辑
+- 其他：Markdown 处理、文件编码检测、任务列表管理等
 
 **扩展能力**：
 - 支持自定义工具开发
 - 工具过滤机制（避免工具过多干扰模型决策）
-- 工具按场景智能筛选
+- 工具按场景智能筛选（超过 30 个工具时自动筛选）
+- 工具注册表完整索引
 
 ### 4. 平台抽象层
 **位置**：`src/jarvis/jarvis_platform/`
@@ -158,12 +183,16 @@ Jarvis/
 **支持的平台**：
 - OpenAI
 - Anthropic (Claude)
-- 可扩展自定义平台
 
 **核心类**：
 - `BasePlatform`：平台基类
 - `PlatformRegistry`：平台注册表
 - 各平台具体实现
+
+**架构简化（v2.0.1+）**：
+- 移除了 kimi、tongyi、yuanbao 等平台实现
+- 聚焦 OpenAI 和 Claude 平台
+- 简化配置和调用链
 
 ### 5. 专业套件
 
@@ -172,7 +201,7 @@ Jarvis/
 - 启发式扫描
 - AI 深度验证
 - 支持 C/C++ 和 Rust 语言
-- 配置驱动设计
+- 配置驱动设计（v2.0.5+）
 
 #### C→Rust 迁移（jc2r）
 **位置**：`src/jarvis/jarvis_c2rust/`
@@ -182,17 +211,18 @@ Jarvis/
 
 #### 浏览器自动化（jb）
 **位置**：`src/jarvis/jarvis_browser/`
-- 35+ 浏览器命令
+- 41+ 浏览器命令（v2.0.11+）
 - 守护进程模式
 - 基于 Playwright
-- 支持 Windows 平台
+- 支持 Windows 平台（v2.0.12+）
 
 #### Windows 桌面自动化（jw）
 **位置**：`src/jarvis/jarvis_windows/`
 - 应用启动/连接
 - 点击、输入、截图
 - 控件树操作
-- 13+ 常用命令
+- 13+ 常用命令（v2.0.11+）
+- 系统配置管理（主题、电源、代理等）（v2.0.12+）
 
 #### 智能Shell（jss）
 **位置**：`src/jarvis/jarvis_smart_shell/`
@@ -203,7 +233,14 @@ Jarvis/
 **位置**：`src/jarvis/jarvis_rules_index/`
 - 规则查询和管理
 - 支持内置规则和项目规则
-- 规则文件定位
+- 规则文件定位（v2.0.17+）
+
+#### LSP 代码分析（jlsp）
+**位置**：`src/jarvis/jarvis_lsp/`
+- LSP 客户端工具
+- 符号查询、定义查找、引用定位
+- 代码质量检查和修复建议（v2.0.9+）
+- 支持 Windows 平台（v2.0.13+）
 
 #### MCP 客户端
 **位置**：`src/jarvis/jarvis_mcp/`
@@ -234,6 +271,10 @@ Jarvis/
 | `jarvis-smart-shell` | `jss` | 智能 Shell |
 | `jarvis-rules-index` | `jri` | 规则索引管理 |
 | `install-playwright` | - | 安装 Playwright 浏览器驱动 |
+
+**命令变更说明（v2.0.1+）**：
+- `jck` 命令已迁移为 `jvs --check` 参数
+- `jqc` 命令已迁移为 `jvs --quick-config` 参数
 
 ## 构建和运行
 
@@ -297,8 +338,11 @@ jvs -n -T "分析代码结构"
 # 快速配置
 jvs --quick-config
 
-# 工具检查
+# 工具检查（替代原 jck 命令）
 jvs --check
+
+# 检查特定工具
+jvs --check-tool <工具名>
 ```
 
 #### SDK 使用
@@ -340,6 +384,10 @@ python -m build
 
 # 构建 Docker 镜像
 docker build -t jarvis:latest .
+
+# 构建文档（使用 MkDocs）
+mkdocs build
+mkdocs serve
 ```
 
 ## 配置说明
@@ -386,6 +434,10 @@ execute_tool_confirm: true
 auto_resume_session: false
 ```
 
+**新增配置项（v2.0.16+）**：
+- `auto_resume_session`：自动恢复最近会话
+- `tool_filter_threshold`：工具筛选阈值
+
 ### 快速配置
 ```bash
 # 快速配置 LLM 平台
@@ -411,6 +463,7 @@ jvs --quick-config
 - Markdown 格式
 - API 文档使用 docstring
 - 主要文档位于 `docs/jarvis_book/`
+- 使用 MkDocs 构建文档站点
 
 ### 扩展开发
 - 自定义工具：放在 `~/.jarvis/tools/` 目录
@@ -436,7 +489,8 @@ jvs --quick-config
 - **工具注册表**：统一管理所有可用工具
 - **工具过滤**：根据任务自动筛选相关工具
 - **工具确认**：可选的工具执行前确认机制
-- **工具按场景筛选**：智能筛选与当前任务最相关的工具
+- **工具按场景筛选**：智能筛选与当前任务最相关的工具（v2.0.7+）
+- **工具完整索引**：即使被过滤的工具也能直接调用（v2.0.11+）
 
 ### 4. 方法论系统
 - 将成功经验沉淀为可复用的方法论
@@ -444,22 +498,28 @@ jvs --quick-config
 - 可通过 `methodology` 工具加载和应用
 
 ### 5. 规则系统
-- **自动规则选择**：根据任务描述自动选择合适的规则
-- **规则索引**：支持规则查询和管理
-- **规则激活反馈**：规则激活时即时反馈
-- **规则状态管理**：区分"加载"和"激活"状态
+- **自动规则选择**：根据任务描述自动选择合适的规则（v2.0.18+）
+- **规则索引**：支持规则查询和管理（v2.0.17+）
+- **规则激活反馈**：规则激活时即时反馈（v2.0.10+）
+- **规则状态管理**：区分"加载"和"激活"状态（v2.0.3+）
 
 ### 6. 会话管理
-- **会话自动保存**：程序退出时自动保存会话状态
-- **会话自动清理**：自动清理旧会话文件，最多保留10个
-- **会话名称智能生成**：自动根据用户输入生成简洁的会话名称
-- **历史会话智能检测**：启动时自动检测与当前commit一致的历史会话
-- **Git一致性检查**：恢复会话时自动检查代码版本
+- **会话自动保存**：程序退出时自动保存会话状态（v2.0.6+）
+- **会话自动清理**：自动清理旧会话文件，最多保留10个（v2.0.6+）
+- **会话名称智能生成**：自动根据用户输入生成简洁的会话名称（v2.0.7+）
+- **历史会话智能检测**：启动时自动检测与当前commit一致的历史会话（v2.0.7+）
+- **Git一致性检查**：恢复会话时自动检查代码版本（v2.0.6+）
+- **短期记忆保存和恢复**：支持短期记忆的保存和恢复（v2.0.14+）
 
 ### 7. Agent 性格系统
-- 支持多种 Agent 性格规则
+- 支持多种 Agent 性格规则（v2.0.8+）
 - 可根据任务类型和个人喜好选择合适的性格
 - 提供不同风格的交互体验
+
+### 8. 提示词自动优化
+- 首次运行时根据用户需求自动优化系统提示词（v2.0.7+）
+- 保持原有核心功能不变
+- 有针对性地增强或调整相关部分描述
 
 ## 依赖关系
 
@@ -500,6 +560,7 @@ jarvis_windows (Windows 自动化)
 - Clang（可选，用于 C/C++ 分析）
 - Rust（可选，用于 C→Rust 迁移）
 - Playwright（用于浏览器自动化）
+- pywinauto（用于 Windows 桌面自动化）
 
 ## 新增功能（v2.0.16 - v2.0.19）
 
@@ -526,6 +587,32 @@ jarvis_windows (Windows 自动化)
 - 性能指标可视化：显示首 token 响应时间和生成速度
 - 更新机制智能化：后台静默检查更新，小版本自动更新
 - 配置流程优化：支持手动输入，增加 API 连通性测试
+
+## 架构演变（v2.0.1 - v2.0.19）
+
+### v2.0.1（2026-02-01）- 大规模架构简化
+移除了约 2.3 万行代码，聚焦核心代码生成能力：
+- 移除 15 个智能增强模块（数字孪生、智能增强、自动修复等）
+- 移除 RAG 功能模块
+- 移除多个平台实现（kimi、tongyi、yuanbao）
+- 删除约 924 行废弃测试代码
+
+### v2.0.2 - v2.0.15
+持续优化和功能增强：
+- v2.0.2：TaskAnalyzer 重构，代码清理
+- v2.0.3：规则管理重构，ListRule 内置命令
+- v2.0.4：中断处理优化，Live 组件稳定性提升
+- v2.0.5：jsec 配置驱动重构，PPT 生成能力
+- v2.0.6：会话自动保存和清理，Git 一致性检查
+- v2.0.7：会话名称智能生成，历史会话智能检测
+- v2.0.8：Agent 性格规则系统
+- v2.0.9：LSP 代码分析工具，Agent 性格规则扩展
+- v2.0.10：规则激活反馈
+- v2.0.11：浏览器自动化（jb），Windows 桌面自动化（jw）
+- v2.0.12：浏览器自动化 Windows 支持，文件编码检测增强
+- v2.0.13：LSP Windows 平台支持，会话恢复增强
+- v2.0.14：短期记忆保存和恢复，输出接口统一
+- v2.0.15：规则索引自动生成，代码检查工具扩展
 
 ## 常见使用场景
 
@@ -583,6 +670,13 @@ jri show <rule_name>  # 查看规则详情
 jmo  # 启动记忆管理工具
 ```
 
+### 11. LSP 代码分析
+```bash
+jlsp hover <file> <line> <column>  # 查看符号信息
+jlsp goto-definition <file> <line> <column>  # 跳转到定义
+jlsp find-references <file> <line> <column>  # 查找引用
+```
+
 ## 注意事项
 
 ### 安全性
@@ -597,7 +691,7 @@ jmo  # 启动记忆管理工具
 
 ### 兼容性
 - 主要支持 Linux 系统
-- Windows 用户建议使用 WSL
+- Windows 用户建议使用 WSL 或原生（支持 GUI 自动化）
 - 需要 Python 3.12 环境
 
 ### 扩展性
@@ -613,9 +707,10 @@ jmo  # 启动记忆管理工具
 ## 参考资源
 
 ### 官方文档
-- [Jarvis Book](docs/jarvis_book/) - 完整的官方文档
+- [Jarvis Book](docs/jarvis_book/) - 完整的官方文档（使用 MkDocs 构建）
 - [README.md](README.md) - 项目说明
 - [ReleaseNote.md](ReleaseNote.md) - 版本发布说明
+- [在线文档](https://skyfireitdiy.github.io/Jarvis/) - GitHub Pages 部署的文档站点
 
 ### 技术文档
 - [配置说明](docs/jarvis_config.md)
@@ -634,7 +729,7 @@ Jarvis 是一个设计精良、功能强大的 AI 应用开发 SDK，具有以�
 2. **扩展性强**：支持自定义工具、平台、方法论
 3. **功能丰富**：内置 30+ 工具，覆盖多种场景
 4. **易于使用**：提供命令行工具和 SDK 两种使用方式
-5. **文档完善**：详细的官方文档和使用指南
+5. **文档完善**：详细的官方文档和使用指南，使用 MkDocs 构建
 6. **专业套件**：安全分析、代码迁移、浏览器自动化、Windows 自动化等专用工具
 7. **记忆系统**：三层记忆架构，支持知识持久化
 8. **工作流规范**：ARCHER 工作流确保任务执行质量
@@ -642,5 +737,8 @@ Jarvis 是一个设计精良、功能强大的 AI 应用开发 SDK，具有以�
 10. **规则系统**：自动选择、智能筛选、状态管理
 11. **性能优化**：进度显示、工具筛选、更新机制
 12. **用户体验**：性格系统、交互优化、反馈及时
+13. **架构简化**：移除低价值模块，聚焦核心代码生成能力
+14. **跨平台支持**：Linux、Windows（WSL 或原生）、macOS
+15. **持续演进**：快速迭代，持续优化，响应社区反馈
 
 适合个人开发者、AI 应用探索者以及需要处理各种技术任务的工程师使用。

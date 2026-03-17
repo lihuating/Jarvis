@@ -10,6 +10,58 @@ from jarvis.jarvis_utils.config import (
 from jarvis.jarvis_utils.embedding import get_context_token_count
 from jarvis.jarvis_utils.output import PrettyOutput
 
+# 导入 Rust 优化模块（如果可用）
+try:
+    from jarvis.jarvis_utils.rust_wrapper import (
+        token_count_with_cache as _rust_token_count_with_cache,
+        get_performance_info,
+    )
+    _USE_RUST = get_performance_info()['rust_enabled']
+except ImportError:
+    _USE_RUST = False
+
+# Token 计算缓存（使用内容哈希作为键）
+_token_count_cache: Dict[str, int] = {}
+_MAX_TOKEN_CACHE_SIZE = 1000  # 最大缓存条目数
+
+def _get_cached_token_count(content: str) -> int:
+    """获取缓存的 token 数，避免重复计算
+    
+    参数:
+        content: 要计算 token 的内容
+        
+    返回:
+        int: token 数量
+    """
+    # 优先使用 Rust 优化版本
+    if _USE_RUST:
+        try:
+            return _rust_token_count_with_cache(content)
+        except Exception:
+            pass  # Rust 版本失败，回退到 Python 版本
+    
+    # Python 回退实现
+    import hashlib
+    
+    # 使用内容的哈希值作为缓存键
+    content_hash = hashlib.md5(content.encode()).hexdigest()
+    
+    if content_hash in _token_count_cache:
+        return _token_count_cache[content_hash]
+    
+    # 计算并缓存
+    token_count = get_context_token_count(content)
+    
+    # 限制缓存大小，避免内存占用过大
+    if len(_token_count_cache) >= _MAX_TOKEN_CACHE_SIZE:
+        # 清除最早的 100 个条目
+        items = list(_token_count_cache.items())
+        for key, _ in items[:100]:
+            del _token_count_cache[key]
+    
+    _token_count_cache[content_hash] = token_count
+    return token_count
+
 
 class ReadCodeTool:
     name = "read_code"
@@ -143,20 +195,18 @@ class ReadCodeTool:
             # 读取指定行号范围的内容
             selected_lines = lines[start_line - 1 : end_line]
 
-            # 为每行添加行号
-            numbered_lines = []
-            for i, line in enumerate(selected_lines, start=start_line):
-                # 行号右对齐，占4位
-                line_number_str = f"{i:4d}"
-                # 移除行尾的换行符，因为我们会在后面统一添加
-                line_content = line.rstrip("\n\r")
-                numbered_lines.append(f"{line_number_str}:{line_content}")
+            # 为每行添加行号（使用列表推导式优化性能）
+            # Python 3.6 兼容性：将反斜杠操作移出 f-string 表达式
+            numbered_lines = [
+                f"{i:4d}:{line.rstrip(chr(10) + chr(13))}"
+                for i, line in enumerate(selected_lines, start=start_line)
+            ]
 
             # 构造输出内容
             output_content = "\n".join(numbered_lines)
 
-            # 估算token数
-            content_tokens = get_context_token_count(output_content)
+            # 估算token数（使用缓存）
+            content_tokens = _get_cached_token_count(output_content)
             max_token_limit = self._get_max_token_limit(agent)
 
             # 检查token数是否超过限制
@@ -170,11 +220,12 @@ class ReadCodeTool:
 
                 # 读取安全范围内的内容
                 safe_selected_lines = lines[start_line - 1 : safe_end_line]
-                safe_numbered_lines = []
-                for i, line in enumerate(safe_selected_lines, start=start_line):
-                    line_number_str = f"{i:4d}"
-                    line_content = line.rstrip("\n\r")
-                    safe_numbered_lines.append(f"{line_number_str}:{line_content}")
+                # 使用列表推导式优化性能
+                # Python 3.6 兼容性：将反斜杠操作移出 f-string 表达式
+                safe_numbered_lines = [
+                    f"{i:4d}:{line.rstrip(chr(10) + chr(13))}"
+                    for i, line in enumerate(safe_selected_lines, start=start_line)
+                ]
 
                 # 构造部分读取结果
                 partial_content = "\n".join(safe_numbered_lines)
@@ -477,8 +528,9 @@ class ReadCodeTool:
             total_tokens = 0  # 累计读取的token数
             max_token_limit = self._get_max_token_limit(agent)
 
-            # 第一遍：检查所有文件的累计token数是否超过限制
+            # 第一遍：检查所有文件的累计token数是否超过限制，同时保存文件内容避免重复读取
             file_read_info = []  # 存储每个文件要读取的信息
+            file_contents_cache = {}  # 缓存文件内容，避免重复读取
             for file_info in args["files"]:
                 if not isinstance(file_info, dict) or "path" not in file_info:
                     continue
@@ -494,8 +546,13 @@ class ReadCodeTool:
                     continue
 
                 try:
-                    # 读取文件内容（先检测编码）
-                    content = read_text_file(abs_path, errors="ignore")
+                    # 读取文件内容（先检测编码），并缓存避免重复读取
+                    if abs_path not in file_contents_cache:
+                        content = read_text_file(abs_path, errors="ignore")
+                        file_contents_cache[abs_path] = content
+                    else:
+                        content = file_contents_cache[abs_path]
+                    
                     lines = content.splitlines()
 
                     total_lines = len(lines)
@@ -523,27 +580,27 @@ class ReadCodeTool:
                         # 读取指定行号范围的内容
                         selected_lines = lines[actual_start_line - 1 : actual_end_line]
 
-                        # 为每行添加行号
-                        numbered_lines = []
-                        for i, line in enumerate(
-                            selected_lines, start=actual_start_line
-                        ):
-                            line_number_str = f"{i:4d}"
-                            line_content = line.rstrip("\n\r")
-                            numbered_lines.append(f"{line_number_str}:{line_content}")
+                        # 为每行添加行号（使用列表推导式优化性能）
+                        # Python 3.6 兼容性：将反斜杠操作移出 f-string 表达式
+                        numbered_lines = [
+                            f"{i:4d}:{line.rstrip(chr(10) + chr(13))}"
+                            for i, line in enumerate(selected_lines, start=actual_start_line)
+                        ]
 
                         # 构造输出内容用于token估算
                         output_content = "\n".join(numbered_lines)
-                        content_tokens = get_context_token_count(output_content)
+                        content_tokens = _get_cached_token_count(output_content)
 
                         file_read_info.append(
                             {
                                 "filepath": filepath,
+                                "abs_path": abs_path,
                                 "start_line": actual_start_line,
                                 "end_line": actual_end_line,
                                 "read_lines": actual_end_line - actual_start_line + 1,
                                 "tokens": content_tokens,
                                 "file_info": file_info,
+                                "numbered_lines": numbered_lines,  # 保存编号后的行，避免重新计算
                             }
                         )
                         total_tokens += content_tokens
@@ -573,7 +630,7 @@ class ReadCodeTool:
                     ),
                 }
 
-            # 第二遍：实际读取文件（按文件分组，合并同一文件的多个范围请求，避免块重复）
+            # 第二遍：使用第一遍缓存的数据直接生成输出，避免重复读取文件
             # 按文件路径分组
             from collections import defaultdict
 
@@ -588,63 +645,55 @@ class ReadCodeTool:
             # 按文件处理，合并同一文件的多个范围请求
             for abs_path, requests in file_requests.items():
                 if len(requests) == 1:
-                    # 单个范围请求，直接处理
+                    # 单个范围请求，直接使用第一遍缓存的数据
                     file_info = requests[0]
-                    result = self._handle_single_file(
-                        file_info["path"].strip(),
-                        file_info.get("start_line", 1),
-                        file_info.get("end_line", -1),
-                        agent,
-                    )
-                    if result["success"]:
-                        all_outputs.append(result["stdout"])
-                        # 提取真实读取的实际范围信息
-                        try:
-                            # 从result输出中解析真实的读取范围
-                            stdout_lines = result["stdout"].split("\n")
-                            actual_range_line = None
-                            total_lines_line = None
-                            for line in stdout_lines:
-                                if "📊 读取范围:" in line:
-                                    actual_range_line = line
-                                elif "📄 总行数:" in line:
-                                    total_lines_line = line
-                            if actual_range_line and total_lines_line:
-                                # 从实际输出中提取真实范围
-                                import re
-
-                                range_match = re.search(
-                                    r"📊 读取范围: (\d+)-(\d+)", actual_range_line
-                                )
-                                if range_match:
-                                    actual_start = range_match.group(1)
-                                    actual_end = range_match.group(2)
-                                    status_lines.append(
-                                        f"✅ {file_info['path']} 文件读取成功 (实际范围: {actual_start}-{actual_end})"
-                                    )
-                                else:
-                                    # 如果无法解析范围，则显示请求的范围
-                                    status_lines.append(
-                                        f"✅ {file_info['path']} 文件读取成功 (请求范围: {file_info.get('start_line', 1)}-{file_info.get('end_line', -1)})"
-                                    )
-                            else:
-                                # 如果无法从输出中找到范围信息，也显示请求的范围
-                                status_lines.append(
-                                    f"✅ {file_info['path']} 文件读取成功 (请求范围: {file_info.get('start_line', 1)}-{file_info.get('end_line', -1)})"
-                                )
-                        except Exception:
-                            # 如果解析失败，回退到原始行为
-                            status_lines.append(
-                                f"✅ {file_info['path']} 文件读取成功 (请求范围: {file_info.get('start_line', 1)}-{file_info.get('end_line', -1)})"
-                            )
-                    else:
-                        all_outputs.append(
-                            f"❌ {file_info['path']}: {result['stderr']}"
+                    
+                    # 从缓存中查找对应的文件信息
+                    cached_info = None
+                    for info in file_read_info:
+                        if info["abs_path"] == abs_path:
+                            cached_info = info
+                            break
+                    
+                    if cached_info:
+                        # 直接使用缓存的数据生成输出
+                        output = f"\n🔍 文件: {abs_path}\n📄 总行数: {file_contents_cache[abs_path].count(chr(10)) + 1}\n📊 读取范围: {cached_info['start_line']}-{cached_info['end_line']}\n📈 读取行数: {cached_info['read_lines']}\n"
+                        output += "=" * 80 + "\n"
+                        output += "\n".join(cached_info["numbered_lines"])
+                        output += "\n" + "=" * 80 + "\n"
+                        
+                        # 添加上下文信息
+                        context_info = self._get_file_context(
+                            abs_path, cached_info['start_line'], cached_info['end_line'], agent
                         )
-                        status_lines.append(f"❌ {file_info['path']} 文件读取失败")
-                        overall_success = False
+                        if context_info:
+                            output += context_info
+                        
+                        all_outputs.append(output)
+                        status_lines.append(
+                            f"✅ {file_info['path']} 文件读取成功 (范围: {cached_info['start_line']}-{cached_info['end_line']})"
+                        )
+                    else:
+                        # 缓存未命中，回退到原始行为
+                        result = self._handle_single_file(
+                            file_info["path"].strip(),
+                            file_info.get("start_line", 1),
+                            file_info.get("end_line", -1),
+                            agent,
+                        )
+                        if result["success"]:
+                            all_outputs.append(result["stdout"])
+                            status_lines.append(
+                                f"✅ {file_info['path']} 文件读取成功 (范围: {file_info.get('start_line', 1)}-{file_info.get('end_line', -1)})"
+                            )
+                        else:
+                            all_outputs.append(f"❌ {file_info['path']}: {result['stderr']}")
+                            status_lines.append(f"❌ {file_info['path']} 文件读取失败")
+                            overall_success = False
                 else:
                     # 多个范围请求，合并处理并去重
+                    # 对于多范围请求，仍然使用原有的 _handle_merged_ranges 方法
+                    # 因为它需要处理更复杂的范围合并逻辑
                     merged_result = self._handle_merged_ranges(
                         abs_path, requests, agent
                     )
@@ -806,14 +855,13 @@ def sub(a, b):
     PrettyOutput.auto_print("【测试3】多个文件读取")
     PrettyOutput.auto_print("-" * 80)
 
-    with (
-        tempfile.NamedTemporaryFile(mode="w", suffix=".py", delete=False) as f1,
-        tempfile.NamedTemporaryFile(mode="w", suffix=".py", delete=False) as f2,
-    ):
-        test_file3 = f1.name
-        test_file4 = f2.name
-        f1.write(test_code)
-        f2.write(test_code)
+    # Python 3.6 兼容性：使用嵌套的 with 语句
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".py", delete=False) as f1:
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".py", delete=False) as f2:
+            test_file3 = f1.name
+            test_file4 = f2.name
+            f1.write(test_code)
+            f2.write(test_code)
 
     try:
         result = tool.execute(

@@ -37,6 +37,59 @@ from jarvis.jarvis_utils.tag import ot
 from jarvis.jarvis_utils.utils import daily_check_git_updates
 from jarvis.jarvis_utils.utils import is_context_overflow
 
+# 导入 Rust 优化模块（如果可用）
+try:
+    from jarvis.jarvis_utils.rust_wrapper import (
+        extract_json_from_text as _rust_extract_json_from_text,
+        clean_extra_markers as _rust_clean_extra_markers,
+        get_performance_info,
+    )
+    _USE_RUST = get_performance_info()['rust_enabled']
+except ImportError:
+    _USE_RUST = False
+
+# 工具加载缓存
+_tools_cache: Dict[str, Dict[str, Tool]] = {}
+_tools_dir_hashes: Dict[str, str] = {}
+
+# 预编译正则表达式，提升性能
+_TOOL_CALL_OPEN_TAG = ot('TOOL_CALL')
+_TOOL_CALL_CLOSE_TAG = ct('TOOL_CALL')
+# 匹配工具调用开始标签（忽略大小写）
+_TOOL_CALL_OPEN_PATTERN = re.compile(rf"(?i){re.escape(_TOOL_CALL_OPEN_TAG)}")
+# 匹配工具调用结束标签（忽略大小写）
+_TOOL_CALL_CLOSE_PATTERN = re.compile(rf"(?i){re.escape(_TOOL_CALL_CLOSE_TAG)}")
+# 匹配工具调用结束标签（行首，忽略大小写）
+_TOOL_CALL_CLOSE_BOL_PATTERN = re.compile(rf"(?mi)^{re.escape(_TOOL_CALL_CLOSE_TAG)}")
+# 匹配工具调用块（多行，忽略大小写）
+_TOOL_CALL_BLOCK_PATTERN = re.compile(
+    rf"(?msi){re.escape(_TOOL_CALL_OPEN_TAG)}(.*?){re.escape(_TOOL_CALL_CLOSE_TAG)}"
+)
+# 匹配结束标签在行末（忽略大小写）
+_TOOL_CALL_CLOSE_EOL_PATTERN = re.compile(rf"{re.escape(_TOOL_CALL_CLOSE_TAG)}$", re.IGNORECASE)
+# 额外标记清理模式
+_EXTRA_MARKERS_PATTERN = re.compile(r"<\|.*?\|>", re.IGNORECASE)
+
+def _get_dir_hash(directory: str) -> str:
+    """计算目录的哈希值，用于检测文件变化"""
+    import hashlib
+    path = Path(directory)
+    if not path.exists():
+        return ""
+    
+    hash_obj = hashlib.md5()
+    try:
+        for file in sorted(path.glob("*.py")):
+            if file.name in ["__init__.py", "base.py"]:
+                continue
+            if file.is_file():
+                stat = file.stat()
+                hash_obj.update(f"{file.name}:{stat.st_mtime}:{stat.st_size}".encode())
+    except Exception:
+        return ""
+    
+    return hash_obj.hexdigest()
+
 
 tool_call_help = f"""
 ## 工具调用指南（Markdown）
@@ -101,9 +154,7 @@ class ToolRegistry(OutputHandlerProtocol):
 
     def can_handle(self, response: str) -> bool:
         # 仅当 {ot("TOOL_CALL")} 出现在行首时才认为可以处理（忽略大小写）
-        has_tool_call = (
-            re.search(rf"(?mi){re.escape(ot('TOOL_CALL'))}", response) is not None
-        )
+        has_tool_call = _TOOL_CALL_OPEN_PATTERN.search(response) is not None
         return has_tool_call
 
     def prompt(self) -> str:
@@ -221,19 +272,88 @@ class ToolRegistry(OutputHandlerProtocol):
                 f"工具调用处理失败: {str(e)}\n\n{agent_final.get_tool_usage_prompt()}",
             )
 
-    def __init__(self) -> None:
-        """初始化工具注册表"""
+    def __init__(self, use_cache: bool = True) -> None:
+        """初始化工具注册表
+        
+        参数:
+            use_cache: 是否使用缓存，默认为True
+        """
         self.tools: Dict[str, Tool] = {}
         # 记录内置工具名称，用于区分内置工具和用户自定义工具
         self._builtin_tool_names: Set[str] = set()
         # 定义必选工具列表（这些工具将始终可用）
         self._required_tools: List[str] = ["execute_script"]
-        # 加载内置工具和外部工具
+        
+        # 尝试从缓存加载
+        if use_cache and self._try_load_from_cache():
+            # 应用工具配置组过滤
+            self._apply_tool_config_filter()
+            return
+        
+        # 缓存未命中，重新加载工具
         self._load_builtin_tools()
         self._load_external_tools()
         self._load_mcp_tools()
         # 应用工具配置组过滤
         self._apply_tool_config_filter()
+        # 更新缓存
+        if use_cache:
+            self._update_cache()
+    
+    def _try_load_from_cache(self) -> bool:
+        """尝试从缓存加载工具
+        
+        返回:
+            bool: 是否成功从缓存加载
+        """
+        try:
+            # 检查工具目录是否发生变化
+            builtin_dir = str(Path(__file__).parent)
+            builtin_hash = _get_dir_hash(builtin_dir)
+            
+            cache_key = "all_tools"
+            if cache_key not in _tools_cache:
+                return False
+            
+            if builtin_hash != _tools_dir_hashes.get("builtin", ""):
+                return False
+            
+            # 检查外部工具目录
+            from jarvis.jarvis_utils.config import get_tool_load_dirs
+            tool_dirs = [str(Path(get_data_dir()) / "tools")] + get_tool_load_dirs()
+            for tool_dir in tool_dirs:
+                dir_hash = _get_dir_hash(tool_dir)
+                if dir_hash != _tools_dir_hashes.get(tool_dir, ""):
+                    return False
+            
+            # 缓存有效，直接加载
+            self.tools = _tools_cache[cache_key].copy()
+            # 恢复内置工具名称
+            self._builtin_tool_names = set(
+                name for name in self.tools.keys() 
+                if any(name in _tools_cache[cache_key])
+            )
+            return True
+        except Exception:
+            return False
+    
+    def _update_cache(self) -> None:
+        """更新工具缓存"""
+        try:
+            # 保存工具到缓存
+            cache_key = "all_tools"
+            _tools_cache[cache_key] = self.tools.copy()
+            
+            # 保存目录哈希
+            builtin_dir = str(Path(__file__).parent)
+            _tools_dir_hashes["builtin"] = _get_dir_hash(builtin_dir)
+            
+            from jarvis.jarvis_utils.config import get_tool_load_dirs
+            tool_dirs = [str(Path(get_data_dir()) / "tools")] + get_tool_load_dirs()
+            for tool_dir in tool_dirs:
+                _tools_dir_hashes[tool_dir] = _get_dir_hash(tool_dir)
+        except Exception:
+            pass
 
     def use_tools(self, name: List[str]) -> None:
         """使用指定工具
@@ -678,6 +798,14 @@ class ToolRegistry(OutputHandlerProtocol):
                 - 第一个元素是提取的JSON字符串（如果找到），否则为None
                 - 第二个元素是JSON结束后的位置
         """
+        # 优先使用 Rust 优化版本
+        if _USE_RUST:
+            try:
+                return _rust_extract_json_from_text(text, start_pos)
+            except Exception:
+                pass  # Rust 版本失败，回退到 Python 版本
+        
+        # Python 回退实现
         # 跳过空白字符
         pos = start_pos
         while pos < len(text) and text[pos] in (" ", "\t", "\n", "\r"):
@@ -736,17 +864,16 @@ class ToolRegistry(OutputHandlerProtocol):
         返回:
             清理后的文本
         """
-        # 常见的额外标记模式
-        extra_markers = [
-            r"<\|tool_call_end\|>",
-            r"<\|tool_calls_section_end\|>",
-            r"<\|.*?\|>",  # 匹配所有 <|...|> 格式的标记
-        ]
-
-        cleaned = text
-        for pattern in extra_markers:
-            cleaned = re.sub(pattern, "", cleaned, flags=re.IGNORECASE)
-
+        # 优先使用 Rust 优化版本
+        if _USE_RUST:
+            try:
+                return _rust_clean_extra_markers(text).strip()
+            except Exception:
+                pass  # Rust 版本失败，回退到 Python 版本
+        
+        # Python 回退实现
+        # 使用预编译的正则表达式清理所有 <|...|> 格式的标记
+        cleaned = _EXTRA_MARKERS_PATTERN.sub("", text)
         return cleaned.strip()
 
     @staticmethod
@@ -810,20 +937,14 @@ class ToolRegistry(OutputHandlerProtocol):
             Exception: 如果工具调用缺少必要字段
         """
         # 如果</TOOL_CALL>出现在响应的末尾，但是前面没有换行符，自动插入一个换行符进行修复（忽略大小写）
-        close_tag = ct("TOOL_CALL")
-        # 使用正则表达式查找结束标签（忽略大小写），以获取实际位置和原始大小写
-        close_tag_pattern = re.escape(close_tag)
-        match = re.search(rf"{close_tag_pattern}$", content.rstrip(), re.IGNORECASE)
+        match = _TOOL_CALL_CLOSE_EOL_PATTERN.search(content.rstrip())
         if match:
             pos = match.start()
             if pos > 0 and content[pos - 1] not in ("\n", "\r"):
                 content = content[:pos] + "\n" + content[pos:]
 
-        # 首先尝试标准的提取方式（忽略大小写）
-        pattern = (
-            rf"(?msi){re.escape(ot('TOOL_CALL'))}(.*?)^{re.escape(ct('TOOL_CALL'))}"
-        )
-        data = re.findall(pattern, content)
+        # 首先尝试标准的提取方式（使用预编译的正则表达式）
+        data = _TOOL_CALL_BLOCK_PATTERN.findall(content)
         auto_completed = False
 
         # 如果检测到多个工具调用块，先检查是否是多个独立的工具调用
@@ -845,22 +966,15 @@ class ToolRegistry(OutputHandlerProtocol):
         if not data:
             # can_handle 确保 ot("TOOL_CALL") 在内容中（行首）。
             # 如果数据为空，则表示行首的 ct("TOOL_CALL") 可能丢失。
-            has_open_at_bol = (
-                re.search(rf"(?mi){re.escape(ot('TOOL_CALL'))}", content) is not None
-            )
-            has_close_at_bol = (
-                re.search(rf"(?mi)^{re.escape(ct('TOOL_CALL'))}", content) is not None
-            )
+            has_open_at_bol = _TOOL_CALL_OPEN_PATTERN.search(content) is not None
+            has_close_at_bol = _TOOL_CALL_CLOSE_BOL_PATTERN.search(content) is not None
 
             if has_open_at_bol and not has_close_at_bol:
                 # 尝试通过附加结束标签来修复它（确保结束标签位于行首）
-                fixed_content = content.strip() + f"\n{ct('TOOL_CALL')}"
+                fixed_content = content.strip() + f"\n{_TOOL_CALL_CLOSE_TAG}"
 
                 # 再次提取，并检查JSON是否有效
-                temp_data = re.findall(
-                    pattern,
-                    fixed_content,
-                )
+                temp_data = _TOOL_CALL_BLOCK_PATTERN.findall(fixed_content)
 
                 if temp_data:
                     try:
@@ -875,10 +989,7 @@ class ToolRegistry(OutputHandlerProtocol):
             # 如果仍然没有数据，尝试更宽松的提取：直接从开始标签后提取JSON
             if not data:
                 # 先检查是否有多个工具调用块（可能被当作一个 JSON 来解析导致失败）
-                multiple_blocks = re.findall(
-                    rf"(?msi){re.escape(ot('TOOL_CALL'))}(.*?){re.escape(ct('TOOL_CALL'))}",
-                    content,
-                )
+                multiple_blocks = _TOOL_CALL_BLOCK_PATTERN.findall(content)
                 (
                     error_msg,
                     has_multiple,
@@ -893,9 +1004,7 @@ class ToolRegistry(OutputHandlerProtocol):
                     )
 
                 # 找到开始标签的位置
-                open_tag_match = re.search(
-                    rf"(?i){re.escape(ot('TOOL_CALL'))}", content
-                )
+                open_tag_match = _TOOL_CALL_OPEN_PATTERN.search(content)
                 if open_tag_match:
                     # 从开始标签后提取JSON
                     start_pos = open_tag_match.end()
@@ -936,12 +1045,8 @@ class ToolRegistry(OutputHandlerProtocol):
             if not data:
                 long_hint = ToolRegistry._get_long_response_hint(content)
                 # 检查是否有开始和结束标签，生成更准确的错误消息
-                has_open = (
-                    re.search(rf"(?i){re.escape(ot('TOOL_CALL'))}", content) is not None
-                )
-                has_close = (
-                    re.search(rf"(?i){re.escape(ct('TOOL_CALL'))}", content) is not None
-                )
+                has_open = _TOOL_CALL_OPEN_PATTERN.search(content) is not None
+                has_close = _TOOL_CALL_CLOSE_PATTERN.search(content) is not None
 
                 if has_open and has_close:
                     # 有开始和结束标签，但JSON解析失败
@@ -1146,7 +1251,7 @@ class ToolRegistry(OutputHandlerProtocol):
         try:
             result = None
             if getattr(tool, "protocol_version", "1.0") == "2.0":
-                # v2.0: agent与参数分离传递
+                # v2.0: agent与参数分离传递，不需要拷贝参数
                 # 尝试使用agent作为第二个参数，如果不兼容则回退到旧方式
                 try:
                     result = tool.func(arguments, agent)  # type: ignore[call-arg]
@@ -1155,16 +1260,24 @@ class ToolRegistry(OutputHandlerProtocol):
                     result = tool.func(arguments)
             else:
                 # v1.0: 兼容旧实现，将agent注入到arguments（如果提供）
-                args_to_call = arguments.copy() if isinstance(arguments, dict) else {}
-                if agent is not None:
+                # 只在需要注入agent时才拷贝参数
+                if agent is not None and isinstance(arguments, dict):
+                    # 需要注入agent，创建参数副本
+                    args_to_call = arguments.copy()
                     args_to_call["agent"] = agent
-                result = tool.execute(args_to_call)
+                    result = tool.execute(args_to_call)
+                else:
+                    # 不需要注入agent，直接传递原始参数
+                    result = tool.execute(arguments)
         except TypeError:
             # 兼容处理：如果函数签名不匹配，回退到旧方式
-            args_to_call = arguments.copy() if isinstance(arguments, dict) else {}
-            if agent is not None:
+            # 只在需要注入agent时才拷贝参数
+            if agent is not None and isinstance(arguments, dict):
+                args_to_call = arguments.copy()
                 args_to_call["agent"] = agent
-            result = tool.execute(args_to_call)
+                result = tool.execute(args_to_call)
+            else:
+                result = tool.execute(arguments)
 
         return result
 
