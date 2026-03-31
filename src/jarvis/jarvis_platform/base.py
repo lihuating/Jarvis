@@ -1,7 +1,7 @@
-import os
-
 # -*- coding: utf-8 -*-
+import os
 import re
+import random
 import threading
 from abc import ABC
 from abc import abstractmethod
@@ -25,6 +25,16 @@ from jarvis.jarvis_utils.config import get_max_input_token_count
 from jarvis.jarvis_utils.config import get_pretty_output
 from jarvis.jarvis_utils.config import get_smart_max_input_token_count
 from jarvis.jarvis_utils.config import get_llm_config
+from jarvis.jarvis_utils.config import (
+    get_llm_auto_model_large_task_token_threshold,
+    get_llm_auto_model_small_task_token_threshold,
+    get_llm_first_chunk_retry_backoff_ms_max,
+    get_llm_first_chunk_retry_backoff_ms_min,
+    get_llm_first_chunk_timeout_seconds,
+    is_enable_llm_auto_model_selection,
+    is_enable_llm_first_chunk_quick_retry,
+    is_enable_llm_stream_fallback_to_non_stream,
+)
 from jarvis.jarvis_utils.config import get_normal_model_name
 from jarvis.jarvis_utils.config import get_cheap_model_name
 from jarvis.jarvis_utils.config import get_smart_model_name
@@ -118,6 +128,11 @@ class BasePlatform(ABC):
         """执行对话"""
         raise NotImplementedError("chat is not implemented")
 
+    # 可选能力：非流式对话（用于流式失败降级）
+    # 子类可实现该方法；不作为抽象方法以兼容旧自定义平台。
+    def chat_non_stream(self, message: str) -> str:  # pragma: no cover
+        raise NotImplementedError
+
     def complete(self, prompt: str, **kwargs: Any) -> str:
         """无状态补全方法
 
@@ -144,6 +159,118 @@ class BasePlatform(ABC):
         for chunk in self.chat(prompt):
             response += chunk
 
+        return response
+
+    @staticmethod
+    def _wrap_iterator_with_first_chunk_timeout(
+        it: Generator[str, None, None],
+        *,
+        timeout_seconds: float,
+    ) -> Generator[str, None, None]:
+        """为流式迭代器增加“首 chunk 超时”控制。
+
+        说明：
+        - 只影响第一次 next()；后续 chunk 仍沿用底层迭代器行为
+        - 由于底层 SDK/网络调用通常不可取消，超时后底层请求可能仍在后台执行；
+          这里用 daemon 线程避免阻塞主流程。
+        """
+
+        class _FirstChunkTimeoutWrapper:
+            def __init__(self, inner):
+                self._inner = inner
+                self._first_done = False
+
+            def __iter__(self):
+                return self
+
+            def __next__(self):
+                if self._first_done:
+                    return next(self._inner)
+
+                self._first_done = True
+                result_holder: list[Any] = [None]
+                error_holder: list[BaseException | None] = [None]
+                done = threading.Event()
+
+                def _run():
+                    try:
+                        result_holder[0] = next(self._inner)
+                    except BaseException as e:
+                        error_holder[0] = e
+                    finally:
+                        done.set()
+
+                t = threading.Thread(target=_run, daemon=True)
+                t.start()
+                if not done.wait(timeout=max(0.0, float(timeout_seconds))):
+                    raise TimeoutError(
+                        f"首个chunk超时（>{timeout_seconds}s），可能是网络抖动/服务端排队"
+                    )
+                if error_holder[0] is not None:
+                    raise error_holder[0]
+                return result_holder[0]
+
+        return _FirstChunkTimeoutWrapper(it)  # type: ignore[return-value]
+
+    def _should_auto_select_model_type(self) -> bool:
+        if not is_enable_llm_auto_model_selection():
+            return False
+        # 只在“近似无状态”的场景启用：避免破坏长对话的上下文一致性
+        try:
+            msgs = self.get_messages()
+            # 允许：空 / 仅 system
+            non_system = [m for m in msgs if m.get("role") != "system"]
+            return len(non_system) == 0
+        except Exception:
+            return False
+
+    def _pick_model_type_for_message(self, message: str) -> str:
+        """基于输入规模做 cheap/normal/smart 启发式选择。"""
+        try:
+            tokens = get_context_token_count(message)
+        except Exception:
+            tokens = len(message) // 4
+        small_th = get_llm_auto_model_small_task_token_threshold()
+        large_th = get_llm_auto_model_large_task_token_threshold()
+        if large_th > 0 and tokens >= large_th:
+            return "smart"
+        if small_th > 0 and tokens <= small_th:
+            return "cheap"
+        return "normal"
+
+    def _maybe_delegate_to_auto_selected_platform(self, message: str, max_output: int) -> Optional[str]:
+        """在“无状态”场景下，将请求委托给 cheap/normal/smart 平台实例。"""
+        if not self._should_auto_select_model_type():
+            return None
+        # 已经是 cheap/smart 的实例不再切换
+        if self.platform_type in {"cheap", "smart"}:
+            return None
+        target_type = self._pick_model_type_for_message(message)
+        if target_type == self.platform_type:
+            return None
+        try:
+            delegated = type(self)(platform_type=target_type, agent=self.agent)
+            delegated.set_suppress_output(self.suppress_output)
+            # 仅复制 system 消息（若有）
+            try:
+                delegated.set_messages(self.get_messages())
+            except Exception:
+                pass
+            PrettyOutput.auto_print(
+                f"💰 自动选择模型：{self.platform_type} → {target_type}"
+                if target_type == "cheap"
+                else f"🧠 自动选择模型：{self.platform_type} → {target_type}"
+            )
+            return delegated.chat_until_success(message, max_output=max_output)
+        except Exception:
+            return None
+
+    def _chat_non_stream_once(self, message: str, max_output: int = 0) -> str:
+        """非流式兜底：一次性拿全量文本。"""
+        # 尽量不影响旧平台：没有实现就直接抛出
+        response = self.chat_non_stream(message)
+        if max_output > 0 and len(response) > max_output:
+            return response[:max_output]
         return response
 
     def _format_progress_bar(self, percent: float, width: int = 20) -> str:
@@ -203,8 +330,14 @@ class BasePlatform(ABC):
         self, message: str, start_time: float, max_output: int = 0
     ) -> Tuple[str, float]:
         """使用 pretty output 模式进行聊天（封装到 PrettyOutput）"""
+        # 为首 chunk 增加超时控制（避免网络抖动导致长时间无响应）
+        timeout_s = get_llm_first_chunk_timeout_seconds()
+        wrapped = self._wrap_iterator_with_first_chunk_timeout(
+            self.chat(message),
+            timeout_seconds=timeout_s,
+        )
         return PrettyOutput.stream_chat_with_panel(
-            chat_iterator=self.chat(message),
+            chat_iterator=wrapped,
             title=self.name(),
             status_message=f"🤔 {(G.get_current_agent_name() + ' · ') if G.get_current_agent_name() else ''}{self.name()} 正在思考中...",
             get_used_token_count=self.get_used_token_count,
@@ -279,6 +412,11 @@ class BasePlatform(ABC):
 
         start_time = time.time()
 
+        # 无状态场景：按输入规模自动选择 cheap/normal/smart
+        delegated = self._maybe_delegate_to_auto_selected_platform(message, max_output)
+        if delegated is not None:
+            return delegated
+
         # 当输入为空白字符串时，打印警告并直接返回空字符串
         if message.strip() == "":
             PrettyOutput.auto_print("⚠️ 输入为空白字符串，已忽略本次请求")
@@ -290,14 +428,54 @@ class BasePlatform(ABC):
         # 根据输出模式选择不同的处理方式
         first_token_time = 0.0
         if not self.suppress_output:
-            if get_pretty_output():
-                response, first_token_time = self._chat_with_pretty_output(
-                    message, start_time, max_output
-                )
-            else:
-                response = self._chat_with_simple_output(
-                    message, start_time, max_output
-                )
+            response = ""
+            last_err: Optional[BaseException] = None
+
+            def _do_stream() -> Tuple[str, float]:
+                if get_pretty_output():
+                    return self._chat_with_pretty_output(message, start_time, max_output)
+                # simple output 路径仍然走流式，但不做 panel
+                return self._chat_with_simple_output(message, start_time, max_output), 0.0
+
+            # 1) 首次尝试：流式
+            try:
+                response, first_token_time = _do_stream()
+            except BaseException as e:
+                last_err = e
+                response = ""
+
+            # 2) 首 chunk 快速重试（仅一次，短退避 200–500ms）
+            if (not response) and is_enable_llm_first_chunk_quick_retry():
+                try:
+                    backoff_min = get_llm_first_chunk_retry_backoff_ms_min()
+                    backoff_max = get_llm_first_chunk_retry_backoff_ms_max()
+                    if backoff_max < backoff_min:
+                        backoff_max = backoff_min
+                    backoff_ms = random.randint(backoff_min, backoff_max) if backoff_max > 0 else 0
+                    if backoff_ms > 0:
+                        time.sleep(backoff_ms / 1000.0)
+                    PrettyOutput.auto_print(
+                        f"🔄 首chunk失败，快速重试一次（退避 {backoff_ms}ms）"
+                    )
+                    response, first_token_time = _do_stream()
+                    last_err = None
+                except BaseException as e:
+                    last_err = e
+                    response = ""
+
+            # 3) 流式失败 → 非流式兜底（仅一次）
+            if (not response) and is_enable_llm_stream_fallback_to_non_stream():
+                try:
+                    PrettyOutput.auto_print("⚠️ 流式输出失败，尝试降级为非流式请求一次…")
+                    response = self._chat_non_stream_once(message, max_output=max_output)
+                    last_err = None
+                except BaseException as e:
+                    last_err = e
+                    response = ""
+
+            # 若仍失败：抛出异常，交给 while_success 做长退避重试
+            if not response and last_err is not None:
+                raise last_err
 
             # 计算响应时间并打印总结
             end_time = time.time()

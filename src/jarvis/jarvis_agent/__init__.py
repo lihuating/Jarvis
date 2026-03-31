@@ -2152,6 +2152,29 @@ class Agent:
             # 将非交互模式说明添加到用户输入中
             enhanced_input = user_input + non_interactive_note
 
+            # 工程索引摘要（只扫一次）：优先加载 git 根目录下的 JVS_MEMORY.md
+            # 若不存在则自动生成一次并加载（减少首次“开始回答”前的扫描/索引成本）
+            try:
+                from jarvis.jarvis_utils.project_memory import (
+                    ensure_jvs_memory,
+                    get_git_root_fallback,
+                    read_jvs_memory,
+                )
+
+                project_root = get_git_root_fallback(os.getcwd())
+                loaded = read_jvs_memory(project_root)
+                if not loaded:
+                    ensure_jvs_memory(project_root)
+                    loaded = read_jvs_memory(project_root)
+                if loaded:
+                    cur = self.session.addon_prompt or ""
+                    # 只在本轮开始前注入一次：避免每轮重复塞入同一份摘要
+                    self.set_addon_prompt(
+                        (cur + "\n\n" + loaded).strip() if cur.strip() else loaded.strip()
+                    )
+            except Exception:
+                pass
+
             # 先设置 session.prompt，确保 _first_run() 中可以访问到用户输入
             # 注意：此时还没有添加已激活的规则内容，规则内容会在之后追加
             self.session.prompt = enhanced_input

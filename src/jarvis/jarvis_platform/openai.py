@@ -232,28 +232,67 @@ class OpenAIModel(BasePlatform):
         try:
             self.messages.append({"role": "user", "content": message})
 
-            # 循环处理，直到不是因为长度限制而结束
-            response = self.client.chat.completions.create(
-                model=self.model_name,  # Use the configured model name
-                messages=self.messages,  # type: ignore[arg-type]
-                stream=True,
-            )
+            import time
 
+            def _stream_once() -> str:
+                """执行一次流式请求并返回完整文本（同时 yield 增量）。"""
+                response = self.client.chat.completions.create(
+                    model=self.model_name,  # Use the configured model name
+                    messages=self.messages,  # type: ignore[arg-type]
+                    stream=True,
+                )
+
+                full = ""
+                for chunk in response:
+                    from openai.types.chat import ChatCompletionChunk
+
+                    chunk_typed: ChatCompletionChunk = cast(ChatCompletionChunk, chunk)
+                    if chunk_typed.choices and len(chunk_typed.choices) > 0:
+                        choice = chunk_typed.choices[0]
+                        if choice.delta and choice.delta.content:
+                            text = choice.delta.content
+                            full += text
+                            yield text  # type: ignore[misc]
+                return full
+
+            def _non_stream_once() -> str:
+                """非流式兜底：在流式不稳定时尽量返回答案。"""
+                resp = self.client.chat.completions.create(
+                    model=self.model_name,
+                    messages=self.messages,  # type: ignore[arg-type]
+                    stream=False,
+                )
+                try:
+                    content = resp.choices[0].message.content  # type: ignore[union-attr]
+                    return content or ""
+                except Exception:
+                    return ""
+
+            # 流式优先：首 token 超时/网络抖动时重试一次；仍失败则降级到非流式
             full_response = ""
+            try:
+                # 通过生成器桥接：_stream_once 内部会 yield 增量
+                stream_gen = _stream_once()
+                # 手动消费生成器以拼 full_response
+                for piece in stream_gen:  # type: ignore[assignment]
+                    full_response += piece
+                    yield piece
+            except Exception as e1:
+                # 短退避后重试一次（改善短暂网络抖动导致的首 token 超时）
+                time.sleep(0.3)
+                try:
+                    stream_gen = _stream_once()
+                    for piece in stream_gen:  # type: ignore[assignment]
+                        full_response += piece
+                        yield piece
+                except Exception:
+                    # 降级为非流式
+                    full_response = _non_stream_once()
+                    if full_response:
+                        yield full_response
+                    else:
+                        raise e1
 
-            for chunk in response:
-                # 使用类型注解明确chunk的类型，避免union类型错误
-                from openai.types.chat import ChatCompletionChunk
-
-                chunk_typed: ChatCompletionChunk = cast(ChatCompletionChunk, chunk)
-                if chunk_typed.choices and len(chunk_typed.choices) > 0:
-                    choice = chunk_typed.choices[0]
-
-                    # 获取内容增量
-                    if choice.delta and choice.delta.content:
-                        text = choice.delta.content
-                        full_response += text
-                        yield text
             if full_response:
                 self.messages.append({"role": "assistant", "content": full_response})
             else:
@@ -263,6 +302,31 @@ class OpenAIModel(BasePlatform):
             if len(self.messages) > messages_before_user:
                 self.messages = self.messages[:messages_before_user]
             raise Exception(f"Chat failed: {str(e)}")
+
+    def chat_non_stream(self, message: str) -> str:
+        """非流式对话（用于流式失败降级兜底）。"""
+        messages_before_user = len(self.messages)
+        try:
+            self.messages.append({"role": "user", "content": message})
+            resp = self.client.chat.completions.create(
+                model=self.model_name,
+                messages=self.messages,  # type: ignore[arg-type]
+                stream=False,
+            )
+            content = ""
+            try:
+                if resp.choices and resp.choices[0].message and resp.choices[0].message.content:
+                    content = resp.choices[0].message.content
+            except Exception:
+                content = ""
+            if not content:
+                raise Exception("No response from model (non-stream)")
+            self.messages.append({"role": "assistant", "content": content})
+            return content
+        except Exception as e:
+            if len(self.messages) > messages_before_user:
+                self.messages = self.messages[:messages_before_user]
+            raise Exception(f"Non-stream chat failed: {str(e)}")
 
     def name(self) -> str:
         """

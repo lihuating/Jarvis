@@ -337,6 +337,46 @@ class RulesManager:
                     score += 2
         return score
 
+    def _get_rules_index_fingerprint(self) -> str:
+        """生成规则索引指纹，用于缓存失效。
+
+        目标是“便宜但足够好”：当规则来源发生变化时，指纹大概率变化。
+        """
+        import hashlib
+
+        parts: List[str] = []
+        try:
+            for label, p in self._get_all_rules_yaml_files():
+                try:
+                    parts.append(f"yaml:{label}:{p}:{os.path.getmtime(p)}")
+                except OSError:
+                    parts.append(f"yaml:{label}:{p}:NA")
+        except Exception:
+            pass
+
+        try:
+            for d in self._get_all_rules_dirs():
+                try:
+                    parts.append(f"dir:{d}:{os.path.getmtime(d)}")
+                except OSError:
+                    parts.append(f"dir:{d}:NA")
+        except Exception:
+            pass
+
+        try:
+            from jarvis.jarvis_utils.template_utils import _get_builtin_dir
+
+            builtin_dir = _get_builtin_dir()
+            if builtin_dir is not None:
+                rule_md = builtin_dir / "rules" / "rule.md"
+                if rule_md.exists():
+                    parts.append(f"builtin_rule_md:{rule_md}:{rule_md.stat().st_mtime}")
+        except Exception:
+            pass
+
+        digest = hashlib.md5("\n".join(parts).encode("utf-8", errors="ignore")).hexdigest()
+        return digest
+
     def _get_builtin_rules_index(self) -> Optional[str]:
         """自动从规则文件生成索引（规则名：描述）
 
@@ -1207,6 +1247,25 @@ class RulesManager:
                                 如果无法选择则返回 None，最多返回3个规则
         """
         try:
+            # 结果缓存：同一任务在规则索引未变化时，直接复用选择结果，减少一次 LLM 调用
+            try:
+                import hashlib
+
+                cache: dict = getattr(self, "_rule_selection_cache", None)  # type: ignore[assignment]
+                if cache is None:
+                    cache = {}
+                    setattr(self, "_rule_selection_cache", cache)
+
+                fp = self._get_rules_index_fingerprint()
+                key = hashlib.md5(
+                    (task_description.strip() + "\n" + fp).encode("utf-8", errors="ignore")
+                ).hexdigest()
+                cached = cache.get(key)
+                if isinstance(cached, list):
+                    return cached
+            except Exception:
+                pass
+
             # 获取所有可用规则
             all_rules_dict = self.get_all_available_rule_names()
             if not all_rules_dict:
@@ -1355,6 +1414,17 @@ class RulesManager:
                     PrettyOutput.auto_print(
                         f"✅ 过滤后的规则: {', '.join(filtered_rules)}"
                     )
+                    # 写入缓存（仅缓存最终结果）
+                    try:
+                        cache = getattr(self, "_rule_selection_cache", None)
+                        if isinstance(cache, dict):
+                            cache[key] = filtered_rules  # type: ignore[name-defined]
+                            # 限制缓存大小，避免内存无界增长
+                            if len(cache) > 200:
+                                for k in list(cache.keys())[:50]:
+                                    cache.pop(k, None)
+                    except Exception:
+                        pass
                     return filtered_rules
 
             return None

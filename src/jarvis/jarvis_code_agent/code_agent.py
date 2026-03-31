@@ -434,8 +434,29 @@ git reset --hard {start_commit}
                     f"{current_addon}\n{initial_commit_prompt}".strip()
                 )
 
-            # 获取项目概况信息
-            project_overview = get_project_overview(self.root_dir)
+            # 工程索引摘要（只扫一次）：优先加载 git 根目录下的 JVS_MEMORY.md
+            # 若不存在则自动生成一次并加载
+            project_overview = ""
+            try:
+                from jarvis.jarvis_utils.project_memory import (
+                    build_jvs_memory,
+                    ensure_jvs_memory,
+                    get_git_root_fallback,
+                    read_jvs_memory,
+                    write_jvs_memory,
+                )
+
+                project_root = get_git_root_fallback(self.root_dir)
+                loaded = read_jvs_memory(project_root)
+                if not loaded:
+                    # 生成并写入，再读取（避免在内存里和磁盘不一致）
+                    ensure_jvs_memory(project_root)
+                    loaded = read_jvs_memory(project_root)
+                if loaded:
+                    project_overview = loaded
+            except Exception:
+                # 回退：仍然使用原有概况生成逻辑
+                project_overview = get_project_overview(self.root_dir)
 
             first_tip = """请严格遵循以下规范进行代码修改任务：
             1. 每次响应仅执行一步操作，先分析再修改，避免一步多改。

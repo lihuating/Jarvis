@@ -449,13 +449,19 @@ class ConsoleOutputSink(OutputSink):
             if event.lang is not None
             else PrettyOutput._detect_language(event.text, default_lang="markdown")
         )
-
-        content = Syntax(
-            event.text,
-            lang,
-            theme="monokai",
-            word_wrap=True,
-            # 使用终端默认背景色
+        # 大块输出降级：超长文本使用纯文本，避免 Syntax/Pygments 带来的排版开销
+        # 经验阈值：>8000 字符或 >240 行时关闭高亮
+        lines_count = event.text.count("\n") + 1
+        use_syntax = not (len(event.text) > 8000 or lines_count > 240)
+        content = (
+            Syntax(
+                event.text,
+                lang,
+                theme="monokai",
+                word_wrap=True,
+            )
+            if use_syntax
+            else Text(event.text, overflow="fold")
         )
         # 直接输出带背景色的内容，不再使用Panel包装
         agent_name = PrettyOutput._format(event.output_type, event.timestamp)
@@ -1233,6 +1239,7 @@ class PrettyOutput:
         """
         import threading
         import time
+        import os
         from rich.live import Live
         from rich.panel import Panel
         from rich.text import Text
@@ -1243,6 +1250,7 @@ class PrettyOutput:
         # 用于后台线程存放首个 chunk 或 StopIteration
         first_chunk_result = [None]
         stop_iteration_flag = [False]
+        first_chunk_error = [None]
 
         def _fetch_first_chunk():
             try:
@@ -1250,6 +1258,10 @@ class PrettyOutput:
                 first_chunk_result[0] = chunk if chunk else ""
             except StopIteration:
                 stop_iteration_flag[0] = True
+                first_chunk_result[0] = None
+            except Exception as e:
+                # 捕获异常，避免后台线程直接打印堆栈刷屏；交给主线程统一处理
+                first_chunk_error[0] = e
                 first_chunk_result[0] = None
 
         fetch_thread = threading.Thread(target=_fetch_first_chunk, daemon=True)
@@ -1274,14 +1286,35 @@ class PrettyOutput:
                     time.sleep(0.4)
         fetch_thread.join()
 
+        # 首 chunk 获取失败：给出友好错误并降级（返回空响应，避免交互卡死）
+        if first_chunk_error[0] is not None:
+            try:
+                PrettyOutput.auto_print(
+                    f"⚠️ 模型响应超时或网络异常：{first_chunk_error[0]}\n"
+                    f"   建议：检查网络/代理，或稍后重试。"
+                )
+            except Exception:
+                pass
+            append_session_history(message, "")
+            return "", time.time() - start_time
+
         if stop_iteration_flag[0]:
             append_session_history(message, "")
             return "", time.time() - start_time
 
         first_chunk = first_chunk_result[0] or ""
-        text_content = Text(overflow="fold")
+        # 使用“尾部窗口”限制渲染成本，避免随着全文增长 wrap 越来越慢
+        try:
+            max_window_chars = int(os.environ.get("JARVIS_STREAM_MAX_WINDOW_CHARS", "20000"))
+        except Exception:
+            max_window_chars = 20000
+        if max_window_chars < 2000:
+            max_window_chars = 2000
+
+        display_plain = ""  # 仅保留尾部窗口内容（用于 wrap 渲染）
+        text_content = Text("", overflow="fold")
         panel = Panel(
-            text_content,
+            text_content,  # 后续会复用 panel，只更新 renderable/subtitle
             title=None,
             subtitle=None,
             border_style="cyan",
@@ -1356,14 +1389,11 @@ class PrettyOutput:
         with Live(panel, refresh_per_second=4, transient=True) as live:
 
             def _update_panel_content(content: str, update_subtitle: bool = False):
-                nonlocal response, last_subtitle_update_time, update_count, text_content, panel
+                nonlocal response, last_subtitle_update_time, update_count, text_content, panel, display_plain
 
-                # 在锁外进行文本拼接和wrap计算，避免与console内部锁冲突
-                # 获取当前文本并添加新内容，创建新的 Text 对象
-                # 避免在原 Text 对象上调用 append()，防止与 Live 内部线程并发访问导致不一致
-                current_text = text_content.plain
-                new_content = current_text + content
-                new_text_obj = Text(new_content, overflow="fold", style="bright_white")
+                # 仅维护尾部窗口，避免全量字符串增长导致 wrap 成本线性变大
+                display_plain = (display_plain + content)[-max_window_chars:]
+                new_text_obj = Text(display_plain, overflow="fold", style="bright_white")
                 update_count += 1
 
                 # Scrolling Logic - 只在内容超过一定行数时才应用滚动
@@ -1389,19 +1419,20 @@ class PrettyOutput:
                 # 使用锁保护 panel 更新，避免与 Live 内部线程冲突
                 if panel_lock:
                     with panel_lock:
-                        # 在锁内只更新text_content和panel
                         text_content = final_text
-
-                        # 重建panel对象，确保panel始终引用最新的text_content
-                        # 这样无论内容是否超出高度，流式输出都能正常刷新
-                        panel = Panel(
-                            text_content,
-                            title=None,
-                            subtitle=None,
-                            border_style="cyan",
-                            box=box.ROUNDED,
-                            expand=True,
-                        )
+                        # 复用 Panel：只更新 renderable，减少布局重算
+                        try:
+                            panel.renderable = text_content  # type: ignore[attr-defined]
+                        except Exception:
+                            # 回退：极端情况下再重建
+                            panel = Panel(
+                                text_content,
+                                title=None,
+                                subtitle=None,
+                                border_style="cyan",
+                                box=box.ROUNDED,
+                                expand=True,
+                            )
 
                         # 只在需要时更新 subtitle（减少更新频率，避免重复渲染标题）
                         # 策略：每 10 次内容更新或每 3 秒更新一次 subtitle
@@ -1430,14 +1461,17 @@ class PrettyOutput:
                 else:
                     # 如果没有提供 panel_lock，直接更新
                     text_content = final_text
-                    panel = Panel(
-                        text_content,
-                        title=None,
-                        subtitle=None,
-                        border_style="cyan",
-                        box=box.ROUNDED,
-                        expand=True,
-                    )
+                    try:
+                        panel.renderable = text_content  # type: ignore[attr-defined]
+                    except Exception:
+                        panel = Panel(
+                            text_content,
+                            title=None,
+                            subtitle=None,
+                            border_style="cyan",
+                            box=box.ROUNDED,
+                            expand=True,
+                        )
 
                     current_time = time.time()
                     should_update_subtitle = (
@@ -1472,14 +1506,15 @@ class PrettyOutput:
             # 可通过环境变量微调：
             # - JARVIS_STREAM_UPDATE_INTERVAL: 秒（默认 0.15）
             # - JARVIS_STREAM_MIN_BUFFER_SIZE: 字符数（默认 120）
+            # 默认值：质量优先的同时减少卡顿（约 6-10 次/秒刷新，避免每字符刷新）
             try:
-                update_interval = float(os.environ.get("JARVIS_STREAM_UPDATE_INTERVAL", "0.15"))
+                update_interval = float(os.environ.get("JARVIS_STREAM_UPDATE_INTERVAL", "0.12"))
             except Exception:
-                update_interval = 0.15
+                update_interval = 0.12
             try:
-                min_buffer_size = int(os.environ.get("JARVIS_STREAM_MIN_BUFFER_SIZE", "120"))
+                min_buffer_size = int(os.environ.get("JARVIS_STREAM_MIN_BUFFER_SIZE", "100"))
             except Exception:
-                min_buffer_size = 120
+                min_buffer_size = 100
             if update_interval < 0.05:
                 update_interval = 0.05
             if min_buffer_size < 16:

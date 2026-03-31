@@ -172,6 +172,84 @@ def _get_bool_config(key: str, default: bool = False) -> bool:
     return default
 
 
+def _get_float_config(key: str, default: float) -> float:
+    """从配置中读取浮点数，支持 str/int/float。"""
+    try:
+        value = GLOBAL_CONFIG_DATA.get(key, default)
+        if isinstance(value, (int, float)):
+            return float(value)
+        if isinstance(value, str):
+            v = value.strip()
+            if not v:
+                return default
+            return float(v)
+    except Exception:
+        pass
+    return default
+
+
+def _get_int_config(key: str, default: int) -> int:
+    """从配置中读取整数，支持 str/int/float。"""
+    try:
+        value = GLOBAL_CONFIG_DATA.get(key, default)
+        if isinstance(value, bool):
+            return default
+        if isinstance(value, (int, float)):
+            return int(value)
+        if isinstance(value, str):
+            v = value.strip()
+            if not v:
+                return default
+            return int(float(v))
+    except Exception:
+        pass
+    return default
+
+
+def get_llm_first_chunk_timeout_seconds() -> float:
+    """首个 chunk 超时阈值（秒）。
+
+    用于流式请求的“首 token/首 chunk”快速失败与一次短退避重试。
+    """
+    # 经验默认值：2.5 秒（网络抖动/排队时能快速判定，又不至于太激进）
+    return _get_float_config("llm_first_chunk_timeout_seconds", 2.5)
+
+
+def get_llm_first_chunk_retry_backoff_ms_min() -> int:
+    """首 chunk 超时重试的短退避最小值（毫秒）。"""
+    return max(0, _get_int_config("llm_first_chunk_retry_backoff_ms_min", 200))
+
+
+def get_llm_first_chunk_retry_backoff_ms_max() -> int:
+    """首 chunk 超时重试的短退避最大值（毫秒）。"""
+    return max(0, _get_int_config("llm_first_chunk_retry_backoff_ms_max", 500))
+
+
+def is_enable_llm_first_chunk_quick_retry() -> bool:
+    """是否启用首 chunk 超时的一次快速重试。"""
+    return _get_bool_config("enable_llm_first_chunk_quick_retry", True)
+
+
+def is_enable_llm_stream_fallback_to_non_stream() -> bool:
+    """是否启用“流式失败→非流式”一次降级兜底。"""
+    return _get_bool_config("enable_llm_stream_fallback_to_non_stream", True)
+
+
+def is_enable_llm_auto_model_selection() -> bool:
+    """是否启用“按任务大小自动选择 cheap/normal/smart”启发式。"""
+    return _get_bool_config("enable_llm_auto_model_selection", True)
+
+
+def get_llm_auto_model_small_task_token_threshold() -> int:
+    """小任务 token 阈值（<= 则倾向 cheap）。"""
+    return max(0, _get_int_config("llm_auto_model_small_task_token_threshold", 800))
+
+
+def get_llm_auto_model_large_task_token_threshold() -> int:
+    """大任务 token 阈值（>= 则倾向 smart）。"""
+    return max(0, _get_int_config("llm_auto_model_large_task_token_threshold", 4000))
+
+
 def is_enable_new_files_check() -> bool:
     """是否启用“新增文件/二进制文件检查并询问”。默认关闭。"""
     return _get_bool_config("enable_new_files_check", False)

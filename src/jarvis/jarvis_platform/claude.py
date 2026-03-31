@@ -259,6 +259,62 @@ class ClaudeModel(BasePlatform):
                 self.messages = self.messages[:messages_before_user]
             raise Exception(f"Chat failed: {str(e)}")
 
+    def chat_non_stream(self, message: str) -> str:
+        """非流式对话（用于流式失败降级兜底）。"""
+        if not self.client:
+            raise Exception("Anthropic client not initialized")
+
+        messages_before_user = len(self.messages)
+        try:
+            anthropic_messages: List[MessageParam] = []
+            system_content = None
+            for msg in self.messages:
+                role = msg.get("role")
+                content = msg.get("content")
+                if role == "system" and content:
+                    system_content = content
+                    self.system_message = content
+                elif role == "user" and content:
+                    anthropic_messages.append({"role": "user", "content": content})
+                elif role == "assistant" and content:
+                    anthropic_messages.append({"role": "assistant", "content": content})
+
+            anthropic_messages.append({"role": "user", "content": message})
+
+            system_param = None
+            if system_content:
+                system_param = [{"type": "text", "text": system_content}]
+
+            create_kwargs: Dict[str, Any] = {
+                "model": self.model_name,
+                "messages": anthropic_messages,
+                "max_tokens": 4096,
+            }
+            if system_param:
+                create_kwargs["system"] = system_param
+
+            resp = self.client.messages.create(**create_kwargs)  # type: ignore[arg-type]
+
+            text_parts: List[str] = []
+            try:
+                for block in getattr(resp, "content", []) or []:
+                    t = getattr(block, "text", None)
+                    if t:
+                        text_parts.append(str(t))
+            except Exception:
+                pass
+            content = "".join(text_parts).strip()
+            if not content:
+                raise Exception("No response from model (non-stream)")
+
+            self.messages.append({"role": "user", "content": message})
+            self.messages.append({"role": "assistant", "content": content})
+            return content
+        except Exception as e:
+            if len(self.messages) > messages_before_user:
+                self.messages = self.messages[:messages_before_user]
+            raise Exception(f"Non-stream chat failed: {str(e)}")
+
     def name(self) -> str:
         """
         获取当前使用的模型名称

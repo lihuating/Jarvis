@@ -442,6 +442,37 @@ def builtin_input_handler(user_input: str, agent_: Any) -> Tuple[str, bool]:
 
             return "", True
 
+        elif tag == "Init":
+            # 扫描工程并生成/刷新 JVS_MEMORY.md（工程内持久化索引摘要）
+            try:
+                from jarvis.jarvis_utils.project_memory import (
+                    build_jvs_memory,
+                    get_git_root_fallback,
+                    read_jvs_memory,
+                    write_jvs_memory,
+                )
+
+                project_root = get_git_root_fallback(os.getcwd())
+                content = build_jvs_memory(project_root)
+                if write_jvs_memory(project_root, content):
+                    PrettyOutput.auto_print(
+                        f"✅ 已生成/刷新 JVS_MEMORY.md：{os.path.join(project_root, 'JVS_MEMORY.md')}"
+                    )
+                    # 立即加载到本会话 addon prompt（下轮优先生效）
+                    loaded = read_jvs_memory(project_root)
+                    if loaded:
+                        cur = agent.session.addon_prompt or ""
+                        agent.set_addon_prompt(
+                            (cur + "\n\n" + loaded).strip()
+                            if cur.strip()
+                            else loaded.strip()
+                        )
+                else:
+                    PrettyOutput.auto_print("⚠️ 生成 JVS_MEMORY.md 失败")
+            except Exception as e:
+                PrettyOutput.auto_print(f"⚠️ Init 执行失败: {e}")
+            return "", True
+
         elif tag == "Pin":
             # Pin标记已在前面处理，跳过
             continue
