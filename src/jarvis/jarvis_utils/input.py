@@ -62,6 +62,7 @@ import shutil as _shutil
 # Git root cache (used for @ completion)
 _GIT_ROOT_CACHE: Optional[str] = None
 _COMPLETION_ROOT_CACHE: Optional[str] = None
+_CACHE_CWD: Optional[str] = None
 
 
 def _get_completion_root() -> str:
@@ -74,6 +75,20 @@ def _get_completion_root() -> str:
     4) 当前工作目录
     """
     global _COMPLETION_ROOT_CACHE
+    global _GIT_ROOT_CACHE
+    global _CACHE_CWD
+
+    # 当用户在不同工程目录之间切换时，自动失效缓存，避免补全一直指向旧工程
+    try:
+        cwd = os.getcwd()
+    except Exception:
+        cwd = None
+    if cwd and _CACHE_CWD and cwd != _CACHE_CWD:
+        _COMPLETION_ROOT_CACHE = None
+        _GIT_ROOT_CACHE = None
+    if cwd and _CACHE_CWD != cwd:
+        _CACHE_CWD = cwd
+
     if _COMPLETION_ROOT_CACHE:
         return _COMPLETION_ROOT_CACHE
 
@@ -194,6 +209,7 @@ def _get_git_files() -> List[str]:
     files = []
     try:
         global _GIT_ROOT_CACHE
+        # 与补全根目录保持一致：切换目录时缓存会在 _get_completion_root 中被失效
         if _GIT_ROOT_CACHE is None:
             rr = _subprocess.run(
                 ["git", "rev-parse", "--show-toplevel"],
