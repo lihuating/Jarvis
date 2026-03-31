@@ -330,14 +330,8 @@ class BasePlatform(ABC):
         self, message: str, start_time: float, max_output: int = 0
     ) -> Tuple[str, float]:
         """使用 pretty output 模式进行聊天（封装到 PrettyOutput）"""
-        # 为首 chunk 增加超时控制（避免网络抖动导致长时间无响应）
-        timeout_s = get_llm_first_chunk_timeout_seconds()
-        wrapped = self._wrap_iterator_with_first_chunk_timeout(
-            self.chat(message),
-            timeout_seconds=timeout_s,
-        )
         return PrettyOutput.stream_chat_with_panel(
-            chat_iterator=wrapped,
+            chat_iterator=self.chat(message),
             title=self.name(),
             status_message=f"🤔 {(G.get_current_agent_name() + ' · ') if G.get_current_agent_name() else ''}{self.name()} 正在思考中...",
             get_used_token_count=self.get_used_token_count,
@@ -428,54 +422,12 @@ class BasePlatform(ABC):
         # 根据输出模式选择不同的处理方式
         first_token_time = 0.0
         if not self.suppress_output:
-            response = ""
-            last_err: Optional[BaseException] = None
-
-            def _do_stream() -> Tuple[str, float]:
-                if get_pretty_output():
-                    return self._chat_with_pretty_output(message, start_time, max_output)
-                # simple output 路径仍然走流式，但不做 panel
-                return self._chat_with_simple_output(message, start_time, max_output), 0.0
-
-            # 1) 首次尝试：流式
-            try:
-                response, first_token_time = _do_stream()
-            except BaseException as e:
-                last_err = e
-                response = ""
-
-            # 2) 首 chunk 快速重试（仅一次，短退避 200–500ms）
-            if (not response) and is_enable_llm_first_chunk_quick_retry():
-                try:
-                    backoff_min = get_llm_first_chunk_retry_backoff_ms_min()
-                    backoff_max = get_llm_first_chunk_retry_backoff_ms_max()
-                    if backoff_max < backoff_min:
-                        backoff_max = backoff_min
-                    backoff_ms = random.randint(backoff_min, backoff_max) if backoff_max > 0 else 0
-                    if backoff_ms > 0:
-                        time.sleep(backoff_ms / 1000.0)
-                    PrettyOutput.auto_print(
-                        f"🔄 首chunk失败，快速重试一次（退避 {backoff_ms}ms）"
-                    )
-                    response, first_token_time = _do_stream()
-                    last_err = None
-                except BaseException as e:
-                    last_err = e
-                    response = ""
-
-            # 3) 流式失败 → 非流式兜底（仅一次）
-            if (not response) and is_enable_llm_stream_fallback_to_non_stream():
-                try:
-                    PrettyOutput.auto_print("⚠️ 流式输出失败，尝试降级为非流式请求一次…")
-                    response = self._chat_non_stream_once(message, max_output=max_output)
-                    last_err = None
-                except BaseException as e:
-                    last_err = e
-                    response = ""
-
-            # 若仍失败：抛出异常，交给 while_success 做长退避重试
-            if not response and last_err is not None:
-                raise last_err
+            if get_pretty_output():
+                response, first_token_time = self._chat_with_pretty_output(
+                    message, start_time, max_output
+                )
+            else:
+                response = self._chat_with_simple_output(message, start_time, max_output)
 
             # 计算响应时间并打印总结
             end_time = time.time()

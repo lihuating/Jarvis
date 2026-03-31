@@ -227,12 +227,12 @@ def get_llm_first_chunk_retry_backoff_ms_max() -> int:
 
 def is_enable_llm_first_chunk_quick_retry() -> bool:
     """是否启用首 chunk 超时的一次快速重试。"""
-    return _get_bool_config("enable_llm_first_chunk_quick_retry", True)
+    return _get_bool_config("enable_llm_first_chunk_quick_retry", False)
 
 
 def is_enable_llm_stream_fallback_to_non_stream() -> bool:
     """是否启用“流式失败→非流式”一次降级兜底。"""
-    return _get_bool_config("enable_llm_stream_fallback_to_non_stream", True)
+    return _get_bool_config("enable_llm_stream_fallback_to_non_stream", False)
 
 
 def is_enable_llm_auto_model_selection() -> bool:
@@ -256,7 +256,24 @@ def is_enable_new_files_check() -> bool:
 
 
 def is_enable_auto_commit() -> bool:
-    """是否启用自动提交（worktree 前自动提交/CodeAgent CheckPoint）。默认关闭。"""
+    """是否启用自动提交（worktree 前自动提交/CodeAgent CheckPoint）。
+
+    **默认关闭**：除非显式开启，否则 Jarvis 不会自动创建/生成 git commit。
+
+    开启方式（优先级从高到低）：
+    1) 环境变量 `JARVIS_ENABLE_AUTO_COMMIT`（推荐）
+       - "1"/"true"/"yes"/"on" => 开启
+       - "0"/"false"/"no"/"off" => 关闭
+    2) 配置项 `enable_auto_commit`（向后兼容）
+    """
+    try:
+        import os
+
+        env = os.environ.get("JARVIS_ENABLE_AUTO_COMMIT")
+        if env is not None:
+            return str(env).strip().lower() in {"1", "true", "yes", "y", "on"}
+    except Exception:
+        pass
     return _get_bool_config("enable_auto_commit", False)
 
 

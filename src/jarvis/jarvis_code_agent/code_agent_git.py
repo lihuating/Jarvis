@@ -125,6 +125,14 @@ class GitManager:
 
     def handle_git_changes(self, prefix: str, suffix: str, agent: Any) -> None:
         """处理git仓库中的未提交修改"""
+        # 默认关闭自动提交：仅在显式开启（环境变量/配置）时才允许
+        try:
+            from jarvis.jarvis_utils.config import is_enable_auto_commit
+
+            if not is_enable_auto_commit():
+                return
+        except Exception:
+            return
         if has_uncommitted_changes():
             git_commiter = GitCommitTool()
             git_commiter.execute(
@@ -343,6 +351,15 @@ class GitManager:
         post_process_func: Any,
     ) -> None:
         """处理提交确认和可能的重置"""
+        # 默认关闭自动提交：未显式开启时，不做任何“自动生成最终提交”的流程
+        try:
+            from jarvis.jarvis_utils.config import is_enable_auto_commit
+
+            if not is_enable_auto_commit():
+                return
+        except Exception:
+            return
+
         if commits and user_confirm("是否接受以上提交记录？", True):
             subprocess.run(
                 ["git", "reset", "--mixed", str(start_commit)],
