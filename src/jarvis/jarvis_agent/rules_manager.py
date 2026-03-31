@@ -1376,25 +1376,75 @@ class RulesManager:
             List[str]: 过滤后的相关规则名称列表
         """
         try:
+            # 单条规则无需过滤，直接返回
+            if not rule_names or len(rule_names) == 1:
+                return rule_names
+
+            # 结果缓存：task + 候选规则 + 规则mtime 不变时，直接复用过滤结果
+            import hashlib
+
+            cache = getattr(self, "_rule_filter_cache", None)
+            if cache is None:
+                cache = {}
+                setattr(self, "_rule_filter_cache", cache)
+
+            mtimes = []
+            for rn in rule_names:
+                p = self.get_rule_file_path(rn)
+                try:
+                    mt = os.path.getmtime(p) if p and p != "--" else None
+                except OSError:
+                    mt = None
+                mtimes.append(f"{rn}:{mt}")
+
+            cache_key = hashlib.md5(
+                ("\n".join([task_description.strip()] + mtimes)).encode("utf-8", errors="ignore")
+            ).hexdigest()
+            cached = cache.get(cache_key)
+            if isinstance(cached, list):
+                return cached
+
             # 加载所有选中规则的内容
             rules_content = []
+            # 同时做一个轻量相关性打分，帮助在不调用 LLM 的情况下尽快返回
+            scored = []
             for rule_name in rule_names:
                 rule_content = self.get_named_rule(rule_name)
                 if rule_content:
-                    # 只使用前 2000 个字符，避免上下文过长
+                    # 只使用前 N 个字符，避免上下文过长（过滤阶段更偏延迟敏感）
+                    max_preview_chars = 1200
                     content_preview = (
-                        rule_content[:2000] + "..."
-                        if len(rule_content) > 2000
+                        rule_content[:max_preview_chars] + "..."
+                        if len(rule_content) > max_preview_chars
                         else rule_content
                     )
                     rules_content.append(
                         f"规则名称：{rule_name}\n规则内容：\n{content_preview}"
+                    )
+                    scored.append(
+                        (
+                            self._score_rule_candidate(
+                                task_description, rule_name, content_preview
+                            ),
+                            rule_name,
+                        )
                     )
                 else:
                     PrettyOutput.auto_print(f"⚠️  无法加载规则内容: {rule_name}")
 
             if not rules_content:
                 return rule_names  # 如果无法加载内容，返回原始规则
+
+            # 轻量快速路径：如果已有明显的高相关规则，就保守地直接返回全部或高分子集
+            # - 保守策略：尽量不删规则；但当某些规则几乎不可能相关时，可避免一次 LLM 调用
+            scored.sort(key=lambda x: x[0], reverse=True)
+            top_score = scored[0][0] if scored else 0
+            if top_score >= 8:
+                keep = [rn for s, rn in scored if s >= max(3, top_score - 5)]
+                # 仍保持保守：至少保留 1-3 条；否则回退到原列表
+                if 1 <= len(keep) <= 3:
+                    cache[cache_key] = keep
+                    return keep
 
             # 构造过滤 prompt
             all_rules_text = "\n\n".join(
@@ -1425,9 +1475,12 @@ class RulesManager:
 
             # 调用模型进行过滤
             registry = PlatformRegistry.get_global_platform_registry()
-            model = registry.create_platform(platform_type="normal")
+            # 过滤属于“慢路径”，优先用 cheap 模型减少延迟；不可用则回退 normal
+            model = registry.create_platform(platform_type="cheap")
             if model is None:
-                PrettyOutput.auto_print("⚠️  无法创建 normal 类型模型，跳过过滤")
+                model = registry.create_platform(platform_type="normal")
+            if model is None:
+                PrettyOutput.auto_print("⚠️  无法创建 cheap/normal 类型模型，跳过过滤")
                 return rule_names
 
             # 调用模型，限制输出长度
@@ -1468,7 +1521,9 @@ class RulesManager:
                         f"⚠️  模型返回的规则名称不在原始列表中: {rule_name}"
                     )
 
-            return valid_rule_names if valid_rule_names else rule_names
+            result = valid_rule_names if valid_rule_names else rule_names
+            cache[cache_key] = result
+            return result
 
         except Exception as e:
             PrettyOutput.auto_print(f"⚠️  规则内容过滤失败: {e}，使用原始规则列表")
