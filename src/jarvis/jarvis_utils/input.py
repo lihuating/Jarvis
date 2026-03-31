@@ -59,6 +59,59 @@ import os as _os
 import subprocess as _subprocess
 import shutil as _shutil
 
+# Git root cache (used for @ completion)
+_GIT_ROOT_CACHE: Optional[str] = None
+_COMPLETION_ROOT_CACHE: Optional[str] = None
+
+
+def _get_completion_root() -> str:
+    """获取用于文件补全的项目根目录。
+
+    优先级：
+    1) 环境变量 JARVIS_PROJECT_ROOT
+    2) 当前 Agent 的 root_dir（如果可用）
+    3) git 仓库根目录（git rev-parse --show-toplevel）
+    4) 当前工作目录
+    """
+    global _COMPLETION_ROOT_CACHE
+    if _COMPLETION_ROOT_CACHE:
+        return _COMPLETION_ROOT_CACHE
+
+    try:
+        env_root = os.environ.get("JARVIS_PROJECT_ROOT", "").strip()
+        if env_root and os.path.isdir(env_root):
+            _COMPLETION_ROOT_CACHE = env_root
+            return env_root
+    except Exception:
+        pass
+
+    try:
+        agent = get_current_agent()
+        root_dir = getattr(agent, "root_dir", None) if agent else None
+        if isinstance(root_dir, str) and root_dir and os.path.isdir(root_dir):
+            _COMPLETION_ROOT_CACHE = root_dir
+            return root_dir
+    except Exception:
+        pass
+
+    try:
+        rr = _subprocess.run(
+            ["git", "rev-parse", "--show-toplevel"],
+            stdout=_subprocess.PIPE,
+            stderr=_subprocess.PIPE,
+            text=True,
+        )
+        if rr.returncode == 0:
+            p = rr.stdout.strip()
+            if p and os.path.isdir(p):
+                _COMPLETION_ROOT_CACHE = p
+                return p
+    except Exception:
+        pass
+
+    _COMPLETION_ROOT_CACHE = os.getcwd()
+    return _COMPLETION_ROOT_CACHE
+
 # Sentinel value to indicate that Ctrl+O was pressed
 CTRL_O_SENTINEL = "__CTRL_O_PRESSED__"
 # Sentinel value to indicate that Ctrl+X was pressed (exit program)
@@ -140,11 +193,24 @@ def _get_git_files() -> List[str]:
     """获取Git仓库中的文件列表。"""
     files = []
     try:
+        global _GIT_ROOT_CACHE
+        if _GIT_ROOT_CACHE is None:
+            rr = _subprocess.run(
+                ["git", "rev-parse", "--show-toplevel"],
+                stdout=_subprocess.PIPE,
+                stderr=_subprocess.PIPE,
+                text=True,
+            )
+            _GIT_ROOT_CACHE = rr.stdout.strip() if rr.returncode == 0 else ""
+        # 首选补全根目录下的 git 根（更符合用户“项目文件”预期）
+        completion_root = _get_completion_root()
+        git_root = _GIT_ROOT_CACHE or completion_root
         r = _subprocess.run(
             ["git", "ls-files"],
             stdout=_subprocess.PIPE,
             stderr=_subprocess.PIPE,
             text=False,
+            cwd=git_root,
         )
         if r.returncode == 0:
             files = [
@@ -164,13 +230,15 @@ def _get_all_files(exclude_git: bool = False) -> List[str]:
     files = []
     try:
         import os as _os
+        global _GIT_ROOT_CACHE
+        base_dir = _get_completion_root()
 
-        for root, dirs, fnames in _os.walk(".", followlinks=False):
+        for root, dirs, fnames in _os.walk(base_dir, followlinks=False):
             if exclude_git:
                 # Exclude .git directories
                 dirs[:] = [d for d in dirs if d != ".git"]
             for name in fnames:
-                files.append(_os.path.relpath(_os.path.join(root, name), "."))
+                files.append(_os.path.relpath(_os.path.join(root, name), base_dir))
             if len(files) > 10000:
                 break
     except Exception:
@@ -582,6 +650,7 @@ class FileCompleter(Completer):
     def get_completions(
         self, document: Document, _: CompleteEvent
     ) -> Iterable[Completion]:
+        global _GIT_ROOT_CACHE
         text = document.text_before_cursor
         cursor_pos = document.cursor_position
 
@@ -605,25 +674,46 @@ class FileCompleter(Completer):
         token = text_after.strip()
         replace_length = len(text_after) + 1
 
-        all_completions = []
-        all_completions.extend(
-            [(ot(tag), self._get_description(tag)) for tag in self.replace_map.keys()]
+        # 交互约定：
+        # - 单个 '@'：优先进行文件路径补全（git tracked files）
+        # - '@@'：才显示“内置补全菜单”（tags/commands/rules + files）
+        double_at_menu = (
+            current_sym == "@"
+            and current_pos > 0
+            and text[current_pos - 1 : current_pos + 1] == "@@"
         )
-        all_completions.extend([(ot(cmd), desc) for cmd, desc in BUILTIN_COMMANDS])
-        # 添加所有规则（包括内置规则、文件规则、YAML规则）到补全列表
-        rules = self._get_all_rules()
-        for rule_name, rule_desc in rules:
-            all_completions.append((f"<rule:{rule_name}>", rule_desc))
+
+        all_completions = []
+        if double_at_menu or current_sym != "@":
+            all_completions.extend(
+                [(ot(tag), self._get_description(tag)) for tag in self.replace_map.keys()]
+            )
+            all_completions.extend([(ot(cmd), desc) for cmd, desc in BUILTIN_COMMANDS])
+            # 添加所有规则（包括内置规则、文件规则、YAML规则）到补全列表
+            rules = self._get_all_rules()
+            for rule_name, rule_desc in rules:
+                all_completions.append((f"<rule:{rule_name}>", rule_desc))
 
         # File path candidates
         try:
             if current_sym == "@":
                 if self._git_files_cache is None:
+                    if _GIT_ROOT_CACHE is None:
+                        rr = _subprocess.run(
+                            ["git", "rev-parse", "--show-toplevel"],
+                            stdout=_subprocess.PIPE,
+                            stderr=_subprocess.PIPE,
+                            text=True,
+                            cwd=_get_completion_root(),
+                        )
+                        _GIT_ROOT_CACHE = rr.stdout.strip() if rr.returncode == 0 else ""
+                    git_root = _GIT_ROOT_CACHE or _get_completion_root()
                     result = _subprocess.run(
                         ["git", "ls-files"],
                         stdout=_subprocess.PIPE,
                         stderr=_subprocess.PIPE,
                         text=False,
+                        cwd=git_root,
                     )
                     if result.returncode == 0:
                         self._git_files_cache = [
@@ -634,10 +724,13 @@ class FileCompleter(Completer):
                     else:
                         self._git_files_cache = []
                 paths: List[str] = self._git_files_cache or []
+                if not paths:
+                    paths = _get_all_files(exclude_git=True)
             else:
                 if self._all_files_cache is None:
                     files: List[str] = []
-                    for root, dirs, fnames in _os.walk(".", followlinks=False):
+                    base_dir = _get_completion_root()
+                    for root, dirs, fnames in _os.walk(base_dir, followlinks=False):
                         # Explicitly include hidden directories (starting with .), but exclude .git, __pycache__, .pytest_cache, etc.
                         dirs[:] = [
                             d
@@ -655,7 +748,7 @@ class FileCompleter(Completer):
                         ]
                         for name in fnames:
                             files.append(
-                                _os.path.relpath(_os.path.join(root, name), ".")
+                                _os.path.relpath(_os.path.join(root, name), base_dir)
                             )
                             if len(files) > self._max_walk_files:
                                 break
@@ -1097,20 +1190,23 @@ def _get_multiline_input_internal(
         """
         try:
             buf = event.current_buffer
-            if _shutil.which("fzf") is None:
+            # 默认行为：插入 '@' 并触发补全（单个 @ 为文件补全；@@ 为内置菜单）
+            # 如需沿用旧行为（@ 触发 fzf），可设置 JARVIS_AT_USE_FZF=true
+            use_fzf = os.environ.get("JARVIS_AT_USE_FZF", "false").lower() == "true"
+            if use_fzf and _shutil.which("fzf") is not None:
+                # 先插入 '@'，以便外层根据最后一个 '@' 进行片段替换
                 buf.insert_text("@")
-                # 手动触发补全，以便显示 rule 和其他补全选项
-                buf.start_completion(select_first=False)
+                doc = buf.document
+                text = doc.text
+                cursor = doc.cursor_position
+                payload = (
+                    f"{cursor}:{base64.b64encode(text.encode('utf-8')).decode('ascii')}"
+                )
+                event.app.exit(result=FZF_REQUEST_SENTINEL_PREFIX + payload)
                 return
-            # 先插入 '@'，以便外层根据最后一个 '@' 进行片段替换
+
             buf.insert_text("@")
-            doc = buf.document
-            text = doc.text
-            cursor = doc.cursor_position
-            payload = (
-                f"{cursor}:{base64.b64encode(text.encode('utf-8')).decode('ascii')}"
-            )
-            event.app.exit(result=FZF_REQUEST_SENTINEL_PREFIX + payload)
+            buf.start_completion(select_first=False)
             return
         except Exception:
             try:
@@ -1128,7 +1224,8 @@ def _get_multiline_input_internal(
         """
         try:
             buf = event.current_buffer
-            if _shutil.which("fzf") is None:
+            disable_fzf = os.environ.get("JARVIS_DISABLE_FZF_COMPLETION", "false").lower() == "true"
+            if disable_fzf or _shutil.which("fzf") is None:
                 buf.insert_text("#")
                 # 手动触发补全，以便显示 rule 和其他补全选项
                 buf.start_completion(select_first=False)
