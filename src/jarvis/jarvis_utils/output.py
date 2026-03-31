@@ -1468,8 +1468,22 @@ class PrettyOutput:
             # 缓存机制：降低更新频率，减少界面闪烁
             buffer = ""
             last_update_time = time.time()
-            update_interval = 1
-            min_buffer_size = 1
+            # A 方案：节流 Live 刷新，避免每个字符都触发 wrap + live.update
+            # 可通过环境变量微调：
+            # - JARVIS_STREAM_UPDATE_INTERVAL: 秒（默认 0.15）
+            # - JARVIS_STREAM_MIN_BUFFER_SIZE: 字符数（默认 120）
+            try:
+                update_interval = float(os.environ.get("JARVIS_STREAM_UPDATE_INTERVAL", "0.15"))
+            except Exception:
+                update_interval = 0.15
+            try:
+                min_buffer_size = int(os.environ.get("JARVIS_STREAM_MIN_BUFFER_SIZE", "120"))
+            except Exception:
+                min_buffer_size = 120
+            if update_interval < 0.05:
+                update_interval = 0.05
+            if min_buffer_size < 16:
+                min_buffer_size = 16
 
             def _flush_buffer():
                 nonlocal buffer, last_update_time
