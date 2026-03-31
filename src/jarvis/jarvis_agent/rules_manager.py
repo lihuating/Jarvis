@@ -274,6 +274,27 @@ class RulesManager:
         try:
             if not os.path.exists(rule_path):
                 return ""
+
+            # 缓存：description 只与文件内容相关，按 mtime 失效即可
+            cache = getattr(self, "_rule_description_cache", None)
+            if cache is None:
+                cache = {}
+                setattr(self, "_rule_description_cache", cache)
+
+            try:
+                mtime = os.path.getmtime(rule_path)
+            except OSError:
+                mtime = None
+
+            cached = cache.get(rule_path)
+            if (
+                isinstance(cached, tuple)
+                and len(cached) == 2
+                and cached[0] == mtime
+                and isinstance(cached[1], str)
+            ):
+                return cached[1]
+
             with open(rule_path, "r", encoding="utf-8", errors="replace") as f:
                 content = f.read()
             # 提取 YAML Front Matter 中的 description
@@ -284,10 +305,37 @@ class RulesManager:
                         break
                     if line.startswith("description:"):
                         description = line.split(":", 1)[1].strip()
+                        cache[rule_path] = (mtime, description)
                         return description
+            cache[rule_path] = (mtime, "")
             return ""
         except Exception:
             return ""
+
+    @staticmethod
+    def _score_rule_candidate(task: str, rule_name: str, description: str) -> int:
+        """对候选规则进行轻量打分，用于缩小 LLM 选择范围。"""
+        import re
+
+        task_l = (task or "").lower()
+        name_l = (rule_name or "").lower()
+        desc_l = (description or "").lower()
+
+        # 基础：任务关键词（中英数字）提取
+        tokens = re.findall(r"[a-z0-9_]+|[\u4e00-\u9fff]{2,}", task_l)
+        if not tokens:
+            return 0
+
+        score = 0
+        hay = name_l + "\n" + desc_l
+        for t in tokens:
+            if t in hay:
+                # 命中 rule_name 权重更高
+                if t in name_l:
+                    score += 5
+                else:
+                    score += 2
+        return score
 
     def _get_builtin_rules_index(self) -> Optional[str]:
         """自动从规则文件生成索引（规则名：描述）
@@ -1174,15 +1222,20 @@ class RulesManager:
                 PrettyOutput.auto_print("⚠️  没有可用的规则")
                 return None
 
-            # 创建 normal 类型的模型
+            # 创建 cheap 类型的模型（规则选择更偏 IO/延迟敏感）
             registry = PlatformRegistry.get_global_platform_registry()
-            model = registry.create_platform(platform_type="normal")
+            model = registry.create_platform(platform_type="cheap")
             if model is None:
-                PrettyOutput.auto_print("⚠️  无法创建 normal 类型模型")
+                # 回退到 normal
+                model = registry.create_platform(platform_type="normal")
+            if model is None:
+                PrettyOutput.auto_print("⚠️  无法创建 cheap/normal 类型模型")
                 return None
 
             # 构造编号列表（包含规则名称和描述，供模型选择）
+            # 性能优化：先做轻量候选筛选，避免把所有规则都塞给 LLM
             numbered_rules = ""
+            scored_rules = []
             for i, rule_name in enumerate(all_rules_list, 1):
                 # 获取规则描述：优先从 YAML Front Matter 提取，否则用内容预览
                 rule_path = self.get_rule_file_path(rule_name)
@@ -1196,6 +1249,14 @@ class RulesManager:
                         if preview and preview != "--"
                         else "（无描述）"
                     )
+                score = self._score_rule_candidate(task_description, rule_name, description)
+                scored_rules.append((score, i, rule_name, description))
+
+            # 仅将最相关的 N 条交给模型（避免 prompt 过长导致慢）
+            scored_rules.sort(key=lambda x: (x[0], -x[1]), reverse=True)
+            max_candidates = 40
+            candidates = scored_rules[:max_candidates] if len(scored_rules) > max_candidates else scored_rules
+            for score, i, rule_name, description in candidates:
                 numbered_rules += f"{i}. {rule_name}\n   描述: {description}\n"
 
             # 构造 prompt，要求模型返回编号

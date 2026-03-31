@@ -63,6 +63,9 @@ def _get_cached_token_count(content: str) -> int:
     return token_count
 
 
+
+
+
 class ReadCodeTool:
     name = "read_code"
     description = "读取源代码文件的指定行号范围，并为每行添加行号后返回。"
@@ -178,7 +181,6 @@ class ReadCodeTool:
                     if end_line >= 0
                     else total_lines + end_line + 1
                 )
-
             start_line = (
                 max(1, min(start_line, total_lines))
                 if start_line >= 0
@@ -569,7 +571,6 @@ class ReadCodeTool:
                             if end_line >= 0
                             else total_lines + end_line + 1
                         )
-
                     actual_start_line = (
                         max(1, min(start_line, total_lines))
                         if start_line >= 0

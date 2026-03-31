@@ -283,6 +283,9 @@ class ToolRegistry(OutputHandlerProtocol):
         self._builtin_tool_names: Set[str] = set()
         # 定义必选工具列表（这些工具将始终可用）
         self._required_tools: List[str] = ["execute_script"]
+        # 批量注册阶段用于汇总“覆盖已存在工具”的告警，避免启动时刷屏
+        self._bulk_registering: bool = True
+        self._overwritten_tools: Dict[str, int] = {}
         
         # 尝试从缓存加载
         if use_cache and self._try_load_from_cache():
@@ -296,6 +299,9 @@ class ToolRegistry(OutputHandlerProtocol):
         self._load_mcp_tools()
         # 应用工具配置组过滤
         self._apply_tool_config_filter()
+        # 批量注册结束：汇总一次覆盖告警
+        self._bulk_registering = False
+        self._flush_overwritten_tool_warnings()
         # 更新缓存
         if use_cache:
             self._update_cache()
@@ -1188,12 +1194,33 @@ class ToolRegistry(OutputHandlerProtocol):
             func: 工具执行函数
         """
         if name in self.tools:
-            PrettyOutput.auto_print(f"⚠️ 警告: 工具 '{name}' 已存在，将被覆盖")
+            if getattr(self, "_bulk_registering", False):
+                # 启动/批量加载阶段：汇总，避免刷屏
+                overwritten = getattr(self, "_overwritten_tools", None)
+                if isinstance(overwritten, dict):
+                    overwritten[name] = int(overwritten.get(name, 0)) + 1
+            else:
+                # 非批量阶段：保留即时告警
+                PrettyOutput.auto_print(f"⚠️ 警告: 工具 '{name}' 已存在，将被覆盖")
         tool = Tool(name, description, parameters, func, protocol_version)
         self.tools[name] = tool
         # 同时更新 _all_tools，确保新注册的工具可以被调用
         if hasattr(self, "_all_tools"):
             self._all_tools[name] = tool
+
+    def _flush_overwritten_tool_warnings(self) -> None:
+        """汇总输出工具覆盖告警（仅用于批量加载阶段）。"""
+        overwritten = getattr(self, "_overwritten_tools", None)
+        if not isinstance(overwritten, dict) or not overwritten:
+            return
+
+        # 只输出一次汇总，展示工具名即可（用户已选择 3C：汇总输出）
+        names = sorted(overwritten.keys())
+        PrettyOutput.auto_print(
+            "⚠️ 警告: 检测到工具重名并发生覆盖（已汇总）: "
+            + ", ".join(f"'{n}'" for n in names)
+        )
+        overwritten.clear()
 
     def get_tool(self, name: str) -> Optional[Tool]:
         """获取工具

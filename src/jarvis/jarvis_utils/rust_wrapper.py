@@ -14,11 +14,8 @@ try:
     from jarvis_rust_tools import (
         fast_read_file as _rust_fast_read_file,
         read_file_with_line_numbers as _rust_read_file_with_line_numbers,
-        detect_file_encoding as _rust_detect_file_encoding,
-        regex_match_fast as _rust_regex_match_fast,
         extract_json_from_text as _rust_extract_json_from_text,
         clean_extra_markers as _rust_clean_extra_markers,
-        strip_line_endings as _rust_strip_line_endings,
         calculate_tokens_optimized as _rust_calculate_tokens_optimized,
         token_count_with_cache as _rust_token_count_with_cache,
         clear_token_cache as _rust_clear_token_cache,
