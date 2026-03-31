@@ -157,6 +157,31 @@ def set_config(key: str, value: Any) -> None:
     GLOBAL_CONFIG_DATA[key] = value
 
 
+def _get_bool_config(key: str, default: bool = False) -> bool:
+    """从配置中读取布尔值，支持 bool/数字/字符串。"""
+    try:
+        value = GLOBAL_CONFIG_DATA.get(key, default)
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, (int, float)):
+            return bool(value)
+        if isinstance(value, str):
+            return value.strip().lower() in {"1", "true", "yes", "y", "on"}
+    except Exception:
+        pass
+    return default
+
+
+def is_enable_new_files_check() -> bool:
+    """是否启用“新增文件/二进制文件检查并询问”。默认关闭。"""
+    return _get_bool_config("enable_new_files_check", False)
+
+
+def is_enable_auto_commit() -> bool:
+    """是否启用自动提交（worktree 前自动提交/CodeAgent CheckPoint）。默认关闭。"""
+    return _get_bool_config("enable_auto_commit", False)
+
+
 def get_llm_group() -> Optional[str]:
     """获取当前模型组名称
 

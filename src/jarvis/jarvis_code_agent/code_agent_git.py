@@ -258,6 +258,15 @@ class GitManager:
         4. 如果用户拒绝添加大量文件，提示修改.gitignore并重新检测
         5. 暂存并提交所有修改
         """
+        # 默认关闭自动提交流程：仅在配置项启用时才允许自动提交/Checkpoint
+        try:
+            from jarvis.jarvis_utils.config import is_enable_auto_commit
+
+            if not is_enable_auto_commit():
+                return
+        except Exception:
+            return
+
         # 重置全局标记，允许在此流程中重新进行文件确认
         reset_confirm_add_new_files_flag()
 

@@ -42,6 +42,14 @@ class WorktreeManager:
         如果有未提交的更改，自动执行提交。
         """
         try:
+            # 默认关闭自动提交：仅在配置项启用时才允许自动提交
+            try:
+                from jarvis.jarvis_utils.config import is_enable_auto_commit
+
+                if not is_enable_auto_commit():
+                    return
+            except Exception:
+                return
             if has_uncommitted_changes():
                 PrettyOutput.auto_print("⚠️  检测到主仓库有未提交的更改")
                 PrettyOutput.auto_print("🔄 自动提交主仓库更改...")

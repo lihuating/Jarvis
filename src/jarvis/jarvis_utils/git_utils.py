@@ -1232,6 +1232,15 @@ def confirm_add_new_files() -> None:
     """确认新增文件、代码行数和二进制文件"""
     global _confirm_add_new_files_called
 
+    # 默认关闭：仅在配置项启用时才进行检查与询问
+    try:
+        from jarvis.jarvis_utils.config import is_enable_new_files_check
+
+        if not is_enable_new_files_check():
+            return
+    except Exception:
+        return
+
     # 如果已经确认过，直接返回，避免重复询问
     if _confirm_add_new_files_called:
         return
