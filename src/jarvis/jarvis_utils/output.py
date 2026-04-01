@@ -29,6 +29,7 @@ from rich.text import Text
 
 from jarvis.jarvis_utils.config import get_pretty_output
 from jarvis.jarvis_utils.config import is_print_error_traceback
+from jarvis.jarvis_utils.config import get_show_timestamp
 from jarvis.jarvis_utils.globals import console
 from jarvis.jarvis_utils.globals import get_agent
 from jarvis.jarvis_utils.globals import get_agent_list
@@ -699,6 +700,10 @@ class PrettyOutput:
         返回：
             str: 包含时间戳和Agent名字的字符串
         """
+        # 检查配置是否允许显示时间戳
+        if not get_show_timestamp():
+            return ""
+        
         agent_info = get_agent_list()
         if not agent_info:
             return ""

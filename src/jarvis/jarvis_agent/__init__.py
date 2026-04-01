@@ -2359,26 +2359,6 @@ class Agent:
         short_tip = (
             f"[{agent_name}] 回车=结束任务 | 输入文字=继续 | Ctrl+C=中断并补充说明"
         )
-        # 非交互模式不会阻塞输入，此处不打印长说明，避免刷屏
-        if not getattr(self, "non_interactive", False):
-            tier_hint = ""
-            try:
-                if getattr(self, "model", None) is not None:
-                    pt = getattr(self.model, "platform_type", "normal") or "normal"
-                    tier_hint = (
-                        f"   当前主会话档位：{format_platform_type_label_cn(pt)}"
-                    )
-            except Exception:
-                tier_hint = ""
-            block = [
-                f"ℹ️ [{agent_name}] 当前轮次已结束（例如模型未再调用工具），请选择下一步：",
-                "  [1] 直接回车 — 结束当前任务",
-                "  [2] 输入「继续」或你的新指令 — 让模型接着执行（可纠正方向、追加要求）",
-                "  [3] Ctrl+C — 中断并输入补充说明，随后会继续本轮逻辑",
-            ]
-            if tier_hint:
-                block.append(tier_hint)
-            PrettyOutput.auto_print("\n".join(block))
         user_input = self._multiline_input(short_tip, False)
 
         if user_input:

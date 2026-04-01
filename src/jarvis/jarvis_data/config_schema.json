@@ -348,6 +348,11 @@
         "required": ["template"]
       },
       "default": {}
+    },
+    "show_timestamp": {
+      "type": "boolean",
+      "description": "是否显示时间戳和agent信息",
+      "default": true
     }
   },
   "additionalProperties": true

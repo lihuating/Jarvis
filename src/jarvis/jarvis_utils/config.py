@@ -916,6 +916,16 @@ def get_pretty_output() -> bool:
     return True
 
 
+def get_show_timestamp() -> bool:
+    """
+    获取是否显示时间戳和agent信息。
+
+    返回：
+        bool: 如果显示时间戳则返回True，默认为True
+    """
+    return _get_bool_config("show_timestamp", True)
+
+
 def is_use_methodology() -> bool:
     """
     获取是否启用方法论。
