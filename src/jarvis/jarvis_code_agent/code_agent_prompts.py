@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 """CodeAgent 系统提示词模块"""
 
+from functools import lru_cache
 from pathlib import Path
 from typing import Dict
 
@@ -19,6 +20,7 @@ _PROMPTS_DIR = (
 )
 
 
+@lru_cache(maxsize=1)
 def _load_scenario_types() -> Dict[str, Dict[str, str]]:
     """从 md 文件的 YAML front matter 加载场景类型定义
 
@@ -125,7 +127,7 @@ SCENARIO_TYPES = _get_scenario_types()
 
 
 def classify_user_request(user_input: str) -> str:
-    """使用 normal_llm 对用户需求进行分类
+    """使用 cheap_llm（失败则回退 normal_llm）对用户需求做轻量分类，降低首轮等待。
 
     参数:
         user_input: 用户输入的需求描述
@@ -134,10 +136,7 @@ def classify_user_request(user_input: str) -> str:
         str: 场景类型（performance/bug_fix/warning/refactor/feature/default）
     """
     try:
-        # 获取 normal_llm 平台
-        platform = PlatformRegistry().get_normal_platform()
-
-        # 从文件加载场景类型定义
+        registry = PlatformRegistry.get_global_platform_registry()
         scenarios = _load_scenario_types()
 
         # 构建分类提示词
@@ -166,8 +165,16 @@ def classify_user_request(user_input: str) -> str:
 如果无法明确判断，返回 default。
 """
 
-        # 使用 normal_llm 进行分类
-        response = platform.chat_until_success(classification_prompt)
+        # 优先 cheap：分类只需极短输出，限制 max_output 便于接口尽早结束
+        response = ""
+        try:
+            cheap = registry.get_cheap_platform()
+            cheap.set_suppress_output(True)
+            response = cheap.chat_until_success(classification_prompt, max_output=64)
+        except Exception:
+            normal = registry.get_normal_platform()
+            normal.set_suppress_output(True)
+            response = normal.chat_until_success(classification_prompt, max_output=64)
 
         # 解析响应，提取场景类型
         response = response.strip().lower()

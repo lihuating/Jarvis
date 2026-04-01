@@ -2522,10 +2522,19 @@ class Agent:
         except Exception:
             pass
 
-        # 使用临时模型实例调用模型，以避免污染历史记录
+        # 使用 cheap 临时模型：工具筛选是短输出辅助任务，避免沿用 CodeAgent 的 smart 主模型导致额外延迟
         try:
-            temp_model = self._create_temp_model("你是一个帮助筛选工具的助手。")
-            selected_tools_str = temp_model.chat_until_success(selection_prompt)
+            registry = PlatformRegistry.get_global_platform_registry()
+            temp_model = registry.create_platform(platform_type="cheap", silent=True)
+            if temp_model is None:
+                temp_model = registry.create_platform(platform_type="normal", silent=True)
+            if temp_model is None:
+                raise RuntimeError("无法创建 cheap/normal 平台用于工具筛选")
+            temp_model.set_system_prompt("你是一个帮助筛选工具的助手。")
+            temp_model.set_suppress_output(True)
+            selected_tools_str = temp_model.chat_until_success(
+                selection_prompt, max_output=512
+            )
 
             # 解析响应并筛选工具
             selected_indices = [

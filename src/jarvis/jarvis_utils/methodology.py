@@ -217,8 +217,13 @@ def load_methodology(
             return ""
         PrettyOutput.auto_print(f"✅ 加载方法论文件完成 (共 {len(methodologies)} 个)")
 
-        # 方法论推荐使用normal模型以确保质量
-        platform = PlatformRegistry().get_normal_platform()
+        # 方法论条目选择只需短输出，优先 cheap 降低延迟；失败再回退 normal
+        registry = PlatformRegistry.get_global_platform_registry()
+        platform = None
+        try:
+            platform = registry.get_cheap_platform()
+        except Exception:
+            platform = registry.get_normal_platform()
 
         if not platform:
             PrettyOutput.auto_print("❌ 无法创建平台实例")

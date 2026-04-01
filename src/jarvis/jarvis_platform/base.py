@@ -213,16 +213,9 @@ class BasePlatform(ABC):
         return _FirstChunkTimeoutWrapper(it)  # type: ignore[return-value]
 
     def _should_auto_select_model_type(self) -> bool:
-        if not is_enable_llm_auto_model_selection():
-            return False
-        # 只在“近似无状态”的场景启用：避免破坏长对话的上下文一致性
-        try:
-            msgs = self.get_messages()
-            # 允许：空 / 仅 system
-            non_system = [m for m in msgs if m.get("role") != "system"]
-            return len(non_system) == 0
-        except Exception:
-            return False
+        # 硬禁用：禁止在 normal 实例中根据任务大小自动切换到 cheap/smart。
+        # 需求来源：避免出现 “自动选择模型：normal → smart/cheap” 的隐式行为。
+        return False
 
     def _pick_model_type_for_message(self, message: str) -> str:
         """基于输入规模做 cheap/normal/smart 启发式选择。"""
