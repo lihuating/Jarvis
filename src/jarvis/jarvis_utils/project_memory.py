@@ -71,7 +71,23 @@ def _get_rules_fingerprint(project_root: str) -> str:
 
 
 def _get_tools_overview() -> str:
-    # 工具系统本身已有目录 hash 缓存；这里仅做轻量摘要
+    # 优先复用 ToolRegistry 的全局缓存，避免为生成 JVS_MEMORY 再次完整加载工具/MCP（否则会重复触发覆盖告警）
+    try:
+        from jarvis.jarvis_tools import registry as tool_registry_mod
+
+        cached = getattr(tool_registry_mod, "_tools_cache", {}).get("all_tools")
+        if isinstance(cached, dict) and cached:
+            names = sorted(cached.keys())
+            preview = ", ".join(names[:30])
+            extra = (
+                f"…（共{len(names)}个）" if len(names) > 30 else f"（共{len(names)}个）"
+            )
+            return (
+                f"工具概况: {preview}{extra}" if preview else f"工具概况: （共{len(names)}个）"
+            )
+    except Exception:
+        pass
+
     try:
         from jarvis.jarvis_tools.registry import ToolRegistry
 

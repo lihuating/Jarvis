@@ -52,6 +52,9 @@ except ImportError:
 _tools_cache: Dict[str, Dict[str, Tool]] = {}
 _tools_dir_hashes: Dict[str, str] = {}
 
+# 内置与 MCP/自定义工具同名覆盖时，汇总告警在进程内最多打印一次（Init/JVS_MEMORY 等会多次构造注册表）
+_duplicate_tool_override_warning_emitted: bool = False
+
 # 预编译正则表达式，提升性能
 _TOOL_CALL_OPEN_TAG = ot('TOOL_CALL')
 _TOOL_CALL_CLOSE_TAG = ct('TOOL_CALL')
@@ -1214,12 +1217,24 @@ class ToolRegistry(OutputHandlerProtocol):
         if not isinstance(overwritten, dict) or not overwritten:
             return
 
+        global _duplicate_tool_override_warning_emitted
+        # 完全关闭：export JARVIS_SILENCE_TOOL_DUPLICATE_WARNING=1
+        silent = os.environ.get("JARVIS_SILENCE_TOOL_DUPLICATE_WARNING", "").strip().lower()
+        if silent in ("1", "true", "yes", "on"):
+            overwritten.clear()
+            return
+        # 进程内只提示一次（避免 Init、临时 ToolRegistry、统计等重复加载时刷屏）
+        if _duplicate_tool_override_warning_emitted:
+            overwritten.clear()
+            return
+
         # 只输出一次汇总，展示工具名即可（用户已选择 3C：汇总输出）
         names = sorted(overwritten.keys())
         PrettyOutput.auto_print(
             "⚠️ 警告: 检测到工具重名并发生覆盖（已汇总）: "
             + ", ".join(f"'{n}'" for n in names)
         )
+        _duplicate_tool_override_warning_emitted = True
         overwritten.clear()
 
     def get_tool(self, name: str) -> Optional[Tool]:

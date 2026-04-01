@@ -236,8 +236,17 @@ def is_enable_llm_stream_fallback_to_non_stream() -> bool:
 
 
 def is_enable_llm_auto_model_selection() -> bool:
-    """是否启用“按任务大小自动选择 cheap/normal/smart”启发式。"""
+    """是否启用“按任务大小自动选择 cheap/normal/(可选 smart)”启发式（见 BasePlatform）。"""
     return _get_bool_config("enable_llm_auto_model_selection", True)
+
+
+def is_enable_llm_auto_smart_model_selection() -> bool:
+    """是否在自动体量路由中允许大任务自动选用 smart。
+
+    需同时开启 ``enable_llm_auto_model_selection``。关闭时大任务仍用 normal，
+    仅 cheap↔normal 随体量自动切换；smart 需通过本项显式开启才会参与自动路由。
+    """
+    return _get_bool_config("enable_llm_auto_smart_model_selection", False)
 
 
 def get_llm_auto_model_small_task_token_threshold() -> int:
@@ -776,6 +785,82 @@ def get_smart_model_name() -> str:
     if smart_model:
         return cast(str, smart_model)
     return get_normal_model_name()
+
+
+def _llm_group_yaml_has_nonempty_llm_slot(slot: str) -> bool:
+    """检查当前 `llm_groups` 条目中是否配置了非空的 cheap_llm / smart_llm（原始 YAML，未展开）。"""
+    if slot not in ("cheap_llm", "smart_llm"):
+        return False
+    name = get_llm_group()
+    if not name:
+        return False
+    try:
+        groups = GLOBAL_CONFIG_DATA.get("llm_groups", {})
+        if not isinstance(groups, dict):
+            return False
+        g = groups.get(name)
+        if not isinstance(g, dict):
+            return False
+        v = g.get(slot)
+        return isinstance(v, str) and bool(v.strip())
+    except Exception:
+        return False
+
+
+def format_platform_type_label_cn(platform_type: str) -> str:
+    """将 cheap/normal/smart 转为简短中文标签（用于交互提示）。"""
+    m = {
+        "cheap": "cheap（轻量）",
+        "normal": "normal（主对话）",
+        "smart": "smart（增强）",
+    }
+    return m.get(platform_type, platform_type)
+
+
+def format_llm_tier_summary_lines() -> List[str]:
+    """根据当前 llm_group 下 cheap/normal/smart 解析结果，生成供终端展示的说明行。"""
+    gname = get_llm_group() or "（未设置 llm_group）"
+    cheap = get_cheap_model_name()
+    normal = get_normal_model_name()
+    smart = get_smart_model_name()
+    has_cheap = _llm_group_yaml_has_nonempty_llm_slot("cheap_llm")
+    has_smart = _llm_group_yaml_has_nonempty_llm_slot("smart_llm")
+
+    lines: List[str] = [
+        f"ℹ️ 模型组 `{gname}` · cheap={cheap} · normal={normal} · smart={smart}",
+    ]
+    notes: List[str] = []
+    if not has_cheap:
+        notes.append("未配置 cheap_llm 时 cheap 与 normal 相同")
+    if not has_smart:
+        notes.append("未配置 smart_llm 时 smart 与 normal 相同")
+    if notes:
+        lines.append("   " + "；".join(notes))
+
+    auto = is_enable_llm_auto_model_selection()
+    auto_smart = is_enable_llm_auto_smart_model_selection()
+    st = get_llm_auto_model_small_task_token_threshold()
+    lt = get_llm_auto_model_large_task_token_threshold()
+    if auto:
+        smart_hint = (
+            f"≥{lt} tokens→smart"
+            if auto_smart
+            else f"≥{lt} tokens→normal（smart 自动路由未开启）"
+        )
+        lines.append(
+            f"   自动体量路由：开（约 ≤{st} tokens→cheap，{smart_hint}；"
+            "仅在无用户对话历史、仅 system 的首次请求时可能换档）"
+        )
+        if not auto_smart:
+            lines.append(
+                "   若要大任务自动用 smart，请在 config 中设置 "
+                "enable_llm_auto_smart_model_selection: true"
+            )
+    else:
+        lines.append(
+            "   自动体量路由：关（主对话默认 normal，不因体量自动换 cheap/normal/smart）"
+        )
+    return lines
 
 
 def is_execute_tool_confirm() -> bool:

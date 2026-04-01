@@ -32,6 +32,7 @@ from jarvis.jarvis_utils.config import (
     get_llm_first_chunk_retry_backoff_ms_min,
     get_llm_first_chunk_timeout_seconds,
     is_enable_llm_auto_model_selection,
+    is_enable_llm_auto_smart_model_selection,
     is_enable_llm_first_chunk_quick_retry,
     is_enable_llm_stream_fallback_to_non_stream,
 )
@@ -213,12 +214,27 @@ class BasePlatform(ABC):
         return _FirstChunkTimeoutWrapper(it)  # type: ignore[return-value]
 
     def _should_auto_select_model_type(self) -> bool:
-        # 硬禁用：禁止在 normal 实例中根据任务大小自动切换到 cheap/smart。
-        # 需求来源：避免出现 “自动选择模型：normal → smart/cheap” 的隐式行为。
-        return False
+        """是否在「近似无状态」场景下按体量委托 cheap/normal（可选 smart）。
+
+        需 ``enable_llm_auto_model_selection``；且仅当消息中尚无用户/助手轮次（仅 system）
+        时启用，避免长对话中途隐式换档。
+        """
+        if not is_enable_llm_auto_model_selection():
+            return False
+        try:
+            msgs = self.get_messages()
+            non_system = [m for m in msgs if m.get("role") != "system"]
+            return len(non_system) == 0
+        except Exception:
+            return False
 
     def _pick_model_type_for_message(self, message: str) -> str:
-        """基于输入规模做 cheap/normal/smart 启发式选择。"""
+        """基于输入规模做 cheap/normal/smart 启发式选择。
+
+        - 小任务 → cheap（与 normal 间自动切换）
+        - 大任务 → 仅当 ``enable_llm_auto_smart_model_selection`` 为真时选 smart，否则 normal
+        - 其余 → normal
+        """
         try:
             tokens = get_context_token_count(message)
         except Exception:
@@ -226,7 +242,9 @@ class BasePlatform(ABC):
         small_th = get_llm_auto_model_small_task_token_threshold()
         large_th = get_llm_auto_model_large_task_token_threshold()
         if large_th > 0 and tokens >= large_th:
-            return "smart"
+            if is_enable_llm_auto_smart_model_selection():
+                return "smart"
+            return "normal"
         if small_th > 0 and tokens <= small_th:
             return "cheap"
         return "normal"
@@ -249,11 +267,13 @@ class BasePlatform(ABC):
                 delegated.set_messages(self.get_messages())
             except Exception:
                 pass
-            PrettyOutput.auto_print(
-                f"💰 自动选择模型：{self.platform_type} → {target_type}"
-                if target_type == "cheap"
-                else f"🧠 自动选择模型：{self.platform_type} → {target_type}"
-            )
+            if target_type == "cheap":
+                msg = f"💰 自动选择模型：{self.platform_type} → {target_type}"
+            elif target_type == "smart":
+                msg = f"🧠 自动选择模型：{self.platform_type} → {target_type}"
+            else:
+                msg = f"🤖 自动选择模型：{self.platform_type} → {target_type}"
+            PrettyOutput.auto_print(msg)
             return delegated.chat_until_success(message, max_output=max_output)
         except Exception:
             return None
@@ -318,6 +338,17 @@ class BasePlatform(ABC):
             return 0.0, "green", ""
         except Exception:
             return 0.0, "green", ""
+
+    def _response_complete_log_tier_suffix(self) -> str:
+        """「模型响应完成」统计行追加片段：当前 platform_type + 三档解析后的模型名。"""
+        try:
+            pt = getattr(self, "platform_type", None) or "normal"
+            c = get_cheap_model_name()
+            n = get_normal_model_name()
+            s = get_smart_model_name()
+            return f" | 档:{pt} | cheap={c} · normal={n} · smart={s}"
+        except Exception:
+            return ""
 
     def _chat_with_pretty_output(
         self, message: str, start_time: float, max_output: int = 0
@@ -441,15 +472,19 @@ class BasePlatform(ABC):
                     response
                 )
                 threshold = get_conversation_turn_threshold()
+                tier = self._response_complete_log_tier_suffix()
                 PrettyOutput.auto_print(
                     f"✅ {self.name()}模型响应完成: {duration:.2f}秒 | 轮次: {self.get_conversation_turn()}/{threshold} | "
                     f"首token: {first_token_time:.2f}秒 | 速度: {tokens_per_second:.1f} tokens/s | Token: {usage_percent:.1f}%"
+                    f"{tier}"
                 )
             except Exception:
                 threshold = get_conversation_turn_threshold()
+                tier = self._response_complete_log_tier_suffix()
                 PrettyOutput.auto_print(
                     f"✅ {self.name()}模型响应完成: {duration:.2f}秒 | 轮次: {self.get_conversation_turn()}/{threshold} | "
                     f"首token: {first_token_time:.2f}秒 | 速度: {tokens_per_second:.1f} tokens/s"
+                    f"{tier}"
                 )
         else:
             response = self._chat_with_suppressed_output(message, max_output)

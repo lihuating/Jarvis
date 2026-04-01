@@ -537,6 +537,20 @@ def get_platform_type_from_agent(agent: Any) -> str:
     return "smart" if agent_type == "code_agent" else "normal"
 
 
+def _llm_ref_key_to_display(llm_key: Any) -> str:
+    """将 llm_groups 中的 llms 引用键解析为「API 模型名 (配置键)」，便于与 config.yaml 对照。"""
+    if not isinstance(llm_key, str) or not llm_key.strip() or llm_key == "-":
+        return "-"
+    llms = _get_global_config().get("llms", {})
+    if isinstance(llms, dict) and llm_key in llms:
+        ent = llms[llm_key]
+        if isinstance(ent, dict):
+            m = ent.get("model")
+            if m and str(m).strip():
+                return f"{m} ({llm_key})"
+    return llm_key
+
+
 def list_model_groups() -> Optional[List[Tuple[str, str, str, str]]]:
     """列出所有可用的模型组
 
@@ -552,10 +566,10 @@ def list_model_groups() -> Optional[List[Tuple[str, str, str, str]]]:
     groups = []
     for group_name, group_config in model_groups.items():
         if isinstance(group_config, dict):
-            # 获取各平台的模型名称
-            smart_model = group_config.get("smart_llm", "-")
-            normal_model = group_config.get("normal_llm", "-")
-            cheap_model = group_config.get("cheap_llm", "-")
+            # 获取各平台的模型名称（展示为解析后的 model 字段，便于与 cheap/normal/smart 配置对应）
+            smart_model = _llm_ref_key_to_display(group_config.get("smart_llm", "-"))
+            normal_model = _llm_ref_key_to_display(group_config.get("normal_llm", "-"))
+            cheap_model = _llm_ref_key_to_display(group_config.get("cheap_llm", "-"))
             groups.append((group_name, smart_model, normal_model, cheap_model))
 
     return groups

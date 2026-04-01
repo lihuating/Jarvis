@@ -1508,13 +1508,17 @@ class PrettyOutput:
             # - JARVIS_STREAM_MIN_BUFFER_SIZE: 字符数（默认 120）
             # 默认值：质量优先的同时减少卡顿（约 6-10 次/秒刷新，避免每字符刷新）
             try:
-                update_interval = float(os.environ.get("JARVIS_STREAM_UPDATE_INTERVAL", "0.12"))
+                update_interval = float(
+                    os.environ.get("JARVIS_STREAM_UPDATE_INTERVAL", "0.16")
+                )
             except Exception:
-                update_interval = 0.12
+                update_interval = 0.16
             try:
-                min_buffer_size = int(os.environ.get("JARVIS_STREAM_MIN_BUFFER_SIZE", "100"))
+                min_buffer_size = int(
+                    os.environ.get("JARVIS_STREAM_MIN_BUFFER_SIZE", "140")
+                )
             except Exception:
-                min_buffer_size = 100
+                min_buffer_size = 140
             if update_interval < 0.05:
                 update_interval = 0.05
             if min_buffer_size < 16:
