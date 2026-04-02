@@ -148,6 +148,7 @@ BUILTIN_COMMANDS = [
     ("Summary", "总结"),
     ("Pin", "固定/置顶内容"),
     ("Clear", "清除历史"),
+    ("Exit", "退出 Jarvis"),
     ("Commit", "提交代码"),
     ("ToolUsage", "工具使用说明"),
     ("ReloadConfig", "重新加载配置"),
@@ -883,20 +884,13 @@ class FileCompleter(Completer):
 
         tool_hint = f"工具: {', '.join(tool_names)}" if tool_names else ""
 
-        if append:
-            # Append 情况下：只有当我们能从模板里提取到“可用工具/命令线索”时才展示，
-            # 否则像 Dev/Fix/Check 这类“无意义预览”就隐藏。
-            if not tool_hint:
-                return ""
-            parts = [p for p in (desc, tool_hint) if p]
-            return (" ".join(parts) + "(Append)") if parts else "(Append)"
-
-        # Replace 情况下：Replace 本身通常用于覆盖提示且不应展示“无意义标记/描述”，
-        # 仅在能给出工具线索时展示，方便用户理解可用命令。
-        if tool_hint:
-            parts = [p for p in (desc, tool_hint) if p]
-            return (" ".join(parts)) if parts else ""
-        return ""
+        # 右侧栏“使用说明”优先展示 description；如果还能提取到工具名则一并补充。
+        # 行为标记用中文，便于用户理解模板会“追加/替换”。
+        mode_hint = "（追加）" if append else "（替换）"
+        parts = [p for p in (desc, tool_hint) if p]
+        if not parts:
+            return ""
+        return " ".join(parts) + mode_hint
 
 
 def get_all_rules_formatted() -> List[str]:

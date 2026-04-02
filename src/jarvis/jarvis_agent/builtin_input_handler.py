@@ -265,6 +265,10 @@ def builtin_input_handler(user_input: str, agent_: Any) -> Tuple[str, bool]:
                 # 即使没有摘要，也确保设置记忆标签作为新会话的初始提示
                 prompt = memory_tags_prompt
             return prompt, True
+        elif tag == "Exit":
+            # 退出 Jarvis（在 jvs/jca 均可用）
+            PrettyOutput.auto_print("🛑 用户请求退出程序...")
+            raise SystemExit(0)
         elif tag == "Clear":
             agent.clear_history()
             return "", True

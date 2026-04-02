@@ -35,18 +35,21 @@ arguments:
         "template": """
 请使用工具在当前目录下查找与以下功能相关的文件：
 """,
+        "description": "查找相关文件（用于快速定位涉及文件）",
     },
     "Dev": {
         "append": False,
         "template": """
 请调用create_code_agent开发以下需求：
 """,
+        "description": "进入开发实现（生成/修改代码）",
     },
     "Fix": {
         "append": False,
         "template": """
 请修复以下问题：
 """,
+        "description": "修复问题（定位并修正缺陷）",
     },
     "Check": {
         "append": True,
