@@ -102,6 +102,81 @@ def _get_tools_overview() -> str:
         return "工具概况: （获取失败）"
 
 
+def _read_text_file_safely(path: str, max_chars: int = 200_000) -> str:
+    try:
+        if not os.path.exists(path):
+            return ""
+        with open(path, "r", encoding="utf-8", errors="replace") as f:
+            s = f.read()
+        if len(s) > max_chars:
+            return s[:max_chars]
+        return s
+    except Exception:
+        return ""
+
+
+def _extract_markdown_sections(md: str, headings: list[str], max_chars: int) -> str:
+    """从 Markdown 中按 heading 顺序提取片段（粗粒度、稳定、避免复杂解析）。"""
+    if not md.strip():
+        return ""
+    out: list[str] = []
+    lower = md
+    for h in headings:
+        idx = lower.find(h)
+        if idx < 0:
+            continue
+        # 取从该 heading 开始，到下一个同级 heading（"## "）或文件末尾
+        tail = md[idx:]
+        next_idx = -1
+        for marker in ("\n## ", "\r\n## "):
+            j = tail.find(marker, 1)
+            if j != -1:
+                next_idx = j
+                break
+        chunk = tail if next_idx == -1 else tail[:next_idx]
+        chunk = chunk.strip()
+        if chunk and chunk not in out:
+            out.append(chunk)
+    text = "\n\n".join(out).strip()
+    if not text:
+        return ""
+    return (text[:max_chars].rstrip() + "\n") if len(text) > max_chars else (text + "\n")
+
+
+def _get_agents_md_summary(project_root: str) -> str:
+    """
+    尝试从工程根目录的 `AGENTS.md` 提取“项目概述/结构/核心组件”等稳定信息，
+    用于 Init 生成的 JVS_MEMORY.md，让新会话快速获得项目全貌。
+    """
+    path = os.path.join(project_root, "AGENTS.md")
+    md = _read_text_file_safely(path)
+    if not md.strip():
+        return ""
+
+    # 控制长度：JVS_MEMORY 追求短而稳定，避免把整个 AGENTS.md 塞进去
+    extracted = _extract_markdown_sections(
+        md=md,
+        headings=[
+            "## 项目概述",
+            "## 项目结构",
+            "## 核心组件",
+            "## 主要命令",
+            "## 构建和运行",
+        ],
+        max_chars=12_000,
+    ).strip()
+    if not extracted:
+        return ""
+
+    return "\n".join(
+        [
+            "## 来自 AGENTS.md 的项目摘要",
+            "",
+            extracted,
+        ]
+    ).strip()
+
+
 def build_jvs_memory(project_root: str) -> str:
     """构建用于快速启动的工程摘要。内容尽量短、稳定、可复用。"""
     try:
@@ -113,6 +188,7 @@ def build_jvs_memory(project_root: str) -> str:
 
     rules_fp = _get_rules_fingerprint(project_root)
     tools_overview = _get_tools_overview()
+    agents_summary = _get_agents_md_summary(project_root)
 
     header = [
         "# JVS_MEMORY.md",
@@ -130,6 +206,8 @@ def build_jvs_memory(project_root: str) -> str:
     body_parts = []
     if overview:
         body_parts.append(overview)
+    if agents_summary:
+        body_parts.append(agents_summary)
     body_parts.append(tools_overview)
 
     return "\n".join(header + body_parts).strip() + "\n"
