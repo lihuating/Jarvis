@@ -351,15 +351,9 @@ class GitManager:
         post_process_func: Any,
     ) -> None:
         """处理提交确认和可能的重置"""
-        # 默认关闭自动提交：未显式开启时，不做任何“自动生成最终提交”的流程
-        try:
-            from jarvis.jarvis_utils.config import is_enable_auto_commit
-
-            if not is_enable_auto_commit():
-                return
-        except Exception:
-            return
-
+        # 这里用于“用户显式执行 Commit 命令”的场景。
+        # 由于工程已硬禁用自动 commit，这里不再受 is_enable_auto_commit 影响，
+        # 以确保用户手动提交仍可用。
         if commits and user_confirm("是否接受以上提交记录？", True):
             subprocess.run(
                 ["git", "reset", "--mixed", str(start_commit)],

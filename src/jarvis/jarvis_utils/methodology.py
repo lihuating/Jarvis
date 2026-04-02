@@ -210,12 +210,12 @@ def load_methodology(
 
     try:
         # 加载所有方法论
-        PrettyOutput.auto_print("📁 加载方法论文件...")
         methodologies = _load_all_methodologies()
         if not methodologies:
-            PrettyOutput.auto_print("⚠️ 没有找到方法论文件")
             return ""
-        PrettyOutput.auto_print(f"✅ 加载方法论文件完成 (共 {len(methodologies)} 个)")
+        PrettyOutput.auto_print(
+            f"✅ 加载方法论文件完成 (共 {len(methodologies)} 个)"
+        )
 
         # 方法论条目选择只需短输出，优先 cheap 降低延迟；失败再回退 normal
         registry = PlatformRegistry.get_global_platform_registry()

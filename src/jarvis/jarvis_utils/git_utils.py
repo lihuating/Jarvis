@@ -480,6 +480,16 @@ def handle_commit_workflow(start_commit: Optional[str] = None) -> bool:
     Returns:
         bool: 提交是否成功
     """
+    # 自动提交被全局硬禁用：避免任何“检查/补丁后自动 git commit”动作发生
+    try:
+        from jarvis.jarvis_utils.config import is_enable_auto_commit
+
+        if not is_enable_auto_commit():
+            return False
+    except Exception:
+        # 保守策略：配置读取失败时也不执行提交
+        return False
+
     if is_confirm_before_apply_patch() and not user_confirm(
         "是否要提交代码？", default=True
     ):

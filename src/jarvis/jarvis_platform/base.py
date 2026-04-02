@@ -26,13 +26,11 @@ from jarvis.jarvis_utils.config import get_pretty_output
 from jarvis.jarvis_utils.config import get_smart_max_input_token_count
 from jarvis.jarvis_utils.config import get_llm_config
 from jarvis.jarvis_utils.config import (
-    get_llm_auto_model_large_task_token_threshold,
     get_llm_auto_model_small_task_token_threshold,
     get_llm_first_chunk_retry_backoff_ms_max,
     get_llm_first_chunk_retry_backoff_ms_min,
     get_llm_first_chunk_timeout_seconds,
     is_enable_llm_auto_model_selection,
-    is_enable_llm_auto_smart_model_selection,
     is_enable_llm_first_chunk_quick_retry,
     is_enable_llm_stream_fallback_to_non_stream,
 )
@@ -229,22 +227,12 @@ class BasePlatform(ABC):
             return False
 
     def _pick_model_type_for_message(self, message: str) -> str:
-        """基于输入规模做 cheap/normal/smart 启发式选择。
-
-        - 小任务 → cheap（与 normal 间自动切换）
-        - 大任务 → 仅当 ``enable_llm_auto_smart_model_selection`` 为真时选 smart，否则 normal
-        - 其余 → normal
-        """
+        """基于输入规模在 cheap 与 normal 间启发式选择（smart 仅由用户快捷键切换，不参与自动路由）。"""
         try:
             tokens = get_context_token_count(message)
         except Exception:
             tokens = len(message) // 4
         small_th = get_llm_auto_model_small_task_token_threshold()
-        large_th = get_llm_auto_model_large_task_token_threshold()
-        if large_th > 0 and tokens >= large_th:
-            if is_enable_llm_auto_smart_model_selection():
-                return "smart"
-            return "normal"
         if small_th > 0 and tokens <= small_th:
             return "cheap"
         return "normal"
@@ -684,12 +672,17 @@ class BasePlatform(ABC):
         self.suppress_output = suppress
 
     def set_platform_type(self, platform_type: str):
-        """设置平台类型
-
-        参数:
-            platform_type: 平台类型，可选值为 'normal'、'cheap' 或 'smart'
-        """
+        """设置平台类型，并同步 model_name 与 llm_config（供快捷键 normal↔smart 等切换）。"""
+        if platform_type not in ("cheap", "normal", "smart"):
+            platform_type = "normal"
         self.platform_type = platform_type
+        if platform_type == "cheap":
+            self.model_name = get_cheap_model_name()
+        elif platform_type == "smart":
+            self.model_name = get_smart_model_name()
+        else:
+            self.model_name = get_normal_model_name()
+        self._llm_config = get_llm_config(platform_type)
 
     def _get_platform_max_input_token_count(self) -> int:
         """根据平台类型获取对应的最大输入token数量

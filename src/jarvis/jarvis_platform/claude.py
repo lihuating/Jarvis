@@ -77,6 +77,23 @@ class ClaudeModel(BasePlatform):
         self.messages: List[Dict[str, str]] = []
         self.system_message = ""
 
+    def set_platform_type(self, platform_type: str) -> None:
+        """切换 cheap/normal/smart 后同步 Anthropic 凭证与 Client。"""
+        super().set_platform_type(platform_type)
+        llm_config = self._llm_config or {}
+        if llm_config:
+            if "anthropic_api_key" in llm_config:
+                self.api_key = llm_config.get("anthropic_api_key")
+            if "anthropic_base_url" in llm_config:
+                self.base_url = llm_config.get("anthropic_base_url")
+        try:
+            if self.base_url:
+                self.client = Anthropic(api_key=self.api_key, base_url=self.base_url)
+            else:
+                self.client = Anthropic(api_key=self.api_key)
+        except Exception as e:
+            PrettyOutput.auto_print(f"⚠️ 切换档位后重建 Anthropic 客户端失败: {e}")
+
     def set_messages(self, messages: List[Dict[str, str]]) -> None:
         """替换对话历史
 

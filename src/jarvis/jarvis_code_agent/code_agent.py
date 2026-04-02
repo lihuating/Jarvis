@@ -666,9 +666,12 @@ git reset --hard {start_commit}
                     self.session.prompt += final_ret
                     return
 
-            commited = handle_commit_workflow(start_hash)
-            if commited:
-                # 获取提交信息
+            commit_succeeded = handle_commit_workflow(start_hash)
+
+            # commit_succeeded 仅表示是否执行了 git commit；代码修改本身已在前面应用完成。
+            # 当自动提交被禁用时，commit_succeeded 为 False，此处仍应继续做影响分析/构建验证/静态分析。
+            commit_info = ""
+            if commit_succeeded:
                 end_hash = get_latest_commit_hash()
                 commits = get_commits_between(start_hash, end_hash)
 
@@ -682,39 +685,23 @@ git reset --hard {start_commit}
                         else latest_commit_hash
                     )
 
-                    final_ret += (
-                        f"\n\n代码已修改完成\n"
-                        f"✅ 已自动提交\n"
+                    commit_info = (
+                        f"\n✅ 已自动提交\n"
                         f"   Commit ID: {commit_short_hash} ({latest_commit_hash})\n"
                         f"   提交信息: {latest_commit_message}\n"
-                        f"\n补丁内容（按文件）:\n{per_file_preview}\n"
-                    )
-
-                    # 添加影响范围分析报告
-                    final_ret = self.impact_manager.handle_impact_report(
-                        impact_report, self, final_ret
-                    )
-
-                    # 构建验证
-                    config = BuildValidationConfig(self.root_dir)
-                    (
-                        build_validation_result,
-                        final_ret,
-                    ) = self.build_validation_manager.handle_build_validation(
-                        modified_files, self, final_ret
-                    )
-
-                    # 静态分析
-                    final_ret = self.lint_manager.handle_static_analysis(
-                        modified_files, build_validation_result, config, self, final_ret
                     )
                 else:
-                    # 如果没有获取到commits，尝试直接从end_hash获取commit信息
-                    commit_info = ""
+                    # 如果没有获取到 commits，尝试直接从 end_hash 获取 commit 信息
                     if end_hash:
                         try:
                             result = subprocess.run(
-                                ["git", "log", "-1", "--pretty=format:%H|%s", end_hash],
+                                [
+                                    "git",
+                                    "log",
+                                    "-1",
+                                    "--pretty=format:%H|%s",
+                                    end_hash,
+                                ],
                                 capture_output=True,
                                 text=True,
                                 encoding="utf-8",
@@ -726,10 +713,9 @@ git reset --hard {start_commit}
                                 and result.stdout
                                 and "|" in result.stdout
                             ):
-                                (
-                                    commit_hash,
-                                    commit_message,
-                                ) = result.stdout.strip().split("|", 1)
+                                commit_hash, commit_message = result.stdout.strip().split(
+                                    "|", 1
+                                )
                                 commit_short_hash = (
                                     commit_hash[:7]
                                     if len(commit_hash) >= 7
@@ -743,17 +729,48 @@ git reset --hard {start_commit}
                         except Exception:
                             pass
 
-                    if commit_info:
-                        final_ret += f"\n\n代码已修改完成{commit_info}\n"
-                    else:
-                        final_ret += "\n\n修改没有生效\n"
+            # 无论是否 commit，都把“代码已修改完成”作为主语义输出
+            if commit_succeeded:
+                final_ret += (
+                    f"\n\n代码已修改完成\n"
+                    f"{commit_info}\n"
+                    f"补丁内容（按文件）:\n{per_file_preview}\n"
+                )
             else:
-                final_ret += "\n修改被拒绝\n"
-                final_ret += f"# 补丁预览（按文件）:\n{per_file_preview}"
+                final_ret += (
+                    f"\n\n代码已修改完成（未执行 git commit）\n\n"
+                    f"补丁内容（按文件）:\n{per_file_preview}\n"
+                )
+
+            # 添加影响范围分析报告
+            final_ret = self.impact_manager.handle_impact_report(
+                impact_report, self, final_ret
+            )
+
+            # 构建验证
+            config = BuildValidationConfig(self.root_dir)
+            (build_validation_result, final_ret) = (
+                self.build_validation_manager.handle_build_validation(
+                    modified_files, self, final_ret
+                )
+            )
+
+            # 静态分析
+            final_ret = self.lint_manager.handle_static_analysis(
+                modified_files, build_validation_result, config, self, final_ret
+            )
         else:
             return
         # 用户确认最终结果
-        if commited:
+        try:
+            from jarvis.jarvis_utils.config import is_enable_auto_commit
+
+            auto_commit_enabled = is_enable_auto_commit()
+        except Exception:
+            auto_commit_enabled = True
+
+        # 当自动提交被禁用时，避免因为不提交而进入“是否使用此回复”的交互分支。
+        if commit_succeeded or not auto_commit_enabled:
             self.session.prompt += final_ret
             return
         PrettyOutput.auto_print(final_ret, lang="markdown")  # 保留语法高亮
@@ -973,12 +990,16 @@ git reset --hard {start_commit}
 - 只关注本次修改相关的问题，不要审查无关代码
 - **尊重用户原始需求**：如果用户在需求中明确支持某个方案或实现方式，不应将其判定为风险或问题，除非该方案存在明显的错误或违反安全原则"""
 
+        start_commit_block = (
+            f"【起始 Commit】\n{start_commit}\n\n" if start_commit else ""
+        )
+
         user_prompt = f"""请审查以下代码修改是否正确完成了用户需求。
 
 【用户需求】
 {user_input}
 
-{f"【起始 Commit】\n{start_commit}\n\n" if start_commit else ""}【完整的修改历史】
+{start_commit_block}【完整的修改历史】
 {modification_history if modification_history else "无修改历史（如为空，说明主 Agent 未生成总结或未进行修复）"}
 
 【代码修改（Git Diff）】

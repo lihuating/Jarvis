@@ -2385,14 +2385,6 @@ class Agent:
         # 准备记忆标签提示
         memory_tags_prompt = self.memory_manager.prepare_memory_tags_prompt()
 
-        # 交互模式下展示当前模型组 cheap/normal/smart 与自动路由说明（与 ~/.jarvis/config.yaml 一致）
-        if not getattr(self, "non_interactive", False):
-            try:
-                for line in format_llm_tier_summary_lines():
-                    PrettyOutput.auto_print(line)
-            except Exception:
-                pass
-
         # 处理文件上传和方法论加载
         self.file_methodology_manager.handle_files_and_methodology()
 

@@ -46,7 +46,9 @@ from prompt_toolkit.styles import Style as PromptStyle
 
 from jarvis.jarvis_utils.clipboard import copy_to_clipboard
 from jarvis.jarvis_utils.config import get_data_dir
+from jarvis.jarvis_utils.config import get_normal_model_name
 from jarvis.jarvis_utils.config import get_replace_map
+from jarvis.jarvis_utils.config import get_smart_model_name
 from jarvis.jarvis_utils.config import get_conversation_turn_threshold
 from jarvis.jarvis_utils.globals import get_message_history
 from jarvis.jarvis_utils.globals import get_current_agent
@@ -184,7 +186,22 @@ def _calc_prompt_rows(prev_text: str) -> int:
         cols = os.get_terminal_size().columns
     except Exception:
         cols = 80
-    prefix = "👤 > "
+    
+    # 获取模型名称以计算正确的提示符宽度
+    def _get_model_name_hint() -> str:
+        try:
+            current_agent = get_current_agent()
+            if current_agent and hasattr(current_agent, "model"):
+                model = current_agent.model
+                if model and getattr(model, "model_name", None):
+                    # 提示头只显示模型名，避免显示 `|normal`/`|smart` 档位后缀
+                    return f"[{model.model_name}]"
+        except Exception:
+            pass
+        return ""
+    
+    model_hint = _get_model_name_hint()
+    prefix = f"👤{model_hint} > "
     prefix_w = _display_width(prefix)
 
     lines = prev_text.splitlines()
@@ -408,11 +425,26 @@ def get_single_line_input(tip: str, default: str = "") -> str:
     """
     获取支持历史记录的单行输入。
     """
+    # 获取当前模型名称用于提示符
+    def _get_model_name_hint() -> str:
+        try:
+            current_agent = get_current_agent()
+            if current_agent and hasattr(current_agent, "model"):
+                model = current_agent.model
+                if model and getattr(model, "model_name", None):
+                    # 提示头只显示模型名，避免显示 `|normal`/`|smart` 档位后缀
+                    return f"[{model.model_name}]"
+        except Exception:
+            pass
+        return ""
+    
+    model_hint = _get_model_name_hint()
+    
     session: PromptSession[Any] = PromptSession(history=None)
     style = PromptStyle.from_dict(
         {"prompt": "ansicyan", "bottom-toolbar": "fg:#888888"}
     )
-    prompt = FormattedText([("class:prompt", f"👤 > {tip}")])
+    prompt = FormattedText([("class:prompt", f"👤{model_hint} > {tip}")])
     return str(session.prompt(prompt, default=default, style=style))
 
 
@@ -1102,6 +1134,31 @@ def _show_history_and_copy() -> None:
             break
 
 
+def try_toggle_agent_normal_smart_tier() -> bool:
+    """主会话在 normal 与 smart 之间切换（多行输入栏 F2）。
+
+    cheap 档位会先切到 smart（再按一次可回到 normal）；从 normal 按快捷键进入 smart。
+    """
+    try:
+        ag = get_current_agent()
+        if not ag or not getattr(ag, "model", None):
+            return False
+        m = ag.model
+        if not hasattr(m, "set_platform_type"):
+            return False
+        pt = getattr(m, "platform_type", "normal") or "normal"
+        if pt == "smart":
+            m.set_platform_type("normal")
+            # 这里不要额外向 stdout 打印，避免破坏 prompt_toolkit 的原地刷新区域。
+        else:
+            m.set_platform_type("smart")
+            # 这里不要额外向 stdout 打印，避免破坏 prompt_toolkit 的原地刷新区域。
+        return True
+    except Exception as e:
+        PrettyOutput.auto_print(f"⚠️ 切换 smart/normal 失败: {e}")
+        return False
+
+
 def _get_multiline_input_internal(
     tip: str, preset: Optional[str] = None, preset_cursor: Optional[int] = None
 ) -> str:
@@ -1109,6 +1166,21 @@ def _get_multiline_input_internal(
     Internal function to get multiline input using prompt_toolkit.
     Returns a sentinel value if Ctrl+O is pressed.
     """
+    # 获取当前模型名称用于提示符
+    def _get_model_name_hint() -> str:
+        try:
+            current_agent = get_current_agent()
+            if current_agent and hasattr(current_agent, "model"):
+                model = current_agent.model
+                if model and getattr(model, "model_name", None):
+                    # 提示头只显示模型名，避免显示 `|normal`/`|smart` 档位后缀
+                    return f"[{model.model_name}]"
+        except Exception:
+            pass
+        return ""
+    
+    model_hint = _get_model_name_hint()
+    
     bindings = KeyBindings()
 
     # Show a one-time hint on the first Enter press in this invocation (disabled; using inlay toolbar instead)
@@ -1163,6 +1235,15 @@ def _get_multiline_input_internal(
     def _(event: KeyPressEvent) -> None:
         """Handle Ctrl+X by exiting the prompt and requesting program exit."""
         event.app.exit(result=CTRL_X_SENTINEL)
+
+    @bindings.add("f2", filter=has_focus(DEFAULT_BUFFER))
+    def _(event: KeyPressEvent) -> None:
+        """F2：主会话 normal ↔ smart（增强档需手动切换）。"""
+        try_toggle_agent_normal_smart_tier()
+        try:
+            event.app.invalidate()
+        except Exception:
+            pass
 
     # Ctrl+R：进入历史隐藏查看界面（列表 + 输入序号查看，注意在 bash 中 Ctrl+R 为反向历史搜索）
     @bindings.add("c-r", filter=has_focus(DEFAULT_BUFFER), eager=True)
@@ -1286,12 +1367,73 @@ def _get_multiline_input_internal(
             cols = os.get_terminal_size().columns
         except Exception:
             cols = 80
-        line_str = "─" * max(0, cols) + "\n"
-        
-        # 构建基础工具栏内容
-        toolbar_items = [
-            ("class:bt.line", line_str),
-            ("class:bt.label", "快捷键: "),
+        rule_str = "─" * max(0, cols)
+
+        def _truncate_segments_from_left(
+            segments: list[tuple[str, str]], max_width: int
+        ) -> list[tuple[str, str]]:
+            """按字符宽度限制在终端列数内，超过则从左侧截断（保留右侧信息）。"""
+            from wcwidth import wcswidth
+
+            def _text_width(s: str) -> int:
+                w = wcswidth(s)
+                return w if w >= 0 else len(s)
+
+            def _suffix_by_width(s: str, width: int) -> str:
+                """按显示宽度从字符串末尾截取 suffix，确保其 w <= width。"""
+                if width <= 0 or not s:
+                    return ""
+                out_rev: list[str] = []
+                used_w = 0
+                for ch in reversed(s):
+                    ch_w = _text_width(ch)
+                    if used_w + ch_w > width:
+                        break
+                    out_rev.append(ch)
+                    used_w += ch_w
+                return "".join(reversed(out_rev))
+
+            if max_width <= 0:
+                return []
+            # 计算总宽度（需要考虑中文全角等“显示宽度”差异）
+            total = 0
+            for _, t in segments:
+                total += _text_width(t)
+            if total <= max_width:
+                return segments
+
+            kept: list[tuple[str, str]] = []
+            used = 0
+            for style, text in reversed(segments):
+                if not text:
+                    continue
+                seg_w = _text_width(text)
+                if used + seg_w <= max_width:
+                    kept.append((style, text))
+                    used += seg_w
+                    continue
+
+                # 仅保留本段的“右侧 suffix”
+                remain = max_width - used
+                if remain <= 0:
+                    break
+
+                ellipsis = "..."
+                ell_w = _text_width(ellipsis)
+                if remain <= ell_w:
+                    new_text = _suffix_by_width(text, remain)
+                else:
+                    suffix = _suffix_by_width(text, remain - ell_w)
+                    new_text = ellipsis + suffix
+
+                kept.append((style, new_text))
+                used = max_width
+                break
+
+            return list(reversed(kept))
+
+        # line2：尽量把“轮次/Token”等右侧状态保留在同一行，避免换行导致的 UI 漂移。
+        line2_items: list[tuple[str, str]] = [
             ("class:bt.key", "@"),
             ("class:bt.label", " 文件补全 "),
             ("class:bt.sep", " • "),
@@ -1307,8 +1449,8 @@ def _get_multiline_input_internal(
             ("class:bt.key", "Ctrl+T"),
             ("class:bt.label", " 终端(!SHELL) "),
             ("class:bt.sep", " • "),
-            ("class:bt.key", "Ctrl+X"),
-            ("class:bt.label", " 退出程序 "),
+            ("class:bt.key", "F2"),
+            ("class:bt.label", " normal↔smart "),
             ("class:bt.sep", " • "),
             ("class:bt.key", "Ctrl+C"),
             ("class:bt.label", " 取消 "),
@@ -1319,6 +1461,13 @@ def _get_multiline_input_internal(
             current_agent = get_current_agent()
             if current_agent and hasattr(current_agent, 'model'):
                 model = current_agent.model
+                if hasattr(model, "platform_type"):
+                    pt = getattr(model, "platform_type", "normal") or "normal"
+                    # normal 档位不做额外展示，避免界面噪音；smart/cheap 才提示
+                    if pt != "normal":
+                        line2_items.append(("class:bt.sep", " • "))
+                        line2_items.append(("class:bt.key", "当前档"))
+                        line2_items.append(("class:bt.label", f": {pt} "))
                 if hasattr(model, 'get_conversation_turn'):
                     current_turn = model.get_conversation_turn()
                     threshold = get_conversation_turn_threshold()
@@ -1332,16 +1481,21 @@ def _get_multiline_input_internal(
                             token_percent = 0.0
                     
                     # 添加右侧的分隔符和状态信息，使用与Ctrl+X相同的样式
-                    toolbar_items.append(("class:bt.sep", " • "))
-                    toolbar_items.append(("class:bt.key", "轮次"))
-                    toolbar_items.append(("class:bt.label", f": {current_turn}/{threshold} "))
+                    line2_items.append(("class:bt.sep", " • "))
+                    line2_items.append(("class:bt.key", "轮次"))
+                    line2_items.append(
+                        ("class:bt.label", f": {current_turn}/{threshold} ")
+                    )
                     if token_percent > 0:
-                        toolbar_items.append(("class:bt.sep", " • "))
-                        toolbar_items.append(("class:bt.key", "Token"))
-                        toolbar_items.append(("class:bt.label", f": {token_percent:.1f}% "))
+                        line2_items.append(("class:bt.sep", " • "))
+                        line2_items.append(("class:bt.key", "Token"))
+                        line2_items.append(("class:bt.label", f": {token_percent:.1f}% "))
         except Exception:
             pass
-        
+
+        line2_items = _truncate_segments_from_left(line2_items, cols)
+        # 强制使用固定“2行”布局：第1行横线，第2行状态文本；避免 F2 切换时因宽度变化自动换行。
+        toolbar_items = [("class:bt.line", rule_str), ("", "\n"), *line2_items]
         return FormattedText(toolbar_items)
 
     history_dir = get_data_dir()
@@ -1356,7 +1510,7 @@ def _get_multiline_input_internal(
     )
 
     # Tip is shown in placeholder; avoid extra print
-    prompt = FormattedText([("class:prompt", "👤 > ")])
+    prompt = FormattedText([("class:prompt", f"👤{model_hint} > ")])
 
     def _pre_run() -> None:
         try:

@@ -64,6 +64,14 @@ class ShareManager(ABC):
 
     def update_central_repo(self) -> None:
         """克隆或更新中心仓库"""
+        # 用户要求移除自动 git commit：当自动提交被禁用时，跳过所有提交/推送相关动作。
+        try:
+            from jarvis.jarvis_utils.config import is_enable_auto_commit
+
+            auto_commit_enabled = is_enable_auto_commit()
+        except Exception:
+            auto_commit_enabled = False
+
         if not os.path.exists(self.repo_path):
             PrettyOutput.auto_print(f"ℹ️ 正在克隆中心{self.get_resource_type()}仓库...")
             subprocess.run(
@@ -87,12 +95,22 @@ class ShareManager(ABC):
                 subprocess.run(
                     ["git", "add", ".gitignore"], cwd=self.repo_path, check=True
                 )
-                subprocess.run(
-                    ["git", "commit", "-m", "chore: add __pycache__ to .gitignore"],
-                    cwd=self.repo_path,
-                    check=True,
-                )
-                subprocess.run(["git", "push"], cwd=self.repo_path, check=True)
+                if auto_commit_enabled:
+                    subprocess.run(
+                        [
+                            "git",
+                            "commit",
+                            "-m",
+                            "chore: add __pycache__ to .gitignore",
+                        ],
+                        cwd=self.repo_path,
+                        check=True,
+                    )
+                    subprocess.run(["git", "push"], cwd=self.repo_path, check=True)
+                else:
+                    PrettyOutput.auto_print(
+                        "⚠️ 已禁用自动提交/推送：已更新 `.gitignore`，请手动执行 git commit 并 push。"
+                    )
         else:
             PrettyOutput.auto_print(f"ℹ️ 正在更新中心{self.get_resource_type()}仓库...")
             # 检查是否是空仓库
@@ -138,6 +156,18 @@ class ShareManager(ABC):
 
     def commit_and_push(self, count: int) -> None:
         """提交并推送更改"""
+        try:
+            from jarvis.jarvis_utils.config import is_enable_auto_commit
+
+            if not is_enable_auto_commit():
+                PrettyOutput.auto_print(
+                    "⚠️ 已禁用自动提交/推送：请手动在中心仓库执行 git commit 并 push。"
+                )
+                return
+        except Exception:
+            # 配置读取失败时也保守：不自动提交
+            return
+
         PrettyOutput.auto_print("ℹ️ 正在提交更改...")
         subprocess.run(["git", "add", "."], cwd=self.repo_path, check=True)
 

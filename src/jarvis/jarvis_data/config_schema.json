@@ -159,13 +159,8 @@
     },
     "enable_llm_auto_model_selection": {
       "type": "boolean",
-      "description": "是否在无对话历史时按输入体量自动在 cheap 与 normal 间切换（以及在大任务时可选切换 smart，见 enable_llm_auto_smart_model_selection）",
+      "description": "是否在无对话历史时按输入体量自动在 cheap 与 normal 间切换（不含 smart；smart 用输入栏 Ctrl+Shift+S 切换）",
       "default": true
-    },
-    "enable_llm_auto_smart_model_selection": {
-      "type": "boolean",
-      "description": "大任务（≥ llm_auto_model_large_task_token_threshold）是否自动选用 smart；为 false 时大任务仍用 normal。需同时开启 enable_llm_auto_model_selection",
-      "default": false
     },
     "llm_auto_model_small_task_token_threshold": {
       "type": "integer",
@@ -174,7 +169,7 @@
     },
     "llm_auto_model_large_task_token_threshold": {
       "type": "integer",
-      "description": "自动路由中大任务 token 下限（≥ 则倾向 smart 或 normal，取决于 enable_llm_auto_smart_model_selection）",
+      "description": "配置保留项；当前版本不在此阈值上自动切换 smart",
       "default": 4000
     },
     "execute_tool_confirm": {

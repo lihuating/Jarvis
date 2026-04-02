@@ -118,6 +118,29 @@ class OpenAIModel(BasePlatform):
         self.messages: List[Dict[str, str]] = []
         self.system_message = ""
 
+    def set_platform_type(self, platform_type: str) -> None:
+        """切换 cheap/normal/smart 后同步 API 凭证与 Client（与基类 _llm_config 一致）。"""
+        super().set_platform_type(platform_type)
+        llm_config = self._llm_config or {}
+        if llm_config:
+            if "openai_api_key" in llm_config:
+                self.api_key = llm_config.get("openai_api_key")
+            if "openai_api_base" in llm_config:
+                self.base_url = llm_config.get("openai_api_base") or os.getenv(
+                    "OPENAI_API_BASE", "https://api.openai.com/v1"
+                )
+        try:
+            if self.extra_headers:
+                self.client = OpenAI(
+                    api_key=self.api_key,
+                    base_url=self.base_url,
+                    default_headers=self.extra_headers,
+                )
+            else:
+                self.client = OpenAI(api_key=self.api_key, base_url=self.base_url)
+        except TypeError:
+            self.client = OpenAI(api_key=self.api_key, base_url=self.base_url)
+
     def set_messages(self, messages: List[Dict[str, str]]) -> None:
         """替换对话历史
 

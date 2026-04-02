@@ -236,17 +236,8 @@ def is_enable_llm_stream_fallback_to_non_stream() -> bool:
 
 
 def is_enable_llm_auto_model_selection() -> bool:
-    """是否启用“按任务大小自动选择 cheap/normal/(可选 smart)”启发式（见 BasePlatform）。"""
+    """是否启用「无历史时按体量在 cheap 与 normal 间自动委托」启发式（见 BasePlatform；不含 smart）。"""
     return _get_bool_config("enable_llm_auto_model_selection", True)
-
-
-def is_enable_llm_auto_smart_model_selection() -> bool:
-    """是否在自动体量路由中允许大任务自动选用 smart。
-
-    需同时开启 ``enable_llm_auto_model_selection``。关闭时大任务仍用 normal，
-    仅 cheap↔normal 随体量自动切换；smart 需通过本项显式开启才会参与自动路由。
-    """
-    return _get_bool_config("enable_llm_auto_smart_model_selection", False)
 
 
 def get_llm_auto_model_small_task_token_threshold() -> int:
@@ -255,7 +246,7 @@ def get_llm_auto_model_small_task_token_threshold() -> int:
 
 
 def get_llm_auto_model_large_task_token_threshold() -> int:
-    """大任务 token 阈值（>= 则倾向 smart）。"""
+    """大任务 token 阈值（配置项保留；当前自动路由不在此阈值上切换 smart）。"""
     return max(0, _get_int_config("llm_auto_model_large_task_token_threshold", 4000))
 
 
@@ -267,23 +258,10 @@ def is_enable_new_files_check() -> bool:
 def is_enable_auto_commit() -> bool:
     """是否启用自动提交（worktree 前自动提交/CodeAgent CheckPoint）。
 
-    **默认关闭**：除非显式开启，否则 Jarvis 不会自动创建/生成 git commit。
-
-    开启方式（优先级从高到低）：
-    1) 环境变量 `JARVIS_ENABLE_AUTO_COMMIT`（推荐）
-       - "1"/"true"/"yes"/"on" => 开启
-       - "0"/"false"/"no"/"off" => 关闭
-    2) 配置项 `enable_auto_commit`（向后兼容）
+    由于用户要求：去除工程中所有“自动执行”的 `git commit` 动作，
+    因此该开关在当前工程中被硬禁用（始终返回 False）。
     """
-    try:
-        import os
-
-        env = os.environ.get("JARVIS_ENABLE_AUTO_COMMIT")
-        if env is not None:
-            return str(env).strip().lower() in {"1", "true", "yes", "y", "on"}
-    except Exception:
-        pass
-    return _get_bool_config("enable_auto_commit", False)
+    return False
 
 
 def get_llm_group() -> Optional[str]:
@@ -838,28 +816,19 @@ def format_llm_tier_summary_lines() -> List[str]:
         lines.append("   " + "；".join(notes))
 
     auto = is_enable_llm_auto_model_selection()
-    auto_smart = is_enable_llm_auto_smart_model_selection()
     st = get_llm_auto_model_small_task_token_threshold()
-    lt = get_llm_auto_model_large_task_token_threshold()
     if auto:
-        smart_hint = (
-            f"≥{lt} tokens→smart"
-            if auto_smart
-            else f"≥{lt} tokens→normal（smart 自动路由未开启）"
-        )
         lines.append(
-            f"   自动体量路由：开（约 ≤{st} tokens→cheap，{smart_hint}；"
-            "仅在无用户对话历史、仅 system 的首次请求时可能换档）"
+            f"   自动体量路由：开（约 ≤{st} tokens→cheap，否则→normal；"
+            "仅无用户历史、仅 system 的首次请求可能换档；smart 不参与自动路由）"
         )
-        if not auto_smart:
-            lines.append(
-                "   若要大任务自动用 smart，请在 config 中设置 "
-                "enable_llm_auto_smart_model_selection: true"
-            )
     else:
         lines.append(
-            "   自动体量路由：关（主对话默认 normal，不因体量自动换 cheap/normal/smart）"
+            "   自动体量路由：关（主对话不因体量自动换 cheap）"
         )
+    lines.append(
+        "   smart（增强）：在任务输入界面按 Ctrl+Shift+S 与 normal 互换（见底部快捷键栏）"
+    )
     return lines
 
 

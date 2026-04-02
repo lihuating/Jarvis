@@ -277,6 +277,16 @@ class WorktreeManager:
 
         # 检测仓库是否有提交记录，如果没有则自动创建初始提交
         if not self._has_commits():
+            # 用户要求移除自动 git commit：当仓库没有初始提交时，不再自动创建，
+            # 而是提示用户手动完成。
+            from jarvis.jarvis_utils.config import is_enable_auto_commit
+
+            if not is_enable_auto_commit():
+                raise RuntimeError(
+                    "仓库没有任何提交记录，且已禁用自动创建初始提交。\n"
+                    "请先手动执行：`git commit --allow-empty -m \"Initial commit\"`"
+                )
+
             PrettyOutput.auto_print("⚠️ 仓库没有任何提交记录，自动创建初始提交...")
             try:
                 # 配置 git 用户信息（避免提交失败）
