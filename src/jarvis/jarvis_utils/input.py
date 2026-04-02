@@ -853,13 +853,50 @@ class FileCompleter(Completer):
                 )
 
     def _get_description(self, tag: str) -> str:
-        if tag in self.replace_map:
-            return (
-                self.replace_map[tag].get("description", tag) + "(Append)"
-                if "append" in self.replace_map[tag] and self.replace_map[tag]["append"]
-                else "(Replace)"
-            )
-        return tag
+        """
+        `@@` 菜单里右侧显示的“提示内容”。
+
+        规则：
+        - `append=True`：显示 description，并附加工具线索（如模板里可提取到）。
+        - `append=False`（Replace）：如果没有任何可用工具/命令线索，则右侧留空（避免出现无意义的 Replace 提示）。
+        - 若模板里能提取到工具名（例如 Web 模板里有 `name: search_web`），则用于补充显示。
+        """
+        entry = self.replace_map.get(tag)
+        if not entry:
+            return tag
+
+        append = bool(entry.get("append", False))
+        desc = entry.get("description") or ""
+        template = entry.get("template") or ""
+
+        # 从模板提取显式工具名（内置模板目前主要通过 `name: xxx` 给出）
+        tool_names: list[str] = []
+        try:
+            import re
+
+            # 支持模板里 `name:` 行可能带缩进
+            m = re.search(r"(?m)^\\s*name:\\s*([A-Za-z0-9_\\-]+)\\s*$", template)
+            if m:
+                tool_names.append(m.group(1))
+        except Exception:
+            pass
+
+        tool_hint = f"工具: {', '.join(tool_names)}" if tool_names else ""
+
+        if append:
+            # Append 情况下：只有当我们能从模板里提取到“可用工具/命令线索”时才展示，
+            # 否则像 Dev/Fix/Check 这类“无意义预览”就隐藏。
+            if not tool_hint:
+                return ""
+            parts = [p for p in (desc, tool_hint) if p]
+            return (" ".join(parts) + "(Append)") if parts else "(Append)"
+
+        # Replace 情况下：Replace 本身通常用于覆盖提示且不应展示“无意义标记/描述”，
+        # 仅在能给出工具线索时展示，方便用户理解可用命令。
+        if tool_hint:
+            parts = [p for p in (desc, tool_hint) if p]
+            return (" ".join(parts)) if parts else ""
+        return ""
 
 
 def get_all_rules_formatted() -> List[str]:
