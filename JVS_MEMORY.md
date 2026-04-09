@@ -136,21 +136,24 @@ Git托管目录结构（共1604个文件）:
     - src/jarvis/jarvis_utils/methodology.py
     - src/jarvis/jarvis_code_agent/code_agent_prompts.py
     - src/jarvis/jarvis_tools/search_web.py
+
 ## 来自 AGENTS.md 的项目摘要
 
 ## 项目概述
 
-**Jarvis** 是一个功能强大的 Python AI 应用开发 SDK，为开发者提供灵活的工具和能力来快速构建专业的 AI 应用。与传统的 workflow 形式 Agent 平台（如 Dify）不同，Jarvis 以 Python SDK 的形式提供，强调可编程性和可扩展性。
+__Jarvis__ 是一个功能强大的 Python AI 应用开发 SDK，为开发者提供灵活的工具和能力来快速构建专业的 AI 应用。与传统的 workflow 形式 Agent 平台（如 Dify）不同，Jarvis 以 Python SDK 的形式提供，强调可编程性和可扩展性。
 
 ### 核心定位
-- **AI 应用开发 SDK**：提供强大而灵活的基础组件，帮助开发者快速构建专业的 AI 应用
-- **高度可编程**：以纯 Python SDK 形式提供，开发者可以自由组合各种能力
-- **工具生态丰富**：内置 30+ 工具（代码分析、文件操作、命令执行等），支持自定义扩展
-- **聚焦代码开发**：专为代码任务优化，提供完整的代码分析、编辑、验证、提交工作流
+
+- __AI 应用开发 SDK__：提供强大而灵活的基础组件，帮助开发者快速构建专业的 AI 应用
+- __高度可编程__：以纯 Python SDK 形式提供，开发者可以自由组合各种能力
+- __工具生态丰富__：内置 30+ 工具（代码分析、文件操作、命令执行等），支持自定义扩展
+- __聚焦代码开发__：专为代码任务优化，提供完整的代码分析、编辑、验证、提交工作流
 
 ### 主要技术栈
-- **编程语言**：Python 3.12
-- **核心依赖**：
+
+- __编程语言__：Python 3.12
+- __核心依赖__：
   - LLM 集成：OpenAI (1.78.1)、Anthropic (>=0.40.0)
   - 代码分析：tree-sitter 系列支持多种语言（Python、JavaScript、TypeScript、Rust、Go、Java、C/C++、Ruby、PHP、SQL、Markdown、HTML、CSS、Bash 等）
   - 浏览器自动化：Playwright (1.48.0)
@@ -160,13 +163,14 @@ Git托管目录结构（共1604个文件）:
   - 其他：requests、pyyaml、tiktoken、pillow、markitdown、jsonnet、ddgr、typer、pathspec、plotext 等
 
 ### 项目版本
-- **当前版本**：2.0.19
-- **许可证**：MIT
-- **支持平台**：Linux（主要）、Windows（通过 WSL 或原生，支持 GUI 自动化）、macOS
+
+- __当前版本__：2.0.19
+- __许可证__：MIT
+- __支持平台__：Linux（主要）、Windows（通过 WSL 或原生，支持 GUI 自动化）、macOS
 
 ## 项目结构
 
-```
+```text
 Jarvis/
 ├── src/jarvis/                    # 源代码目录
 │   ├── jarvis_agent/             # 通用 AI 代理核心
@@ -241,16 +245,19 @@ Jarvis/
 ## 核心组件
 
 ### 1. Agent（通用 AI 代理）
-**位置**：`src/jarvis/jarvis_agent/`
 
-**功能**：
+__位置__：`src/jarvis/jarvis_agent/`
+
+__功能__：
+
 - 提供完整的任务执行能力
 - 支持工具调用、记忆管理、任务规划等核心功能
 - 通过 system_prompt 定义行为，可快速定制专用 Agent
 - 内置 ARCHER 工作流（Analyze → Rule → Collect → Hypothesize → Execute → Review）
 - 支持非交互模式和任务派发模式
 
-**关键类**：
+__关键类__：
+
 - `Agent`：基础代理类
 - `AgentRunLoop`：主运行循环
 - `SessionManager`：会话管理（自动保存、自动清理、智能恢复）
@@ -259,7 +266,8 @@ Jarvis/
 - `RulesManager`：规则管理器（支持自动规则选择）
 - `TaskAnalyzer`：任务分析器
 
-**新特性（v2.0.16+）**：
+__新特性（v2.0.16+）__：
+
 - 会话自动保存和清理
 - 会话名称智能生成
 - 历史会话智能检测
@@ -269,9 +277,11 @@ Jarvis/
 - Agent 性格系统
 
 ### 2. CodeAgent（代码专用代理）
-**位置**：`src/jarvis/jarvis_code_agent/`
 
-**功能**：
+__位置__：`src/jarvis/jarvis_code_agent/`
+
+__功能__：
+
 - 继承自 Agent，专为代码任务优化
 - 内置代码分析、符号查找、精确编辑、构建验证等专业能力
 - 支持 Git 操作（提交、变基、diff 分析）
@@ -280,14 +290,16 @@ Jarvis/
 - 支持默认规则配置
 - 支持连续任务执行
 
-**关键管理器**：
+__关键管理器__：
+
 - `BuildValidationManager`：构建验证
 - `LintManager`：代码检查
 - `DiffManager`：差异分析
 - `ImpactManager`：影响分析
 - `GitManager`：Git 操作
 
-**新特性（v2.0.16+）**：
+__新特性（v2.0.16+）__：
+
 - 默认规则配置
 - 连续任务支持
 - 内置命令优先处理
@@ -295,9 +307,11 @@ Jarvis/
 - 代码格式化工具支持
 
 ### 3. 工具系统
-**位置**：`src/jarvis/jarvis_tools/`
 
-**内置工具类别**：
+__位置__：`src/jarvis/jarvis_tools/`
+
+__内置工具类别__：
+
 - 文件操作：`read_code`、`edit_file`、`write_file`、`list_directory`
 - 代码分析：`search_file_content`、`glob`、符号查找、LSP 代码分析
 - 命令执行：`run_shell_command`、`execute_script`（支持 Windows PowerShell）
@@ -309,25 +323,30 @@ Jarvis/
 - PPT：PowerPoint 生成和编辑
 - 其他：Markdown 处理、文件编码检测、任务列表管理等
 
-**扩展能力**：
+__扩展能力__：
+
 - 支持自定义工具开发
 - 工具过滤机制（避免工具过多干扰模型决策）
 - 工具按场景智能筛选（超过 30 个工具时自动筛选）
 - 工具注册表完整索引
 
 ### 4. 平台抽象层
-**位置**：`src/jarvis/jarvis_platform/`
 
-**支持的平台**：
+__位置__：`src/jarvis/jarvis_platform/`
+
+__支持的平台__：
+
 - OpenAI
 - Anthropic (Claude)
 
-**核心类**：
+__核心类__：
+
 - `BasePlatform`：平台基类
 - `PlatformRegistry`：平台注册表
 - 各平台具体实现
 
-**架构简化（v2.0.1+）**：
+__架构简化（v2.0.1+）__：
+
 - 移除了 kimi、tongyi、yuanbao 等平台实现
 - 聚焦 OpenAI 和 Claude 平台
 - 简化配置和调用链
@@ -335,27 +354,35 @@ Jarvis/
 ### 5. 专业套件
 
 #### 安全分析（jsec）
-**位置**：`src/jarvis/jarvis_sec/`
+
+__位置__：`src/jarvis/jarvis_sec/`
+
 - 启发式扫描
 - AI 深度验证
 - 支持 C/C++ 和 Rust 语言
 - 配置驱动设计（v2.0.5+）
 
 #### C→Rust 迁移（jc2r）
-**位置**：`src/jarvis/jarvis_c2rust/`
+
+__位置__：`src/jarvis/jarvis_c2rust/`
+
 - 渐进式迁移
 - 断点续跑
 - 智能库替代
 
 #### 浏览器自动化（jb）
-**位置**：`src/jarvis/jarvis_browser/`
+
+__位置__：`src/jarvis/jarvis_browser/`
+
 - 41+ 浏览器命令（v2.0.11+）
 - 守护进程模式
 - 基于 Playwright
 - 支持 Windows 平台（v2.0.12+）
 
 #### Windows 桌面自动化（jw）
-**位置**：`src/jarvis/jarvis_windows/`
+
+__位置__：`src/jarvis/jarvis_windows/`
+
 - 应用启动/连接
 - 点击、输入、截图
 - 控件树操作
@@ -363,25 +390,33 @@ Jarvis/
 - 系统配置管理（主题、电源、代理等）（v2.0.12+）
 
 #### 智能Shell（jss）
-**位置**：`src/jarvis/jarvis_smart_shell/`
+
+__位置__：`src/jarvis/jarvis_smart_shell/`
+
 - 实验性智能 Shell 功能
 - 交互式命令执行
 
 #### 规则索引（jri）
-**位置**：`src/jarvis/jarvis_rules_index/`
+
+__位置__：`src/jarvis/jarvis_rules_index/`
+
 - 规则查询和管理
 - 支持内置规则和项目规则
 - 规则文件定位（v2.0.17+）
 
 #### LSP 代码分析（jlsp）
-**位置**：`src/jarvis/jarvis_lsp/`
+
+__位置__：`src/jarvis/jarvis_lsp/`
+
 - LSP 客户端工具
 - 符号查询、定义查找、引用定位
 - 代码质量检查和修复建议（v2.0.9+）
 - 支持 Windows 平台（v2.0.13+）
 
 #### MCP 客户端
-**位置**：`src/jarvis/jarvis_mcp/`
+
+__位置__：`src/jarvis/jarvis_mcp/`
+
 - MCP 协议客户端
 - 支持与 MCP 服务器通信
 
@@ -410,7 +445,8 @@ Jarvis/
 | `jarvis-rules-index` | `jri` | 规则索引管理 |
 | `install-playwright` | - | 安装 Playwright 浏览器驱动 |
 
-**命令变更说明（v2.0.1+）**：
+__命令变更说明（v2.0.1+）__：
+
 - `jck` 命令已迁移为 `jvs --check` 参数
 - `jqc` 命令已迁移为 `jvs --quick-config` 参数
 
@@ -419,6 +455,7 @@ Jarvis/
 ### 安装
 
 #### 一键安装（推荐）
+
 ```bash
 # Linux/macOS
 bash -c "$(curl -fsSL https://raw.githubusercontent.com/skyfireitdiy/Jarvis/main/scripts/install.sh)"
@@ -428,6 +465,7 @@ iex ((New-Object System.Net.WebClient).DownloadString('https://raw.githubusercon
 ```
 
 #### 手动安装
+
 ```bash
 git clone https://github.com/skyfireitdiy/Jarvis.git
 cd Jarvis
@@ -435,6 +473,7 @@ pip3 install -e .
 ```
 
 #### 使用 uv 安装
+
 ```bash
 # 安装 uv
 curl -LsSf https://astral.sh/uv/install.sh | sh
@@ -444,6 +483,7 @@ uv tool install git+https://github.com/skyfireitdiy/Jarvis.git
 ```
 
 #### Docker 安装
+
 ```bash
 # 拉取镜像
 docker pull ghcr.io/skyfireitdiy/jarvis:latest
@@ -463,6 +503,7 @@ docker run -it --rm \
 ### 运行
 
 #### 基本使用
+
 ```bash
 # 启动通用代理
 jvs
@@ -484,6 +525,7 @@ jvs --check-tool <工具名>
 ```
 
 #### SDK 使用
+
 ```python
 from jarvis.jarvis_code_agent.code_agent import CodeAgent
 
@@ -527,4 +569,5 @@ docker build -t jarvis:latest .
 mkdocs build
 mkdocs serve
 ```
+
 工具概况: edit_file, execute_script, load_rule, memory, meta_agent, methodology, read_code, read_webpage, search_web, task_list_manager, virtual_tty, vsw_mem_collect, zhipu_web_search_prime.resource.get_resource, zhipu_web_search_prime.resource.get_resource_list, zhipu_web_search_prime.tool_call.web_search_prime（共15个）

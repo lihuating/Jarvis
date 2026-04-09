@@ -11,6 +11,8 @@ from rich.status import Status
 from jarvis.jarvis_utils.globals import console
 
 # -*- coding: utf-8 -*-
+import json
+import re
 import subprocess
 import sys
 from typing import Any, Dict, List, Optional
@@ -68,6 +70,63 @@ from jarvis.jarvis_utils.globals import clear_current_agent
 
 app = typer.Typer(help="Jarvis 代码助手")
 
+# 本轮模型响应里若**仅**包含这些工具调用，则假定未修改工作区，跳过完整 diff/影响分析/构建/Lint，
+# 避免 read_code、查网页等在「仍有未提交改动」时反复触发重分析。
+_CODE_AGENT_READ_ONLY_TOOLS = frozenset(
+    {
+        "read_code",
+        "load_rule",
+        "memory",
+        "methodology",
+        "search_web",
+        "read_webpage",
+        "search_file_content",
+        "glob",
+        "list_directory",
+        "read_file",
+        "file_encoding_detect",
+    }
+)
+
+
+def _extract_tool_names_from_model_response(response: Optional[str]) -> List[str]:
+    """从模型输出中的 TOOL_CALL 块解析工具名（与 tool_executor 解析方式一致）。"""
+    if not response or not isinstance(response, str):
+        return []
+    try:
+        from jarvis.jarvis_utils.jsonnet_compat import loads as json_loads
+        from jarvis.jarvis_utils.tag import ct, ot
+
+        pattern = (
+            rf"(?msi){re.escape(ot('TOOL_CALL'))}(.*?)^{re.escape(ct('TOOL_CALL'))}"
+        )
+        matches = re.findall(pattern, response)
+        names: List[str] = []
+        for block in matches:
+            text = block.strip()
+            if not text:
+                continue
+            try:
+                obj: Any = json_loads(text)
+            except Exception:
+                try:
+                    obj = json.loads(text)
+                except Exception:
+                    continue
+            if isinstance(obj, dict):
+                n = obj.get("name")
+                if isinstance(n, str) and n.strip():
+                    names.append(n.strip())
+            elif isinstance(obj, list):
+                for item in obj:
+                    if isinstance(item, dict):
+                        n = item.get("name")
+                        if isinstance(n, str) and n.strip():
+                            names.append(n.strip())
+        return names
+    except Exception:
+        return []
+
 
 class CodeAgent(Agent):
     """Jarvis系统的代码修改代理。
@@ -116,6 +175,9 @@ class CodeAgent(Agent):
 
         # 父类初始化后的设置
         self._setup_code_agent_after_parent_init()
+
+        # 节流：避免在同一份 diff 被多次处理后重复做影响分析
+        self._last_impact_analysis_diff_hash: Optional[str] = None
 
     def get_user_origin_input(self) -> str:
         """获取原始用户输入（CodeAgent重写）
@@ -434,28 +496,18 @@ git reset --hard {start_commit}
                     f"{current_addon}\n{initial_commit_prompt}".strip()
                 )
 
-            # 工程索引摘要（只扫一次）：优先加载 git 根目录下的 JVS_MEMORY.md
-            # 若不存在则自动生成一次并加载
+            # 工程索引摘要：仅当用户已通过 Init 生成 JVS_MEMORY.md 时加载（不自动创建）
             project_overview = ""
             try:
-                from jarvis.jarvis_utils.project_memory import (
-                    build_jvs_memory,
-                    ensure_jvs_memory,
-                    get_git_root_fallback,
-                    read_jvs_memory,
-                    write_jvs_memory,
-                )
+                from jarvis.jarvis_utils.project_memory import read_jvs_memory
 
-                project_root = get_git_root_fallback(self.root_dir)
+                project_root = os.path.abspath(os.getcwd())
                 loaded = read_jvs_memory(project_root)
-                if not loaded:
-                    # 生成并写入，再读取（避免在内存里和磁盘不一致）
-                    ensure_jvs_memory(project_root)
-                    loaded = read_jvs_memory(project_root)
                 if loaded:
                     project_overview = loaded
             except Exception:
-                # 回退：仍然使用原有概况生成逻辑
+                pass
+            if not project_overview.strip():
                 project_overview = get_project_overview(self.root_dir)
 
             first_tip = """请严格遵循以下规范进行代码修改任务：
@@ -603,6 +655,12 @@ git reset --hard {start_commit}
         # 重置全局标记，允许在此流程中重新进行文件确认
         reset_confirm_add_new_files_flag()
 
+        # 仅当本轮实际执行的工具「可能修改工作区」时才做完整 diff 链路；
+        # 解析失败时保持旧行为（执行完整链路），避免漏掉非常规格式的工具调用。
+        tool_names = _extract_tool_names_from_model_response(current_response)
+        if tool_names and all(n in _CODE_AGENT_READ_ONLY_TOOLS for n in tool_names):
+            return
+
         final_ret = ""
         diff = get_diff()
 
@@ -610,38 +668,52 @@ git reset --hard {start_commit}
             start_hash = get_latest_commit_hash()
             modified_files = get_diff_file_list()
 
-            # 使用增强的 diff 可视化（如果可用）
-            try:
-                from jarvis.jarvis_code_agent.diff_visualizer import (
-                    visualize_diff_enhanced,
-                )
-                from jarvis.jarvis_utils.config import get_diff_show_line_numbers
-                from jarvis.jarvis_utils.config import get_diff_visualization_mode
+            from jarvis.jarvis_utils.config import is_code_agent_show_git_diff
 
-                # 显示整体 diff（使用增强可视化）
-                visualization_mode = get_diff_visualization_mode()
-                show_line_numbers = get_diff_show_line_numbers()
-                # 构建文件路径显示（多文件时显示所有文件名）
-                file_path_display = ", ".join(modified_files) if modified_files else ""
-                visualize_diff_enhanced(
-                    diff,
-                    file_path=file_path_display,
-                    mode=visualization_mode,
-                    show_line_numbers=show_line_numbers,
-                )
-            except ImportError:
-                # 如果导入失败，回退到原有方式
-                PrettyOutput.auto_print(diff, lang="diff")
-            except Exception as e:
-                # 如果可视化失败，回退到原有方式
-                PrettyOutput.auto_print(f"⚠️ Diff 可视化失败，使用默认方式: {e}")
-                PrettyOutput.auto_print(diff, lang="diff")
+            if is_code_agent_show_git_diff():
+                # 使用增强的 diff 可视化（如果可用）
+                try:
+                    from jarvis.jarvis_code_agent.diff_visualizer import (
+                        visualize_diff_enhanced,
+                    )
+                    from jarvis.jarvis_utils.config import get_diff_show_line_numbers
+                    from jarvis.jarvis_utils.config import get_diff_visualization_mode
+
+                    visualization_mode = get_diff_visualization_mode()
+                    show_line_numbers = get_diff_show_line_numbers()
+                    file_path_display = (
+                        ", ".join(modified_files) if modified_files else ""
+                    )
+                    visualize_diff_enhanced(
+                        diff,
+                        file_path=file_path_display,
+                        mode=visualization_mode,
+                        show_line_numbers=show_line_numbers,
+                    )
+                except ImportError:
+                    PrettyOutput.auto_print(diff, lang="diff")
+                except Exception as e:
+                    PrettyOutput.auto_print(
+                        f"⚠️ Diff 可视化失败，使用默认方式: {e}"
+                    )
+                    PrettyOutput.auto_print(diff, lang="diff")
 
             # 更新上下文管理器
-            self.impact_manager.update_context_for_modified_files(modified_files)
-
-            # 进行影响范围分析
-            impact_report = self.impact_manager.analyze_edit_impact(modified_files)
+            diff_hash = hashlib.sha256(
+                (diff or "").encode("utf-8", errors="ignore")
+            ).hexdigest()
+            if self._last_impact_analysis_diff_hash == diff_hash:
+                # 避免同一份 diff 在连续工具调用后被重复解析/分析
+                impact_report = None
+            else:
+                self._last_impact_analysis_diff_hash = diff_hash
+                self.impact_manager.update_context_for_modified_files(
+                    modified_files
+                )
+                # 进行影响范围分析
+                impact_report = self.impact_manager.analyze_edit_impact(
+                    modified_files
+                )
 
             per_file_preview = self.diff_manager.build_per_file_patch_preview(
                 modified_files, use_enhanced_visualization=False

@@ -37,6 +37,9 @@ Thumbs.db
 .idea/
 .vscode/
 
+# Cursor / SpecStory（AI 会话导出目录，勿入库）
+.specstory/
+
 # Python
 __pycache__/
 *.py[cod]

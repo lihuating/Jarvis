@@ -44,6 +44,29 @@ class LintManager:
         # 然后 decode 回字符串
         return text.encode("utf-8", errors="replace").decode("utf-8")
 
+    @staticmethod
+    def _is_lint_tool_invocation_error(output: str, tool_name: str) -> bool:
+        """判断是否为“lint 命令调用方式错误”而非“代码问题”。
+
+        例如：将不存在/错误的子命令参数当作普通文件 lint，导致命令打印 Usage/No such command。
+        这类错误不应驱动模型反复修改代码。
+        """
+        out = (output or "").strip()
+        if not out:
+            return False
+
+        # 常见命令行框架错误特征
+        if "No such command" in out and "Usage:" in out:
+            return True
+        if out.startswith("Usage:") and "Try '" in out and "--help" in out:
+            return True
+
+        # 特定：git-lint 这类工具名/调用失败（你日志中即为该形态）
+        if "No such command" in out and tool_name in {"git-lint", "git_lint"}:
+            return True
+
+        return False
+
     def run_static_analysis(
         self, modified_files: List[str]
     ) -> List[Tuple[str, str, int, str]]:
@@ -117,30 +140,52 @@ class LintManager:
                     if result.returncode != 0:
                         output = result.stdout + result.stderr
                         if output.strip():  # 有输出才记录
-                            results.append(
-                                (
-                                    file_path,
-                                    command,
-                                    result.returncode,
-                                    output,
+                            # 若是“工具调用方式错误”，则跳过该错误，避免进入代码修复循环
+                            tool_name = command.split()[0] if command.split() else ""
+                            if self._is_lint_tool_invocation_error(output, tool_name):
+                                file_results.append(
+                                    (
+                                        file_name,
+                                        command,
+                                        "跳过",
+                                        "lint工具调用失败（配置/参数错误）",
+                                    )
                                 )
-                            )
-                            file_results.append(
-                                (file_name, command, "失败", "发现问题")
-                            )
-                            # 失败时打印检查结果
-                            output_preview = (
-                                output[:2000] if len(output) > 2000 else output
-                            )
-                            # 清理可能存在的 surrogates 字符，避免 Windows 下编码异常
-                            output_preview = self._clean_surrogates(output_preview)
-                            PrettyOutput.auto_print(
-                                f"⚠️ 检查失败 ({file_name}):\n{output_preview}"
-                            )
-                            if len(output) > 2000:
+                                # 仍然给出简短提示，方便你调整 lint 映射/安装工具
+                                output_preview = (
+                                    output[:500] if len(output) > 500 else output
+                                )
+                                output_preview = self._clean_surrogates(output_preview)
                                 PrettyOutput.auto_print(
-                                    f"⚠️ ... (输出已截断，共 {len(output)} 字符)"
+                                    f"⚠️ lint工具调用失败（跳过代码修复）({file_name}):\n{output_preview}"
                                 )
+                            else:
+                                results.append(
+                                    (
+                                        file_path,
+                                        command,
+                                        result.returncode,
+                                        output,
+                                    )
+                                )
+                                file_results.append(
+                                    (file_name, command, "失败", "发现问题")
+                                )
+                                # 失败时打印检查结果
+                                output_preview = (
+                                    output[:2000] if len(output) > 2000 else output
+                                )
+                                # 清理可能存在的 surrogates 字符，避免 Windows 下编码异常
+                                output_preview = self._clean_surrogates(
+                                    output_preview
+                                )
+                                PrettyOutput.auto_print(
+                                    f"⚠️ 检查失败 ({file_name}):\n{output_preview}"
+                                )
+                                if len(output) > 2000:
+                                    PrettyOutput.auto_print(
+                                        f"⚠️ ... (输出已截断，共 {len(output)} 字符)"
+                                    )
                         else:
                             file_results.append((file_name, command, "通过", ""))
                     else:

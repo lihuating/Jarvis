@@ -2154,20 +2154,12 @@ class Agent:
             # 将非交互模式说明添加到用户输入中
             enhanced_input = user_input + non_interactive_note
 
-            # 工程索引摘要（只扫一次）：优先加载 git 根目录下的 JVS_MEMORY.md
-            # 若不存在则自动生成一次并加载（减少首次“开始回答”前的扫描/索引成本）
+            # 工程索引摘要：仅当用户已通过 Init 生成 JVS_MEMORY.md 时注入（不自动创建）
             try:
-                from jarvis.jarvis_utils.project_memory import (
-                    ensure_jvs_memory,
-                    get_git_root_fallback,
-                    read_jvs_memory,
-                )
+                from jarvis.jarvis_utils.project_memory import read_jvs_memory
 
-                project_root = get_git_root_fallback(os.getcwd())
+                project_root = os.path.abspath(os.getcwd())
                 loaded = read_jvs_memory(project_root)
-                if not loaded:
-                    ensure_jvs_memory(project_root)
-                    loaded = read_jvs_memory(project_root)
                 if loaded:
                     cur = self.session.addon_prompt or ""
                     # 只在本轮开始前注入一次：避免每轮重复塞入同一份摘要

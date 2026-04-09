@@ -159,7 +159,10 @@ BUILTIN_COMMANDS = [
     ("Quiet", "无人值守模式"),
     ("FixToolCall", "修复工具调用"),
     ("SwitchModel", "切换模型组"),
-    ("Init", "扫描工程并生成/刷新 JVS_MEMORY.md"),
+    (
+        "Init",
+        "在当前目录生成/更新 JVS_MEMORY.md（优先 cheap LLM，失败则 normal；均失败则报错）",
+    ),
 ]
 
 

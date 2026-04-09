@@ -183,7 +183,6 @@ LINT_COMMAND_TEMPLATES_BY_FILE: Dict[str, List[str]] = {
     ".bashrc": ["shellcheck {file_path}"],
     ".bash_profile": ["shellcheck {file_path}"],
     ".zshrc": ["shellcheck {file_path}"],
-    ".gitignore": ["git-lint {file_path}"],
     ".editorconfig": ["editorconfig-checker {file_path}"],
     ".eslintrc": ["eslint {file_path}"],
     ".prettierrc": ["prettier --check {file_path}"],

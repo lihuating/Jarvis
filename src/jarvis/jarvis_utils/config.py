@@ -1420,6 +1420,16 @@ def get_diff_show_line_numbers() -> bool:
     return True
 
 
+def is_code_agent_show_git_diff() -> bool:
+    """
+    CodeAgent（jca）在工具调用后是否在终端展示**完整工作区** git diff（增强可视化或纯文本）。
+
+    配置键 ``code_agent_show_git_diff``，默认 True。设为 False 时仍会获取 diff、
+    执行影响分析、构建验证与按文件补丁摘要等，仅跳过终端上的整段 diff 渲染。
+    """
+    return cast(bool, GLOBAL_CONFIG_DATA.get("code_agent_show_git_diff", True))
+
+
 def get_diff_large_file_threshold() -> int:
     """
     获取大文件阈值（超过此行数只显示统计）

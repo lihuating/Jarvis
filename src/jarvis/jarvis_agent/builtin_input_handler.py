@@ -447,16 +447,15 @@ def builtin_input_handler(user_input: str, agent_: Any) -> Tuple[str, bool]:
             return "", True
 
         elif tag == "Init":
-            # 扫描工程并生成/刷新 JVS_MEMORY.md（工程内持久化索引摘要）
+            # 在当前 cwd 生成/覆盖 JVS_MEMORY.md：jvs/jca 都支持手动刷新。
             try:
                 from jarvis.jarvis_utils.project_memory import (
                     build_jvs_memory,
-                    get_git_root_fallback,
                     read_jvs_memory,
                     write_jvs_memory,
                 )
 
-                project_root = get_git_root_fallback(os.getcwd())
+                project_root = os.path.abspath(os.getcwd())
                 content = build_jvs_memory(project_root)
                 if write_jvs_memory(project_root, content):
                     PrettyOutput.auto_print(

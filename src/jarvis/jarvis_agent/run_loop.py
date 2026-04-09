@@ -468,26 +468,8 @@ class AgentRunLoop:
 
                 ag.session.prompt = join_prompts([ag.session.prompt, safe_tool_prompt])
 
-                # 关键流程：直接调用 after_tool_call 回调函数
-                try:
-                    # 获取所有订阅了 AFTER_TOOL_CALL 事件的回调
-                    listeners = ag.event_bus._listeners.get(AFTER_TOOL_CALL, [])
-                    for listener_tuple in listeners:
-                        try:
-                            # listener_tuple 是 (priority, order, callback)
-                            _, _, callback = listener_tuple
-                            callback(
-                                agent=ag,
-                                current_response=current_response,
-                                need_return=need_return,
-                                tool_prompt=tool_prompt,
-                            )
-                        except Exception:
-                            pass
-                except Exception:
-                    pass
-
-                # 非关键流程：广播工具调用后的事件（用于日志、监控等）
+                # 工具调用后事件：仅通过 EventBus.emit 触发一次（按优先级执行订阅者）。
+                # 避免此前「先手动遍历 _listeners 再 emit」导致 AFTER_TOOL_CALL 回调重复执行（例如 CodeAgent 差分分析跑两遍）。
                 try:
                     ag.event_bus.emit(
                         AFTER_TOOL_CALL,
