@@ -6,6 +6,7 @@ import os
 import shutil
 import subprocess
 import sys
+import traceback
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -29,6 +30,7 @@ from jarvis.jarvis_utils.config import get_agent_definition_dirs
 from jarvis.jarvis_utils.config import get_data_dir
 from jarvis.jarvis_utils.config import get_roles_dirs
 from jarvis.jarvis_utils.config import is_non_interactive
+from jarvis.jarvis_utils.config import is_print_error_traceback
 from jarvis.jarvis_utils.config import set_config
 from jarvis.jarvis_utils.fzf import fzf_select
 from jarvis.jarvis_utils.input import get_single_line_input
@@ -312,6 +314,7 @@ def try_switch_to_jca_if_git_repo(
     config_file: Optional[str],
     restore_session: bool,
     task: Optional[str],
+    auto_jca: bool = False,
     keep_jvs: bool = False,
 ) -> None:
     """在初始化环境前自动检测Git仓库，并自动切换到代码开发模式（jca）。"""
@@ -320,6 +323,15 @@ def try_switch_to_jca_if_git_repo(
         return
     # 如果指定了 --keep-jvs 参数，跳过自动切换
     if keep_jvs:
+        return
+    # 默认不自动切换；仅当显式开启时才切换
+    try:
+        from jarvis.jarvis_utils.config import is_auto_switch_to_jca_in_git_repo
+
+        if not (auto_jca or is_auto_switch_to_jca_in_git_repo()):
+            return
+    except Exception:
+        # 配置读取失败时保持默认“不开启自动切换”，避免误切
         return
     try:
         res = subprocess.run(
@@ -805,6 +817,11 @@ def run_cli(
         "--keep-jvs",
         help="禁止自动切换到代码开发模式（jca），保持使用通用代理（jvs）",
     ),
+    auto_jca: bool = typer.Option(
+        False,
+        "--auto-jca",
+        help="检测到 Git 仓库时自动切换到代码开发模式（jca）（默认关闭）",
+    ),
 ) -> None:
     """Jarvis AI assistant command-line interface."""
     if ctx.invoked_subcommand is not None:
@@ -996,7 +1013,13 @@ def run_cli(
     # 如果指定了 -T/--task 参数，跳过自动切换
     if not non_interactive and not task:
         try_switch_to_jca_if_git_repo(
-            llm_group, tool_group, config_file, restore_session, task, keep_jvs
+            llm_group,
+            tool_group,
+            config_file,
+            restore_session,
+            task,
+            auto_jca,
+            keep_jvs,
         )
 
     # 在进入默认通用代理前，列出内置配置供选择（agent/multi_agent/roles）
@@ -1196,6 +1219,15 @@ def run_cli(
         raise
     except Exception as err:  # pylint: disable=broad-except
         PrettyOutput.auto_print(f"❌ 初始化错误: {str(err)}")
+        try:
+            show_tb = is_print_error_traceback()
+        except Exception:
+            show_tb = False
+        if not show_tb:
+            v = os.environ.get("JARVIS_SHOW_INIT_TRACEBACK", "").strip().lower()
+            show_tb = v in ("1", "true", "yes", "on")
+        if show_tb:
+            PrettyOutput.auto_print(traceback.format_exc())
         raise typer.Exit(code=1)
 
 

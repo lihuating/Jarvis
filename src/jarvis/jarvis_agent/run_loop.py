@@ -350,10 +350,13 @@ class AgentRunLoop:
                     )
                     # 只有在过滤后仍有内容时才打印
                     if filtered_response:
-                        # 不显示模型名标题，仅保留封闭边框
+                        # BTW 子会话：使用明确标题，便于在流式 Live 清屏后仍能看到完整回复区域
+                        btw_title = None
+                        if getattr(ag, "btw_side_task", False):
+                            btw_title = "💬 BTW 回复（未写入主会话上下文）"
                         PrettyOutput.print_markdown(
                             filtered_response,
-                            title=None,
+                            title=btw_title,
                             border_style="bright_blue",
                             highlight_headings=True,
                         )
@@ -764,6 +767,11 @@ class AgentRunLoop:
 
                             # 重置计数器，避免重复添加
                             ag._no_tool_call_count = 0
+
+                # BTW 旁路子 CodeAgent：走完整 jca 工具链，但不在此等待「回车结束/继续」，
+                # 避免与 transient 流式面板叠加后看起来像「回答被吃掉」。
+                if getattr(ag, "btw_side_task", False):
+                    return ag._complete_task(auto_completed=True)
 
                 # 获取下一步用户输入
                 try:

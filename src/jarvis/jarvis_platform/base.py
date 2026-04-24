@@ -411,6 +411,13 @@ class BasePlatform(ABC):
         response = re.sub(
             ot("thinking") + r".*?" + ct("thinking"), "", response, flags=re.DOTALL
         )
+        # 部分模型（如 GLM）使用 redacted_thinking / reasoning 包裹推理过程，去掉后保留对用户可见正文
+        response = re.sub(
+            r"<redacted_thinking>.*?</redacted_thinking>",
+            "",
+            response,
+            flags=re.DOTALL | re.IGNORECASE,
+        )
         return response
 
     def _chat(self, message: str, max_output: int = 0):

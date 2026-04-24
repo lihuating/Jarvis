@@ -2011,7 +2011,7 @@ class Agent:
             # 关键流程：直接调用 task_analyzer 和 memory_manager
 
         # 不管是否需要summary，都打印原始用户输入，帮助用户区分多个任务
-        if self.non_interactive:
+        if self.non_interactive and not getattr(self, "btw_side_task", False):
             if self.original_user_input:
                 PrettyOutput.auto_print(f"📝 原始任务输入:\n{self.original_user_input}")
 

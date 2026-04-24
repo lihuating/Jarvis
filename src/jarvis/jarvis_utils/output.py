@@ -1116,6 +1116,7 @@ class PrettyOutput:
             highlight_headings: 为True时使用Markdown渲染，标题靠左、## 等突出显示（默认False）
         """
         from rich.panel import Panel
+        from jarvis.jarvis_utils.rich_box import HORIZONTAL_RULE_BOX
 
         if highlight_headings:
             from rich.align import Align
@@ -1156,6 +1157,7 @@ class PrettyOutput:
                 renderable,
                 title=title,
                 border_style=border_style,
+                box=HORIZONTAL_RULE_BOX,
                 expand=True,
                 title_align="left",
             )
@@ -1168,6 +1170,7 @@ class PrettyOutput:
             renderable,
             title=title,
             border_style=border_style,
+            box=HORIZONTAL_RULE_BOX,
             expand=True,
             title_align="left",
         )
@@ -1248,9 +1251,9 @@ class PrettyOutput:
         from rich.live import Live
         from rich.panel import Panel
         from rich.text import Text
-        from rich import box
         from jarvis.jarvis_utils.globals import get_interrupt
         from jarvis.jarvis_utils.config import is_immediate_abort
+        from jarvis.jarvis_utils.rich_box import HORIZONTAL_RULE_BOX
 
         # 用于后台线程存放首个 chunk 或 StopIteration
         first_chunk_result = [None]
@@ -1323,7 +1326,7 @@ class PrettyOutput:
             title=None,
             subtitle=None,
             border_style="cyan",
-            box=box.ROUNDED,
+            box=HORIZONTAL_RULE_BOX,
             expand=True,
         )
 
@@ -1435,7 +1438,7 @@ class PrettyOutput:
                                 title=None,
                                 subtitle=None,
                                 border_style="cyan",
-                                box=box.ROUNDED,
+                                box=HORIZONTAL_RULE_BOX,
                                 expand=True,
                             )
 
@@ -1474,7 +1477,7 @@ class PrettyOutput:
                             title=None,
                             subtitle=None,
                             border_style="cyan",
-                            box=box.ROUNDED,
+                            box=HORIZONTAL_RULE_BOX,
                             expand=True,
                         )
 

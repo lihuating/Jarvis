@@ -156,6 +156,172 @@ def _find_rule_file_path(rules_manager: Any, rule_name: str) -> str | None:
         return None
 
 
+_BTW_SYSTEM_PROMPT = (
+    "你是 Jarvis 的旁路问答助手。用户正在主会话中执行另一项核心任务，此处仅顺带提出一个独立问题（BTW）。\n"
+    "约束：\n"
+    "- 你没有主会话的对话历史；请只根据用户本条消息作答，不要臆测上文或主任务内容。\n"
+    "- 不要延续、修改或依赖主任务中的代码/计划；仅回答本条问题。\n"
+    "- 若必须依赖主会话才有的信息，请简短说明并建议回到主流程补充背景。\n"
+    "- 回答简洁、直接。"
+)
+
+_BTW_CODE_AGENT_TASK_PREFIX = (
+    "[BTW 旁路任务] 与主会话的对话历史无关，仅处理本条说明或操作需求；"
+    "若属于概念/命令解释可直接作答；需要查仓库或跑命令时再使用工具。\n\n"
+)
+
+
+def _normalize_btw_question(text: str) -> str:
+    """去掉补全用的前导 @ 及空白，避免 `\@'<BTW>'` 形式残留 @。"""
+    s = (text or "").strip()
+    s = re.sub(r"^@+\s*", "", s).strip()
+    return s
+
+
+def _run_btw_isolated_chat(user_question: str) -> None:
+    """使用临时 LLM 实例回答 BTW（jvs 或 CodeAgent 失败回退），不把问答写入主 agent 的模型上下文。
+
+    说明：stream_chat_with_panel 使用 transient Live，结束后面板会被清屏，因此必须在流结束后
+    再 print_markdown 固化可见输出。
+    """
+    import time
+
+    from jarvis.jarvis_utils.embedding import get_context_token_count
+    from jarvis.jarvis_utils.globals import get_interrupt
+
+    reg = PlatformRegistry.get_global_platform_registry()
+    plat = reg.create_platform(platform_type="normal", silent=True)
+    if plat is None:
+        plat = reg.create_platform(platform_type="cheap", silent=True)
+    if plat is None:
+        PrettyOutput.auto_print("⚠️ BTW：无法创建临时模型实例，请检查 LLM 配置。")
+        return
+
+    plat.agent = None
+    plat.set_system_prompt(_BTW_SYSTEM_PROMPT)
+    plat.set_suppress_output(False)
+    start = time.time()
+    msg = user_question.strip()
+    if not msg:
+        PrettyOutput.auto_print("（BTW 内容为空，已跳过）")
+        return
+
+    def _noop_append(_u: str, _r: str) -> None:
+        return
+
+    out = ""
+    try:
+        out, _dur = PrettyOutput.stream_chat_with_panel(
+            chat_iterator=plat.chat(msg),
+            title="BTW",
+            status_message="💬 BTW（独立问答，不写入主会话上下文）· 思考中...",
+            get_used_token_count=plat.get_used_token_count,
+            get_conversation_turn=plat.get_conversation_turn,
+            get_platform_max_input_token_count=plat._get_platform_max_input_token_count,
+            get_context_token_count=get_context_token_count,
+            append_session_history=_noop_append,
+            start_time=start,
+            message=msg,
+            max_output=0,
+            check_interrupt=get_interrupt,
+            panel_lock=plat._panel_lock,
+        )
+    except Exception as e:
+        PrettyOutput.auto_print(f"⚠️ BTW 失败: {e}")
+        return
+
+    out = (out or "").strip()
+    if out:
+        PrettyOutput.print_markdown(
+            out,
+            title="💬 BTW 回复（未写入主会话上下文）",
+            border_style="dim",
+            highlight_headings=True,
+        )
+
+
+def _run_btw_child_code_agent(parent_agent: Any, side_q: str) -> None:
+    """在独立 CodeAgent 子实例中跑完 jca 流程（工具、run_loop 输出方式），不合并回父 agent 模型历史。"""
+    from jarvis.jarvis_code_agent.code_agent import CodeAgent
+
+    use_tools: List[str] = []
+    try:
+        parent_registry = parent_agent.get_tool_registry()
+        if parent_registry:
+            for t in parent_registry.get_all_tools():
+                if isinstance(t, dict) and t.get("name"):
+                    use_tools.append(str(t["name"]))
+    except Exception:
+        pass
+
+    forbidden_tools = frozenset({"sub_agent", "sub_code_agent"})
+    append_tools = None
+    try:
+        base_tools = frozenset({"execute_script", "read_code", "edit_file"})
+        if use_tools:
+            extras = [
+                t for t in use_tools if t not in base_tools and t not in forbidden_tools
+            ]
+            append_tools = ",".join(extras) if extras else None
+    except Exception:
+        append_tools = None
+
+    tool_group = getattr(parent_agent, "tool_group", None)
+    rule_names = None
+    try:
+        loaded = getattr(parent_agent, "loaded_rule_names", None)
+        if loaded:
+            rule_names = ",".join(loaded)
+    except Exception:
+        rule_names = None
+
+    try:
+        code_agent = CodeAgent(
+            name="BTW",
+            need_summary=False,
+            append_tools=append_tools,
+            tool_group=tool_group,
+            non_interactive=True,
+            rule_names=rule_names,
+            disable_review=True,
+            use_methodology=False,
+            use_analysis=False,
+        )
+        # 标记为旁路任务：run_loop 内自动收尾，不占用主会话上下文，也不弹出「回车结束」等待
+        code_agent.btw_side_task = True
+    except SystemExit as se:
+        raise RuntimeError(
+            f"初始化 BTW 子 CodeAgent 失败（可能未配置 git 或非 git 目录）: {se}"
+        ) from se
+
+    try:
+        if use_tools:
+            filtered = [t for t in use_tools if t not in forbidden_tools]
+            if filtered:
+                code_agent.set_use_tools(filtered)
+    except Exception:
+        pass
+
+    task = _BTW_CODE_AGENT_TASK_PREFIX + side_q
+    code_agent.run(task, "", "")
+
+
+def _run_btw_dispatch(agent: Any, side_q: str) -> None:
+    """jca：走独立 CodeAgent 全流程；失败或非代码代理：走临时模型轻量问答。"""
+    side_q = _normalize_btw_question(side_q)
+    if not side_q:
+        PrettyOutput.auto_print("（BTW 内容为空，已跳过）")
+        return
+    if hasattr(agent, "git_manager"):
+        try:
+            _run_btw_child_code_agent(agent, side_q)
+        except Exception as e:
+            PrettyOutput.auto_print(f"⚠️ BTW（CodeAgent 子会话）不可用：{e}")
+            _run_btw_isolated_chat(side_q)
+    else:
+        _run_btw_isolated_chat(side_q)
+
+
 def builtin_input_handler(user_input: str, agent_: Any) -> Tuple[str, bool]:
     """
     处理内置的特殊输入标记，并追加相应的提示词
@@ -272,13 +438,187 @@ def builtin_input_handler(user_input: str, agent_: Any) -> Tuple[str, bool]:
         elif tag == "Clear":
             agent.clear_history()
             return "", True
+        elif tag == "BTW":
+            from jarvis.jarvis_utils.input import get_multiline_input
+
+            q_inline = modified_input.replace("'<BTW>'", "").strip()
+            if q_inline:
+                side_q = q_inline
+            else:
+                side_q = get_multiline_input(
+                    "💬 BTW（不占主会话）：输入独立问题（空行提交，Ctrl+C 取消）",
+                    print_on_empty=True,
+                ).strip()
+            if side_q:
+                _run_btw_dispatch(agent, side_q)
+            else:
+                PrettyOutput.auto_print("（已取消 BTW）")
+            return "", True
         elif tag == "ToolUsage":
             agent.set_addon_prompt(agent.get_tool_usage_prompt())
             continue
+        elif tag == "JarvisHelp":
+            # Jarvis 使用答疑：本轮强制优先从本仓库源码/文档检索答案（一次性 addon_prompt）
+            from jarvis.jarvis_utils.input import get_multiline_input
+
+            q_inline = modified_input.replace("'<JarvisHelp>'", "").strip()
+            if q_inline:
+                q = q_inline
+            else:
+                q = get_multiline_input(
+                    "📚 JarvisHelp：请输入关于 Jarvis 的使用问题（空行取消，Ctrl+C 取消）",
+                    print_on_empty=True,
+                ).strip()
+            if not q:
+                PrettyOutput.auto_print("（已取消 JarvisHelp）")
+                return "", True
+
+            agent.set_addon_prompt(
+                "\n".join(
+                    [
+                        "你正在回答“Jarvis 的使用问题”。",
+                        "要求：在给出结论前，必须优先从当前仓库中查找依据（源码/文档/README/CLI 帮助等），再作答。",
+                        "建议优先检索的路径：`src/jarvis/`、`docs/`、`builtin/`。",
+                        "回答时请给出关键依据的位置（文件路径 + 关键函数/命令名；必要时引用关键片段）。",
+                        "如果仓库中找不到直接答案：说明你查找了哪些关键词/路径，并给出最接近的可行替代方案或需要补充的信息。",
+                    ]
+                )
+            )
+            modified_input = q
+            continue
+        elif tag == "AddDir":
+            # Claude Code 风格 add-dir：扩大当前会话可访问目录范围（支持会话/项目持久化）
+            from jarvis.jarvis_utils.input import get_multiline_input
+            from jarvis.jarvis_utils.input import get_single_line_input
+            from jarvis.jarvis_utils.input import reset_completion_caches
+            from jarvis.jarvis_utils.config import set_config
+
+            raw_inline = modified_input.replace("'<AddDir>'", "").strip()
+            if raw_inline:
+                raw_path = raw_inline
+            else:
+                raw_path = (
+                    get_multiline_input(
+                        "📁 AddDir：请输入要加入访问范围的目录路径（空行取消，Ctrl+C 取消）",
+                        print_on_empty=True,
+                    ).strip()
+                )
+            if not raw_path:
+                PrettyOutput.auto_print("（已取消 AddDir）")
+                return "", True
+
+            try:
+                p = os.path.expanduser(os.path.expandvars(raw_path.strip()))
+                abs_dir = os.path.abspath(p)
+            except Exception:
+                PrettyOutput.auto_print("⚠️ 目录路径解析失败。")
+                return "", True
+
+            if not os.path.isdir(abs_dir):
+                PrettyOutput.auto_print(f"⚠️ 目录不存在或不可访问: {abs_dir}")
+                return "", True
+
+            # 使用“同一交互界面”的单行输入选择，避免切换到独立的全屏选择窗口
+            choice = ""
+            for _ in range(3):
+                choice = (
+                    get_single_line_input(
+                        "AddDir 生效范围：输入 1=仅本次会话(session)，2=当前目录永久(project) > ",
+                        default="1",
+                    )
+                    .strip()
+                )
+                if choice in ("1", "2"):
+                    break
+            if choice not in ("1", "2"):
+                PrettyOutput.auto_print("⚠️ 无效选择，已取消 AddDir。")
+                return "", True
+
+            # 1) 本次会话：写入 env（立即生效）
+            def _add_to_session_env(dir_path: str) -> None:
+                cur = os.environ.get("JARVIS_ADDITIONAL_DIRS", "").strip()
+                parts = [p for p in cur.split(":") if p.strip()] if cur else []
+                if dir_path not in parts:
+                    parts.append(dir_path)
+                os.environ["JARVIS_ADDITIONAL_DIRS"] = ":".join(parts)
+                reset_completion_caches()
+
+            # 2) 当前目录永久：写入 .jarvis/config.yaml，并同时更新本进程 env + GLOBAL_CONFIG_DATA
+            def _add_to_project_config(dir_path: str) -> None:
+                try:
+                    cfg_dir = os.path.join(os.getcwd(), ".jarvis")
+                    os.makedirs(cfg_dir, exist_ok=True)
+                    cfg_path = os.path.join(cfg_dir, "config.yaml")
+                    data = {}
+                    if os.path.exists(cfg_path):
+                        try:
+                            with open(cfg_path, "r", encoding="utf-8", errors="ignore") as f:
+                                data = yaml.safe_load(f) or {}
+                        except Exception:
+                            data = {}
+                    if not isinstance(data, dict):
+                        data = {}
+                    allowed = data.get("allowed_dirs", [])
+                    if isinstance(allowed, str):
+                        allowed = [p for p in allowed.split(":") if p.strip()]
+                    if not isinstance(allowed, list):
+                        allowed = []
+                    if dir_path not in allowed:
+                        allowed.append(dir_path)
+                    data["allowed_dirs"] = allowed
+                    with open(cfg_path, "w", encoding="utf-8") as f:
+                        yaml.safe_dump(data, f, allow_unicode=True, sort_keys=False)
+                    # 更新运行时配置 + env，使当前会话立刻生效
+                    try:
+                        set_config("allowed_dirs", allowed)
+                    except Exception:
+                        pass
+                except Exception as e:
+                    PrettyOutput.auto_print(f"⚠️ 写入项目配置失败: {e}")
+
+            if choice == "1":
+                _add_to_session_env(abs_dir)
+                PrettyOutput.auto_print(f"✅ 已加入本次会话访问范围: {abs_dir}")
+                return "", True
+
+            # project
+            _add_to_session_env(abs_dir)
+            _add_to_project_config(abs_dir)
+            PrettyOutput.auto_print(f"✅ 已加入当前目录永久访问范围: {abs_dir}")
+            return "", True
         elif tag == "ReloadConfig":
             from jarvis.jarvis_utils.utils import load_config
 
             load_config()
+            return "", True
+        elif tag == "SwitchToJCA":
+            # 仅在 Git 仓库内允许切换到 jca，避免误触导致无意义的进程替换
+            try:
+                res = subprocess.run(
+                    ["git", "rev-parse", "--show-toplevel"],
+                    capture_output=True,
+                    text=False,
+                )
+                if res.returncode != 0:
+                    PrettyOutput.auto_print("⚠️ 当前不在 Git 仓库内，无法切换到 jca。")
+                    return "", True
+            except Exception:
+                PrettyOutput.auto_print("⚠️ 检测 Git 仓库失败，无法切换到 jca。")
+                return "", True
+
+            PrettyOutput.auto_print("ℹ️ 正在切换到 'jca'（jarvis-code-agent）...")
+            try:
+                os.execvp("jarvis-code-agent", ["jarvis-code-agent"])
+            except Exception as e:
+                PrettyOutput.auto_print(f"❌ 切换到 jca 失败: {e}")
+            return "", True
+        elif tag == "SwitchToJVS":
+            # 切回通用模式（jvs）。使用 --keep-jvs 防止在 Git 仓库内被再次自动切回 jca。
+            PrettyOutput.auto_print("ℹ️ 正在切换到 'jvs'（jarvis）...")
+            try:
+                os.execvp("jarvis", ["jarvis", "--keep-jvs"])
+            except Exception as e:
+                PrettyOutput.auto_print(f"❌ 切换到 jvs 失败: {e}")
             return "", True
         elif tag == "ListRule":
             # 列出所有规则及其状态

@@ -1117,6 +1117,32 @@ def is_enable_impact_analysis() -> bool:
     return True
 
 
+def is_auto_switch_to_jca_in_git_repo() -> bool:
+    """
+    是否在检测到当前位于 Git 仓库时自动切换到代码开发模式（jca）。
+
+    返回：
+        bool: True 表示自动切换；默认 False（避免进入仓库即强制切换模式）。
+    """
+    return GLOBAL_CONFIG_DATA.get("auto_switch_to_jca_in_git_repo", False) is True
+
+
+def get_allowed_dirs() -> List[str]:
+    """
+    获取允许访问/检索的额外目录列表（类似 Claude Code 的 add-dir）。
+
+    返回：
+        List[str]: 额外目录列表（可能为空）
+    """
+    v = GLOBAL_CONFIG_DATA.get("allowed_dirs", [])
+    if isinstance(v, list):
+        return [str(x) for x in v if str(x).strip()]
+    if isinstance(v, str) and v.strip():
+        # 兼容用户误填字符串的情况：用 ':' 分割
+        return [p for p in v.split(":") if p.strip()]
+    return []
+
+
 def is_enable_auto_methodology_extraction() -> bool:
     """
     获取是否启用方法论自动提取。

@@ -15,6 +15,8 @@ from rich.syntax import Syntax
 from rich.table import Table
 from rich.text import Text
 
+from jarvis.jarvis_utils.rich_box import HORIZONTAL_RULE_BOX
+
 LANGUAGE_EXTENSION_MAPPING = {
     "py": "python",
     "js": "javascript",
@@ -303,6 +305,7 @@ class DiffVisualizer:
                 table,
                 title=title,
                 border_style="cyan",
+                box=HORIZONTAL_RULE_BOX,
                 padding=(0, 1),
                 title_align="left",
             )
@@ -336,7 +339,12 @@ class DiffVisualizer:
             stats_text.append("📈 总计: ", style="cyan")
             stats_text.append(f"{total_changes} 行", style="bold cyan")
 
-        panel = Panel(stats_text, border_style="cyan", padding=(1, 2))
+        panel = Panel(
+            stats_text,
+            border_style="cyan",
+            box=HORIZONTAL_RULE_BOX,
+            padding=(1, 2),
+        )
         self.console.print(panel)
 
     def visualize_syntax_highlighted(
@@ -367,6 +375,7 @@ class DiffVisualizer:
                 syntax,
                 title=f"📝 {file_path}",
                 border_style="cyan",
+                box=HORIZONTAL_RULE_BOX,
                 padding=(0, 1),
                 title_align="left",
             )
@@ -430,6 +439,7 @@ class DiffVisualizer:
             syntax,
             title=title,
             border_style="cyan",
+            box=HORIZONTAL_RULE_BOX,
             padding=(0, 1),
             title_align="left",
         )
@@ -761,6 +771,7 @@ class DiffVisualizer:
             table,
             title=title,
             border_style="bright_cyan",
+            box=HORIZONTAL_RULE_BOX,
             padding=(0, 0),
             title_align="left",
         )

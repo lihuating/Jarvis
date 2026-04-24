@@ -67,6 +67,104 @@ _COMPLETION_ROOT_CACHE: Optional[str] = None
 _CACHE_CWD: Optional[str] = None
 
 
+def _iter_cwd_entries_for_at_completion(
+    token: str, max_items: int
+) -> List[Tuple[str, str]]:
+    """为单个 '@' 提供“当前工作目录(os.getcwd)逐级展开”的补全候选。"""
+    try:
+        base_dir = os.getcwd()
+    except Exception:
+        return []
+    if not base_dir or not os.path.isdir(base_dir):
+        return []
+
+    raw = (token or "").strip().replace("\\", "/")
+    # 兼容历史插入的引号包裹，或误把 '@' 写进 token 的情况
+    while raw and raw[0] in "'\"":
+        raw = raw[1:]
+    while raw and raw[-1] in "'\"":
+        raw = raw[:-1]
+    if raw.startswith("@"):
+        raw = raw[1:].lstrip("/")
+
+    # 不支持绝对路径或 ~（避免补全越界）
+    if raw.startswith(("/", "~")):
+        return []
+
+    dir_prefix = ""
+    leaf_prefix = raw
+    if "/" in raw:
+        dir_prefix, leaf_prefix = raw.rsplit("/", 1)
+        dir_prefix = dir_prefix.strip("/")
+        dir_prefix = (dir_prefix + "/") if dir_prefix else ""
+
+    # 拒绝包含 '..' 的越级
+    if ".." in (dir_prefix.split("/") + ([leaf_prefix] if leaf_prefix else [])):
+        return []
+
+    target_dir = os.path.normpath(os.path.join(base_dir, dir_prefix))
+    try:
+        base_real = os.path.realpath(base_dir)
+        target_real = os.path.realpath(target_dir)
+        if os.path.commonpath([base_real, target_real]) != base_real:
+            return []
+    except Exception:
+        return []
+
+    if not os.path.isdir(target_dir):
+        return []
+
+    excluded = {
+        ".git",
+        "__pycache__",
+        ".pytest_cache",
+        ".mypy_cache",
+        ".ruff_cache",
+        "node_modules",
+        "target",
+    }
+
+    try:
+        with os.scandir(target_dir) as it:
+            entries = [e for e in it if getattr(e, "name", None)]
+    except Exception:
+        return []
+
+    # 过滤并排序：目录优先
+    filtered = []
+    for e in entries:
+        try:
+            name = e.name
+            if not name or name in excluded:
+                continue
+            filtered.append(e)
+        except Exception:
+            continue
+
+    try:
+        filtered.sort(
+            key=lambda e: (not e.is_dir(follow_symlinks=False), e.name.lower())
+        )
+    except Exception:
+        pass
+
+    lp = (leaf_prefix or "").lower()
+    out: List[Tuple[str, str]] = []
+    for e in filtered:
+        try:
+            name = e.name
+            if lp and not name.lower().startswith(lp):
+                continue
+            is_dir = e.is_dir(follow_symlinks=False)
+            rel = f"{dir_prefix}{name}{'/' if is_dir else ''}"
+            out.append((rel, "Dir" if is_dir else "File"))
+            if len(out) >= max_items:
+                break
+        except Exception:
+            continue
+    return out
+
+
 def _get_completion_root() -> str:
     """获取用于文件补全的项目根目录。
 
@@ -159,11 +257,61 @@ BUILTIN_COMMANDS = [
     ("Quiet", "无人值守模式"),
     ("FixToolCall", "修复工具调用"),
     ("SwitchModel", "切换模型组"),
+    ("SwitchToJCA", "切换到代码模式（jca）"),
+    ("SwitchToJVS", "切换到通用模式（jvs）"),
+    ("JarvisHelp", "Jarvis 使用答疑（优先从源码/文档检索）"),
+    ("AddDir", "扩大目录访问范围（add-dir）"),
     (
         "Init",
         "在当前目录生成/更新 JVS_MEMORY.md（优先 cheap LLM，失败则 normal；均失败则报错）",
     ),
+    ("BTW", "顺带一问：独立问答，不写入主会话上下文（jvs/jca 均支持）"),
 ]
+
+
+def reset_completion_caches() -> None:
+    """清理补全相关缓存，使 add-dir 等变更可立刻生效。"""
+    global _COMPLETION_ROOT_CACHE
+    global _GIT_ROOT_CACHE
+    global _CACHE_CWD
+    _COMPLETION_ROOT_CACHE = None
+    _GIT_ROOT_CACHE = None
+    _CACHE_CWD = None
+
+
+def _get_additional_allowed_dirs() -> List[str]:
+    """获取额外允许目录（会话 env + 配置）。"""
+    dirs: List[str] = []
+    try:
+        env_val = os.environ.get("JARVIS_ADDITIONAL_DIRS", "").strip()
+        if env_val:
+            for p in env_val.split(":"):
+                p = (p or "").strip()
+                if p:
+                    dirs.append(p)
+    except Exception:
+        pass
+    try:
+        from jarvis.jarvis_utils.config import get_allowed_dirs
+
+        dirs.extend(get_allowed_dirs())
+    except Exception:
+        pass
+    # 去重保序 + 仅保留存在的目录
+    out: List[str] = []
+    seen = set()
+    for p in dirs:
+        try:
+            ep = os.path.expanduser(os.path.expandvars(str(p)))
+            ap = os.path.abspath(ep)
+            if ap in seen:
+                continue
+            if os.path.isdir(ap):
+                seen.add(ap)
+                out.append(ap)
+        except Exception:
+            continue
+    return out
 
 
 def _display_width(s: str) -> int:
@@ -270,15 +418,23 @@ def _get_all_files(exclude_git: bool = False) -> List[str]:
         import os as _os
         global _GIT_ROOT_CACHE
         base_dir = _get_completion_root()
+        extra_dirs = _get_additional_allowed_dirs()
+        roots = [base_dir] + [d for d in extra_dirs if d and d != base_dir]
 
-        for root, dirs, fnames in _os.walk(base_dir, followlinks=False):
-            if exclude_git:
-                # Exclude .git directories
-                dirs[:] = [d for d in dirs if d != ".git"]
-            for name in fnames:
-                files.append(_os.path.relpath(_os.path.join(root, name), base_dir))
-            if len(files) > 10000:
-                break
+        for scan_root in roots:
+            for root, dirs, fnames in _os.walk(scan_root, followlinks=False):
+                if exclude_git:
+                    # Exclude .git directories
+                    dirs[:] = [d for d in dirs if d != ".git"]
+                for name in fnames:
+                    full = _os.path.join(root, name)
+                    if scan_root == base_dir:
+                        files.append(_os.path.relpath(full, base_dir))
+                    else:
+                        # 额外目录直接输出绝对路径，避免相对路径歧义
+                        files.append(_os.path.abspath(full))
+                if len(files) > 10000:
+                    break
     except Exception:
         files = []
     return files
@@ -728,16 +884,21 @@ class FileCompleter(Completer):
         replace_length = len(text_after) + 1
 
         # 交互约定：
-        # - 单个 '@'：优先进行文件路径补全（git tracked files）
-        # - '@@'：才显示“内置补全菜单”（tags/commands/rules + files）
-        double_at_menu = (
+        # - '@'：按当前工作目录逐级补全（先列出当前目录子目录/文件，选中目录后可继续深入）
+        # - '#': 内置补全菜单（tags/commands/rules + files）
+        #
+        # 兼容历史输入：'@@' 不再触发内置菜单。这里把 '@@' 视为单个 '@'，
+        # 补全时会用新内容替换两个 '@'，避免形成 '@@xxx'。
+        is_double_at = (
             current_sym == "@"
             and current_pos > 0
             and text[current_pos - 1 : current_pos + 1] == "@@"
         )
+        if is_double_at:
+            replace_length += 1  # 把前一个 '@' 也纳入替换范围
 
         all_completions = []
-        if double_at_menu or current_sym != "@":
+        if current_sym != "@":
             all_completions.extend(
                 [(ot(tag), self._get_description(tag)) for tag in self.replace_map.keys()]
             )
@@ -746,6 +907,25 @@ class FileCompleter(Completer):
             rules = self._get_all_rules()
             for rule_name, rule_desc in rules:
                 all_completions.append((f"<rule:{rule_name}>", rule_desc))
+
+        # '@'：按当前工作目录逐级补全（不再一次性展开全仓库文件列表）
+        if current_sym == "@":
+            try:
+                candidates = _iter_cwd_entries_for_at_completion(
+                    token=token, max_items=self.max_suggestions
+                )
+                for t, desc in candidates:
+                    # replace_length 含触发位置的 '@'：插入内容必须保留 '@'，否则下一级无法继续补全
+                    full = f"@{t}"
+                    yield Completion(
+                        text=full,
+                        start_position=-replace_length,
+                        display=full,
+                        display_meta=desc,
+                    )
+            except Exception:
+                pass
+            return
 
         # File path candidates
         try:
@@ -858,7 +1038,7 @@ class FileCompleter(Completer):
 
     def _get_description(self, tag: str) -> str:
         """
-        `@@` 菜单里右侧显示的“提示内容”。
+        内置菜单里右侧显示的“提示内容”。
 
         规则：
         - `append=True`：显示 description，并附加工具线索（如模板里可提取到）。
@@ -1322,7 +1502,7 @@ def _get_multiline_input_internal(
         """
         try:
             buf = event.current_buffer
-            # 默认行为：插入 '@' 并触发补全（单个 @ 为文件补全；@@ 为内置菜单）
+            # 默认行为：插入 '@' 并触发补全（单个 @ 为文件补全）
             # 如需沿用旧行为（@ 触发 fzf），可设置 JARVIS_AT_USE_FZF=true
             use_fzf = os.environ.get("JARVIS_AT_USE_FZF", "false").lower() == "true"
             if use_fzf and _shutil.which("fzf") is not None:

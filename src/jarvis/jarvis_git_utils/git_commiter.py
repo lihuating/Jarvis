@@ -14,6 +14,7 @@ from rich.panel import Panel
 from rich.status import Status
 
 from jarvis.jarvis_platform.registry import PlatformRegistry
+from jarvis.jarvis_utils.rich_box import HORIZONTAL_RULE_BOX
 from jarvis.jarvis_utils.config import get_git_commit_prompt
 from jarvis.jarvis_utils.git_utils import confirm_add_new_files
 from jarvis.jarvis_utils.git_utils import find_git_root_and_cd
@@ -548,6 +549,7 @@ commit信息
                     f"[bold]提交消息:[/bold]\n{commit_message}",
                     title="Git Commit Result",
                     border_style="green",
+                    box=HORIZONTAL_RULE_BOX,
                     title_align="left",
                 )
             )
@@ -566,6 +568,7 @@ commit信息
                     f"[bold red]❌ 提交失败[/bold red]\n\n{str(e)}",
                     title="Git Commit Error",
                     border_style="red",
+                    box=HORIZONTAL_RULE_BOX,
                     title_align="left",
                 )
             )
