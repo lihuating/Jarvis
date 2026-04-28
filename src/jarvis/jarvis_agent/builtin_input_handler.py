@@ -172,7 +172,7 @@ _BTW_CODE_AGENT_TASK_PREFIX = (
 
 
 def _normalize_btw_question(text: str) -> str:
-    """去掉补全用的前导 @ 及空白，避免 `\@'<BTW>'` 形式残留 @。"""
+    """去掉补全用的前导 @ 及空白，避免 `\\@'<BTW>'` 形式残留 @。"""
     s = (text or "").strip()
     s = re.sub(r"^@+\s*", "", s).strip()
     return s

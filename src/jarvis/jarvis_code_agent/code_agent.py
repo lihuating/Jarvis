@@ -180,8 +180,19 @@ class _DelayedStatus:
             if self._stop.wait(self._threshold_s):
                 return
             try:
-                with Status(self._message, spinner="dots", console=console):
-                    self._stop.wait()
+                # rich.Status 使用 Live 渲染，不走 PrettyOutput/emit_output；
+                # 为避免与全局“无输出提示”看门狗的 Live 冲突，这里暂停看门狗。
+                try:
+                    from jarvis.jarvis_utils.output import OutputWatchdogPaused
+                except Exception:
+                    OutputWatchdogPaused = None
+                if OutputWatchdogPaused:
+                    with OutputWatchdogPaused():
+                        with Status(self._message, spinner="dots", console=console):
+                            self._stop.wait()
+                else:
+                    with Status(self._message, spinner="dots", console=console):
+                        self._stop.wait()
             except Exception:
                 # UI 提示失败不影响主流程
                 pass

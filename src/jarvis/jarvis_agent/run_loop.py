@@ -27,11 +27,48 @@ from jarvis.jarvis_utils.config import get_conversation_turn_threshold
 from jarvis.jarvis_utils.config import get_max_input_token_count
 from jarvis.jarvis_utils.output import PrettyOutput
 from jarvis.jarvis_utils.tag import ot
+from jarvis.jarvis_utils.tool_prompt_spill import materialize_large_tool_prompt_for_session
 from jarvis.jarvis_utils.utils import get_context_token_count
 
 if TYPE_CHECKING:
     # 仅用于类型标注，避免运行时循环依赖
     from . import Agent
+
+
+def _tool_prompt_for_session(agent: object, tool_prompt: object) -> str:
+    """将工具返回串做外置/预览处理后再写入 session（jvs / jca 共用 run_loop）。"""
+    safe = tool_prompt if isinstance(tool_prompt, str) else ""
+    return materialize_large_tool_prompt_for_session(
+        safe, agent_name=getattr(agent, "name", None)
+    )
+
+
+def _message_ratio_trunc_threshold() -> float:
+    """当前消息占比超过该值时，先尝试截断 session.prompt（质量优先：默认略放宽）。"""
+    try:
+        v = float(os.environ.get("JARVIS_PROMPT_MESSAGE_RATIO_TRUNCATE", "0.42"))
+    except ValueError:
+        v = 0.42
+    return max(0.15, min(v, 0.9))
+
+
+def _prompt_truncate_head_tail_ratios() -> tuple[float, float]:
+    """压缩前截断 session.prompt 时保留的首/尾比例（尾部略大，工具输出多在近期段）。"""
+    try:
+        head_r = float(os.environ.get("JARVIS_PROMPT_TRUNCATE_HEAD_RATIO", "0.35"))
+    except ValueError:
+        head_r = 0.35
+    try:
+        tail_r = float(os.environ.get("JARVIS_PROMPT_TRUNCATE_TAIL_RATIO", "0.45"))
+    except ValueError:
+        tail_r = 0.45
+    head_r = max(0.05, min(head_r, 0.85))
+    tail_r = max(0.05, min(tail_r, 0.85))
+    if head_r + tail_r >= 0.98:
+        scale = 0.96 / (head_r + tail_r)
+        head_r *= scale
+        tail_r *= scale
+    return head_r, tail_r
 
 
 class AgentRunLoop:
@@ -203,16 +240,17 @@ class AgentRunLoop:
                         current_message_tokens / total_tokens if total_tokens > 0 else 0
                     )
 
-                    # 如果当前消息超过总token的30%，进行截断处理
-                    if message_ratio > 0.3:
+                    ratio_cut = _message_ratio_trunc_threshold()
+                    if message_ratio > ratio_cut:
                         PrettyOutput.auto_print(
                             f"⚠️ 当前消息过长 (占{message_ratio * 100:.1f}%)，进行截断处理"
                         )
 
-                        # 截断策略：保留前后20%
+                        # 截断策略：默认保留前 35% + 后 45%（中部省略），偏重复用近期尾部上下文
                         content_length = len(current_prompt)
-                        keep_start = int(content_length * 0.2)
-                        keep_end = max(1, int(content_length * 0.2))
+                        head_r, tail_r = _prompt_truncate_head_tail_ratios()
+                        keep_start = int(content_length * head_r)
+                        keep_end = max(1, int(content_length * tail_r))
 
                         truncated_prompt = (
                             current_prompt[:keep_start]
@@ -492,7 +530,7 @@ class AgentRunLoop:
                     return tool_prompt
 
                 # 将上一个提示和工具提示安全地拼接起来（仅当工具结果为字符串时）
-                safe_tool_prompt = tool_prompt if isinstance(tool_prompt, str) else ""
+                safe_tool_prompt = _tool_prompt_for_session(ag, tool_prompt)
 
                 ag.session.prompt = join_prompts([ag.session.prompt, safe_tool_prompt])
 
@@ -546,8 +584,21 @@ class AgentRunLoop:
                 except Exception:
                     pass
 
-                # 检查是否需要继续
-                if ag.session.prompt or ag.session.addon_prompt:
+                # 检查是否需要继续（自动连跑下一轮模型）
+                #
+                # 重要：不得仅因 addon_prompt 非空就 continue。
+                # addon_prompt 常承载「压缩摘要 / 工具提醒 / !!!SUMMARY!!! 注入」等，应在下一轮
+                # _call_model 开头由 _add_addon_prompt 并入消息；若此处把「仅有 addon」也当成
+                # 待处理工作而 continue，会跳过 _get_next_user_action()，出现模型已向用户提问
+                #（多选项、请确认等）却不等待输入、直接再次调用模型的问题。
+                #
+                # 自动连跑的正确语义：仅当仍有「待模型消费的明文」——通常为工具输出拼在 session.prompt。
+                if ag.session.prompt and ag.session.prompt.strip():
+                    ag._no_tool_call_count = 0
+                    continue
+                # 非交互：允许仅 addon 的衔接（压缩摘要等），避免无用户输入时误停
+                _addon = getattr(ag.session, "addon_prompt", None) or ""
+                if getattr(ag, "non_interactive", False) and _addon.strip():
                     ag._no_tool_call_count = 0
                     continue
 
@@ -815,9 +866,7 @@ class AgentRunLoop:
                                     return tool_prompt
 
                                 # 将上一个提示和工具提示安全地拼接起来（仅当工具结果为字符串时）
-                                safe_tool_prompt = (
-                                    tool_prompt if isinstance(tool_prompt, str) else ""
-                                )
+                                safe_tool_prompt = _tool_prompt_for_session(ag, tool_prompt)
 
                                 ag.session.prompt = join_prompts(
                                     [ag.session.prompt, safe_tool_prompt]

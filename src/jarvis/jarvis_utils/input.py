@@ -605,6 +605,14 @@ def get_single_line_input(tip: str, default: str = "") -> str:
         {"prompt": "ansicyan", "bottom-toolbar": "fg:#888888"}
     )
     prompt = FormattedText([("class:prompt", f"👤{model_hint} > {tip}")])
+    # 等待用户输入属于“正常静默”，暂停无输出看门狗，避免误触发思考中提示
+    try:
+        from jarvis.jarvis_utils.output import OutputWatchdogPaused
+    except Exception:
+        OutputWatchdogPaused = None
+    if OutputWatchdogPaused:
+        with OutputWatchdogPaused():
+            return str(session.prompt(prompt, default=default, style=style))
     return str(session.prompt(prompt, default=default, style=style))
 
 
@@ -636,7 +644,15 @@ def run_truncated_history_viewer() -> None:
         table.add_row(str(i), row_summary)
     console.print(table)
     try:
-        line = input("请输入序号 (直接回车退出): ").strip()
+        from jarvis.jarvis_utils.output import OutputWatchdogPaused
+    except Exception:
+        OutputWatchdogPaused = None
+    try:
+        if OutputWatchdogPaused:
+            with OutputWatchdogPaused():
+                line = input("请输入序号 (直接回车退出): ").strip()
+        else:
+            line = input("请输入序号 (直接回车退出): ").strip()
     except (EOFError, KeyboardInterrupt):
         line = ""
     if not line:
@@ -1733,14 +1749,30 @@ def _get_multiline_input_internal(
         pass
 
     try:
-        result = session.prompt(
-            prompt,
-            style=style,
-            pre_run=_pre_run,
-            bottom_toolbar=_bottom_toolbar,
-            placeholder=FormattedText([("class:placeholder", tip)]),
-            default=(preset or ""),
-        )
+        # 等待用户输入属于“正常静默”，暂停无输出看门狗，避免误触发思考中提示
+        try:
+            from jarvis.jarvis_utils.output import OutputWatchdogPaused
+        except Exception:
+            OutputWatchdogPaused = None
+        if OutputWatchdogPaused:
+            with OutputWatchdogPaused():
+                result = session.prompt(
+                    prompt,
+                    style=style,
+                    pre_run=_pre_run,
+                    bottom_toolbar=_bottom_toolbar,
+                    placeholder=FormattedText([("class:placeholder", tip)]),
+                    default=(preset or ""),
+                )
+        else:
+            result = session.prompt(
+                prompt,
+                style=style,
+                pre_run=_pre_run,
+                bottom_toolbar=_bottom_toolbar,
+                placeholder=FormattedText([("class:placeholder", tip)]),
+                default=(preset or ""),
+            )
         return str(result).strip() if result else ""
     except (KeyboardInterrupt, EOFError):
         return ""

@@ -36,6 +36,151 @@ from jarvis.jarvis_utils.globals import get_agent_list
 from jarvis.jarvis_utils import globals as jarvis_globals
 from jarvis.jarvis_utils.globals import TRUNCATED_HISTORY_MAX_SIZE
 
+import threading
+import time
+
+
+# ---- 全局“无输出提示”看门狗 -------------------------------------------------------------
+#
+# 需求：无论处于哪个阶段，只要超过 N 秒没有任何输出，就提示一次“思考中…”，
+# 防止长耗时操作（Init 索引/LLM、磁盘扫描、网络等待等）看起来像卡死。
+#
+# 实现：
+# - 以 emit_output() 为统一出口：任何 PrettyOutput/Panel 等输出都会触发 touch。
+# - 后台线程轮询检测“距最后输出时间”是否超过阈值，超过则打印提示并限频。
+# - 线程默认懒启动：第一次输出时启动，避免 import 阶段就起线程影响测试。
+_OUTPUT_WATCHDOG_STARTED = False
+_OUTPUT_WATCHDOG_LOCK = threading.Lock()
+_LAST_OUTPUT_TS = 0.0
+_OUTPUT_ACTIVITY_EVENT = threading.Event()
+_WATCHDOG_PAUSE_LOCK = threading.Lock()
+_WATCHDOG_PAUSE_COUNT = 0
+
+# 默认阈值：10 秒无输出提示；每次提示后至少间隔 10 秒再提示一次
+_WATCHDOG_SILENCE_THRESHOLD_S = 10.0
+_WATCHDOG_POLL_INTERVAL_S = 1.0
+
+
+def pause_output_watchdog() -> None:
+    """暂停全局“无输出提示”看门狗（支持嵌套）。用于等待用户输入等正常静默场景。"""
+    global _WATCHDOG_PAUSE_COUNT
+    with _WATCHDOG_PAUSE_LOCK:
+        _WATCHDOG_PAUSE_COUNT += 1
+    # 若正在显示 Live thinking，触发活动事件让其尽快退出
+    try:
+        _OUTPUT_ACTIVITY_EVENT.set()
+    except Exception:
+        pass
+
+
+def resume_output_watchdog() -> None:
+    """恢复全局“无输出提示”看门狗（支持嵌套）。"""
+    global _WATCHDOG_PAUSE_COUNT
+    with _WATCHDOG_PAUSE_LOCK:
+        _WATCHDOG_PAUSE_COUNT = max(0, _WATCHDOG_PAUSE_COUNT - 1)
+    # 恢复时视为一次“输出活动”，避免立刻触发提示
+    try:
+        _touch_output()
+    except Exception:
+        pass
+
+
+class OutputWatchdogPaused:
+    """上下文管理器：作用域内暂停无输出看门狗。"""
+
+    def __enter__(self) -> "OutputWatchdogPaused":
+        pause_output_watchdog()
+        return self
+
+    def __exit__(self, exc_type, exc, tb) -> None:
+        resume_output_watchdog()
+
+
+def _is_watchdog_paused() -> bool:
+    try:
+        with _WATCHDOG_PAUSE_LOCK:
+            return _WATCHDOG_PAUSE_COUNT > 0
+    except Exception:
+        return False
+
+
+def _touch_output() -> None:
+    global _LAST_OUTPUT_TS
+    _LAST_OUTPUT_TS = time.time()
+    try:
+        _OUTPUT_ACTIVITY_EVENT.set()
+    except Exception:
+        pass
+    _ensure_output_watchdog_started()
+
+
+def _ensure_output_watchdog_started() -> None:
+    global _OUTPUT_WATCHDOG_STARTED
+    if _OUTPUT_WATCHDOG_STARTED:
+        return
+    with _OUTPUT_WATCHDOG_LOCK:
+        if _OUTPUT_WATCHDOG_STARTED:
+            return
+        _OUTPUT_WATCHDOG_STARTED = True
+
+        def _watchdog_loop() -> None:
+            # 初始化：若尚未 touch，避免立刻提示
+            if _LAST_OUTPUT_TS <= 0:
+                _touch_output()
+            live_active = False
+            while True:
+                try:
+                    # 等待用户输入等场景：暂停看门狗，避免误提示
+                    if _is_watchdog_paused():
+                        time.sleep(_WATCHDOG_POLL_INTERVAL_S)
+                        continue
+
+                    now = time.time()
+                    silent_for = now - (_LAST_OUTPUT_TS or now)
+                    # 静默超过阈值时，展示“思考中...”动态提示，直到任意输出恢复
+                    if (not live_active) and silent_for >= _WATCHDOG_SILENCE_THRESHOLD_S:
+                        live_active = True
+                        try:
+                            from rich.live import Live
+                            from rich.text import Text
+
+                            # 清空活动事件，进入等待“有输出恢复”的阶段
+                            try:
+                                _OUTPUT_ACTIVITY_EVENT.clear()
+                            except Exception:
+                                pass
+
+                            thinking_dots = 0
+                            text_content = Text("思考中.", style="bright_cyan")
+                            with Live(
+                                text_content, refresh_per_second=4, transient=True
+                            ) as live:
+                                # 直到检测到任何输出（emit_output touch）才退出
+                                while True:
+                                    if _is_watchdog_paused():
+                                        break
+                                    try:
+                                        if _OUTPUT_ACTIVITY_EVENT.wait(timeout=0.4):
+                                            break
+                                    except Exception:
+                                        break
+                                    thinking_dots = (thinking_dots + 1) % 4
+                                    dots_str = "." * (thinking_dots + 1)
+                                    live.update(
+                                        Text(f"思考中{dots_str}", style="bright_cyan")
+                                    )
+                        except Exception:
+                            # Live 失败则静默，不影响主流程
+                            pass
+                        finally:
+                            live_active = False
+                except Exception:
+                    pass
+                time.sleep(_WATCHDOG_POLL_INTERVAL_S)
+
+        t = threading.Thread(target=_watchdog_loop, daemon=True)
+        t.start()
+
 
 # Rich支持的标准颜色列表
 RICH_STANDARD_COLORS = {
@@ -616,6 +761,11 @@ _output_sinks: List[OutputSink] = [ConsoleOutputSink()]
 
 def emit_output(event: OutputEvent) -> None:
     """向所有已注册的输出后端广播事件。"""
+    # 任意输出都算“有进展”，用于无输出看门狗
+    try:
+        _touch_output()
+    except Exception:
+        pass
     for sink in list(_output_sinks):
         try:
             sink.emit(event)
@@ -1197,6 +1347,11 @@ class PrettyOutput:
 
         if not (hasattr(stop_event, "wait") and hasattr(stop_event, "set")):
             return
+        # 与全局“无输出提示”看门狗协同：只要 thinking 在刷新，就视为“有输出”，避免重复提示。
+        try:
+            _touch_output()
+        except Exception:
+            pass
         # 先等待 delay_seconds 秒，若期间已完成则直接返回，不显示思考中
         if stop_event.wait(timeout=delay_seconds):
             return
@@ -1208,6 +1363,10 @@ class PrettyOutput:
                 dots_str = "." * (thinking_dots + 1)
                 text_content = Text(f"思考中{dots_str}", style="bright_cyan")
                 live.update(text_content)
+                try:
+                    _touch_output()
+                except Exception:
+                    pass
 
     @staticmethod
     def stream_chat_with_panel(
