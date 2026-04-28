@@ -461,6 +461,41 @@ class BasePlatform(ABC):
                 response_tokens / generation_time if generation_time > 0 else 0
             )
 
+            # 轻量观测：仅记录慢调用（默认），并带按大小滚动，避免磁盘耗尽
+            try:
+                from jarvis.jarvis_utils.llm_metrics import (
+                    LlmCallMetrics,
+                    log_llm_call_metrics,
+                )
+
+                try:
+                    remaining_tokens = self.get_remaining_token_count()
+                except Exception:
+                    remaining_tokens = None
+                try:
+                    max_input_tokens = self._get_platform_max_input_token_count()
+                except Exception:
+                    max_input_tokens = None
+
+                m = LlmCallMetrics(
+                    ts=end_time,
+                    platform=str(getattr(self, "platform_type", "") or ""),
+                    model=str(getattr(self, "model_name", "") or ""),
+                    tier=str(self.name() or ""),
+                    conversation_turn=int(self.get_conversation_turn() or 0),
+                    input_chars=len(message or ""),
+                    input_tokens=int(get_context_token_count(message or "")),
+                    output_tokens=int(response_tokens),
+                    duration_s=float(duration),
+                    first_token_s=float(first_token_time or 0.0),
+                    tokens_per_second=float(tokens_per_second),
+                    remaining_tokens=remaining_tokens if isinstance(remaining_tokens, int) else None,
+                    max_input_tokens=max_input_tokens if isinstance(max_input_tokens, int) else None,
+                )
+                log_llm_call_metrics(m, slow_only=True)
+            except Exception:
+                pass
+
             # 获取Token使用信息
             try:
                 usage_percent, percent_color, progress_bar = self._get_token_usage_info(

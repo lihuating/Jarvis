@@ -863,7 +863,7 @@ class FileCompleter(Completer):
         text = document.text_before_cursor
         cursor_pos = document.cursor_position
 
-        # Support both '@' (git files) and '#' (all files excluding .git)
+        # Support both '@' (cwd path completion) and '#' (builtin menu + files)
         sym_positions = [(i, ch) for i, ch in enumerate(text) if ch in ("@", "#")]
         if not sym_positions:
             return
@@ -883,21 +883,8 @@ class FileCompleter(Completer):
         token = text_after.strip()
         replace_length = len(text_after) + 1
 
-        # 交互约定：
-        # - '@'：按当前工作目录逐级补全（先列出当前目录子目录/文件，选中目录后可继续深入）
-        # - '#': 内置补全菜单（tags/commands/rules + files）
-        #
-        # 兼容历史输入：'@@' 不再触发内置菜单。这里把 '@@' 视为单个 '@'，
-        # 补全时会用新内容替换两个 '@'，避免形成 '@@xxx'。
-        is_double_at = (
-            current_sym == "@"
-            and current_pos > 0
-            and text[current_pos - 1 : current_pos + 1] == "@@"
-        )
-        if is_double_at:
-            replace_length += 1  # 把前一个 '@' 也纳入替换范围
-
         all_completions = []
+        # '#'：内置补全菜单（tags/commands/rules + files）
         if current_sym != "@":
             all_completions.extend(
                 [(ot(tag), self._get_description(tag)) for tag in self.replace_map.keys()]
@@ -1532,31 +1519,30 @@ def _get_multiline_input_internal(
     @bindings.add("#", filter=has_focus(DEFAULT_BUFFER), eager=True)
     def _(event: KeyPressEvent) -> None:
         """
-        使用 # 触发 fzf（当 fzf 存在），以“全量文件模式”进行选择（排除 .git）；否则仅插入 # 启用内置补全
+        使用 # 触发 fzf（当 fzf 存在），以“全量文件模式”进行选择（排除 .git）；
+        否则插入 # 并触发内置补全菜单（内置命令/规则 + 文件）。
         """
         try:
             buf = event.current_buffer
-            disable_fzf = os.environ.get("JARVIS_DISABLE_FZF_COMPLETION", "false").lower() == "true"
+            disable_fzf = (
+                os.environ.get("JARVIS_DISABLE_FZF_COMPLETION", "false").lower()
+                == "true"
+            )
             if disable_fzf or _shutil.which("fzf") is None:
                 buf.insert_text("#")
-                # 手动触发补全，以便显示 rule 和其他补全选项
                 buf.start_completion(select_first=False)
                 return
-            # 先插入 '#'
             buf.insert_text("#")
             doc = buf.document
             text = doc.text
             cursor = doc.cursor_position
-            payload = (
-                f"{cursor}:{base64.b64encode(text.encode('utf-8')).decode('ascii')}"
-            )
+            payload = f"{cursor}:{base64.b64encode(text.encode('utf-8')).decode('ascii')}"
             event.app.exit(result=FZF_REQUEST_ALL_SENTINEL_PREFIX + payload)
             return
         except Exception:
             try:
                 buf = event.current_buffer
                 buf.insert_text("#")
-                # 即使发生异常，也尝试触发补全
                 buf.start_completion(select_first=False)
             except Exception:
                 pass

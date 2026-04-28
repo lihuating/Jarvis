@@ -40,6 +40,7 @@ nav:
   - 技术文档:
       - 技术概览: technical/README.md
       - 实现细节: technical/implementation/README.md
+      - jca 防重复执行治理（A+B+C）: technical/implementation/jca_governance_abc.md
       - 上下文压缩策略: technical/implementation/context_compression_strategies.md
       - 上下文压缩流程: technical/implementation/context_compression_flow.md
   - 竞赛资料:

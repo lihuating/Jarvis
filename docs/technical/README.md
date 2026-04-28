@@ -21,5 +21,6 @@
 
 ## 快速导航
 
+- [jca（CodeAgent）防重复执行治理（A+B+C）](./implementation/jca_governance_abc.md) - 交付落盘/只读验证缓存/只读 execute_script 降噪的组合方案
 - [上下文压缩实现](./implementation/context_compression_strategies.md) - 所有压缩策略的详细说明
 - [上下文压缩流程](./implementation/context_compression_flow.md) - 压缩流程的完整说明

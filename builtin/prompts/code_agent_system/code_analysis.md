@@ -21,6 +21,27 @@ description: "代码审查、代码理解、架构分析、依赖分析、代码
   - **简单任务**：可直接 ANALYZE → HYPOTHESIZE → EXECUTE → REVIEW，省略 RULE 和 COLLECT
   - **复杂任务**：完整执行所有阶段，确保充分准备
 
+## 交付标记（必须，用于避免摘要压缩后重复执行）
+
+当你已经输出**最终可交付结论**（例如完整分析报告、最终审查结论、明确的架构/依赖分析结论）并认为本轮任务可以结束时，必须在回复**末尾**追加一个 JSON 交付块（仅此一次，且必须是合法 JSON）：
+
+```text
+<JCA_DELIVERY>
+{
+  "delivered": true,
+  "artifact_type": "analysis_report",
+  "artifact_refs": ["相对路径或关键文件列表"],
+  "confidence": 0.0,
+  "notes": "一句话说明交付物是什么/在哪里"
+}
+</JCA_DELIVERY>
+```
+
+规则：
+- **只有在任务确实完成**时才设置 `delivered: true`。
+- `artifact_refs` 尽量列出**最关键的源文件路径**（相对仓库根目录），便于后续复核与定位。
+- 若任务未完成：不要输出 `<JCA_DELIVERY>`，或设置 `delivered: false` 并说明原因。
+
 ## 模式速览（ARCHER）
 
 ### ANALYZE（分析意图）

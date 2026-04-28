@@ -325,9 +325,34 @@ class AgentRunLoop:
 
                 # 调用模型获取响应
                 try:
-                    current_response = ag._call_model(
-                        ag.session.prompt, True, run_input_handlers
-                    )
+                    # 体验优化：模型首 token 可能较慢（尤其在长上下文/压缩后）。
+                    # 用“延迟显示”的 thinking 指示避免看起来像卡死。
+                    stop_event = threading.Event()
+                    result_holder = [""]
+                    exception_holder = [None]
+
+                    def _call_model_worker() -> None:
+                        try:
+                            result_holder[0] = ag._call_model(
+                                ag.session.prompt, True, run_input_handlers
+                            )
+                        except Exception as e:
+                            exception_holder[0] = e
+                        finally:
+                            stop_event.set()
+
+                    t = threading.Thread(target=_call_model_worker, daemon=True)
+                    t.start()
+                    try:
+                        PrettyOutput.show_thinking_until(stop_event)
+                    except KeyboardInterrupt:
+                        stop_event.set()
+                        raise
+                    stop_event.set()
+                    t.join(timeout=120)
+                    if exception_holder[0] is not None:
+                        raise exception_holder[0]
+                    current_response = result_holder[0]
                 except KeyboardInterrupt:
                     # 获取用户补充信息并继续下一轮
                     addon_info = self._handle_interrupt_with_input()
@@ -481,6 +506,43 @@ class AgentRunLoop:
                         need_return=need_return,
                         tool_prompt=tool_prompt,
                     )
+                except Exception:
+                    pass
+
+                # CodeAgent 交付后等待用户确认：
+                # 如果本轮 LLM 已输出 <JCA_DELIVERY delivered=true>，则在交互模式下强制进入“等待用户输入”阶段，
+                # 避免因为 token 压缩/summary 注入 addon_prompt 而自动触发下一轮模型调用（表现为交付后仍不停执行）。
+                try:
+                    if not getattr(ag, "non_interactive", False):
+                        from jarvis.jarvis_code_agent.code_agent_delivery import (
+                            parse_delivery_block,
+                        )
+
+                        delivery_obj = parse_delivery_block(current_response or "")
+                        if delivery_obj and bool(delivery_obj.get("delivered")):
+                            # 交互提示：仅提示一次，避免多次工具调用后重复刷屏
+                            try:
+                                ud = getattr(ag, "user_data", None)
+                                already = (
+                                    isinstance(ud, dict)
+                                    and ud.get("_jca_delivery_wait_prompted") is True
+                                )
+                                if not already:
+                                    PrettyOutput.auto_print(
+                                        "✅ 检测到本轮已完成结构化交付（`<JCA_DELIVERY delivered=true>`）。"
+                                    )
+                                    PrettyOutput.auto_print(
+                                        "请确认结果是否符合预期：回车结束本次任务；或直接输入你的下一步需求继续。"
+                                    )
+                                    if isinstance(ud, dict):
+                                        ud["_jca_delivery_wait_prompted"] = True
+                            except Exception:
+                                pass
+
+                            # 保留已执行的后处理（例如语法检查/markdownlint/静态检查），仅禁止自动进入下一轮模型调用。
+                            ag.session.prompt = ""
+                            ag.session.addon_prompt = ""
+                            ag.run_input_handlers_next_turn = True
                 except Exception:
                     pass
 

@@ -5,6 +5,8 @@
 
 import hashlib
 import os
+import threading
+import time
 
 from jarvis.jarvis_utils.output import PrettyOutput
 from rich.status import Status
@@ -29,6 +31,19 @@ from jarvis.jarvis_code_agent.code_agent_impact import ImpactManager
 from jarvis.jarvis_code_agent.code_agent_lint import LintManager
 from jarvis.jarvis_code_agent.code_agent_postprocess import PostProcessManager
 from jarvis.jarvis_agent.builtin_input_handler import builtin_input_handler
+from jarvis.jarvis_code_agent.code_agent_delivery import (
+    VerificationCache,
+    compute_diff_hash_for_cache,
+    extract_execute_script_calls_from_tool_response,
+    is_execute_script_read_only,
+    maybe_short_circuit_delivered_run,
+    marker_paths,
+    parse_delivery_block,
+    task_fingerprint,
+    user_requests_force_rerun,
+    write_delivery_artifact,
+    write_marker,
+)
 from jarvis.jarvis_code_agent.code_agent_prompts import (
     classify_user_request,
     get_system_prompt,
@@ -128,6 +143,59 @@ def _extract_tool_names_from_model_response(response: Optional[str]) -> List[str
         return []
 
 
+def _tool_names_are_read_only_for_postprocess(
+    tool_names: List[str], current_response: Optional[str]
+) -> bool:
+    """判断本轮工具调用是否应跳过 CodeAgent 的重后处理链路。"""
+    if not tool_names:
+        return False
+    names = [n for n in tool_names if n]
+    if not names:
+        return False
+    for n in names:
+        if n == "execute_script":
+            calls = extract_execute_script_calls_from_tool_response(current_response)
+            if not calls:
+                return False
+            for interpreter, script in calls:
+                if not is_execute_script_read_only(interpreter, script):
+                    return False
+            continue
+        if n not in _CODE_AGENT_READ_ONLY_TOOLS:
+            return False
+    return True
+
+
+class _DelayedStatus:
+    """仅当操作超过阈值时才展示的轻量状态提示，避免刷屏也避免静默卡住。"""
+
+    def __init__(self, message: str, *, threshold_s: float = 1.5):
+        self._message = message
+        self._threshold_s = threshold_s
+        self._stop = threading.Event()
+        self._thread: Optional[threading.Thread] = None
+
+    def __enter__(self) -> "_DelayedStatus":
+        def _worker() -> None:
+            if self._stop.wait(self._threshold_s):
+                return
+            try:
+                with Status(self._message, spinner="dots", console=console):
+                    self._stop.wait()
+            except Exception:
+                # UI 提示失败不影响主流程
+                pass
+
+        self._thread = threading.Thread(target=_worker, daemon=True)
+        self._thread.start()
+        return self
+
+    def __exit__(self, exc_type, exc, tb) -> None:
+        self._stop.set()
+        if self._thread:
+            self._thread.join(timeout=0.2)
+
+
 class CodeAgent(Agent):
     """Jarvis系统的代码修改代理。
 
@@ -142,7 +210,7 @@ class CodeAgent(Agent):
         non_interactive: Optional[bool] = True,
         rule_names: Optional[str] = None,
         disable_review: bool = False,
-        review_max_iterations: int = 0,
+        review_max_iterations: int = 3,
         enable_task_list_manager: bool = True,
         optimize_system_prompt: bool = False,
         **kwargs: Any,
@@ -386,6 +454,11 @@ class CodeAgent(Agent):
         # 建立 CodeAgent 与 Agent 的关联，便于工具获取上下文管理器
         self._code_agent = self
 
+        # jca 场景标识（需求分类结果），用于交付落盘与短路判断
+        self._jca_scenario: str = "default"
+        # 只读验证缓存：避免同一 diff + 同一脚本反复触发重后处理
+        self._jca_verification_cache = VerificationCache()
+
         # 初始化上下文推荐器（需要父类 Agent 的模型实例）
         # 上下文推荐器用于根据用户输入智能推荐相关代码上下文
         try:
@@ -442,6 +515,20 @@ class CodeAgent(Agent):
                     continue
                 break
 
+            # 若此前已标记交付完成，则短路避免摘要压缩后重复执行（除非用户显式要求重跑）
+            try:
+                short = maybe_short_circuit_delivered_run(
+                    repo_root=self.root_dir,
+                    start_commit=getattr(self, "start_commit", None),
+                    user_input=user_input,
+                    scenario=getattr(self, "_jca_scenario", "default"),
+                )
+                if short:
+                    PrettyOutput.auto_print(short, lang="markdown")
+                    return short
+            except Exception:
+                pass
+
             # 需求分类：仅在首次运行时执行（未恢复会话）
             # 如果指定了恢复会话的参数，就不用对需求进行分类了（因为系统提示词早就有了）
             if self.first:
@@ -451,6 +538,7 @@ class CodeAgent(Agent):
                     console=console,
                 ):
                     scenario = classify_user_request(user_input)
+                self._jca_scenario = scenario
 
                 # 根据分类结果获取对应的系统提示词并更新
                 scenario_system_prompt = get_system_prompt(scenario)
@@ -477,6 +565,20 @@ class CodeAgent(Agent):
             self.git_manager.init_env(prefix, suffix, self)
             start_commit = get_latest_commit_hash()
             self.start_commit = start_commit
+
+            # init_env 可能更新 start_commit 语义：再次尝试短路（交付完成且未强制重跑）
+            try:
+                short2 = maybe_short_circuit_delivered_run(
+                    repo_root=self.root_dir,
+                    start_commit=self.start_commit,
+                    user_input=user_input,
+                    scenario=getattr(self, "_jca_scenario", "default"),
+                )
+                if short2:
+                    PrettyOutput.auto_print(short2, lang="markdown")
+                    return short2
+            except Exception:
+                pass
 
             # 将初始 commit 信息添加到 addon_prompt（安全回退点）
             if start_commit:
@@ -508,7 +610,8 @@ git reset --hard {start_commit}
             except Exception:
                 pass
             if not project_overview.strip():
-                project_overview = get_project_overview(self.root_dir)
+                with _DelayedStatus("📦 正在生成项目概况..."):
+                    project_overview = get_project_overview(self.root_dir)
 
             first_tip = """请严格遵循以下规范进行代码修改任务：
             1. 每次响应仅执行一步操作，先分析再修改，避免一步多改。
@@ -531,9 +634,10 @@ git reset --hard {start_commit}
                     self.model.set_suppress_output(True)
                 try:
                     # 生成上下文推荐（基于关键词和项目上下文）
-                    recommendation = self.context_recommender.recommend_context(
-                        user_input=user_input,
-                    )
+                    with _DelayedStatus("🧭 正在推荐相关上下文..."):
+                        recommendation = self.context_recommender.recommend_context(
+                            user_input=user_input,
+                        )
 
                     # 格式化推荐结果
                     context_recommendation_text = (
@@ -578,6 +682,36 @@ git reset --hard {start_commit}
             except RuntimeError as e:
                 PrettyOutput.auto_print(f"⚠️ 执行失败: {str(e)}")
                 return str(e)
+
+            # 结构化交付：解析 <JCA_DELIVERY> 并落盘 marker/delivery（用于摘要压缩后短路）
+            try:
+                if result_str:
+                    delivery_obj = parse_delivery_block(result_str)
+                    if delivery_obj and bool(delivery_obj.get("delivered")):
+                        fp = task_fingerprint(
+                            self.root_dir, self.start_commit, user_input
+                        )
+                        marker_path, delivery_path = marker_paths(self.root_dir, fp)
+                        write_marker(
+                            marker_path,
+                            fingerprint=fp,
+                            scenario=getattr(self, "_jca_scenario", "default"),
+                            delivered=True,
+                            artifact_type=str(delivery_obj.get("artifact_type") or "unknown"),
+                            artifact_refs=list(delivery_obj.get("artifact_refs") or []),
+                            evidence={
+                                "head": get_latest_commit_hash(),
+                            },
+                        )
+                        write_delivery_artifact(
+                            delivery_path,
+                            fingerprint=fp,
+                            scenario=getattr(self, "_jca_scenario", "default"),
+                            delivery_obj=delivery_obj,
+                            last_model_text=result_str,
+                        )
+            except Exception:
+                pass
 
             # 处理未提交的更改（在 review 之前先提交）
             self.git_manager.handle_uncommitted_changes()
@@ -658,7 +792,32 @@ git reset --hard {start_commit}
         # 仅当本轮实际执行的工具「可能修改工作区」时才做完整 diff 链路；
         # 解析失败时保持旧行为（执行完整链路），避免漏掉非常规格式的工具调用。
         tool_names = _extract_tool_names_from_model_response(current_response)
-        if tool_names and all(n in _CODE_AGENT_READ_ONLY_TOOLS for n in tool_names):
+        if tool_names and _tool_names_are_read_only_for_postprocess(
+            tool_names, current_response
+        ):
+            # 方案 B：若本轮仅只读验证（含只读 execute_script），则在「第二次及以后」跳过后续重处理；
+            # 第一次仍执行，避免漏掉必要的后处理（例如确实产生了工作区变更但工具名解析异常）。
+            try:
+                calls = extract_execute_script_calls_from_tool_response(
+                    current_response
+                )
+                if calls and all(
+                    is_execute_script_read_only(it, sc) for it, sc in calls
+                ):
+                    fp = task_fingerprint(
+                        self.root_dir,
+                        getattr(self, "start_commit", None),
+                        getattr(self, "_raw_user_input", "") or "",
+                    )
+                    dh = compute_diff_hash_for_cache()
+                    # 取第一个脚本作为键（多脚本同轮极少见）
+                    it0, sc0 = calls[0]
+                    if self._jca_verification_cache.record_and_should_skip_heavy_postprocess(
+                        fp, dh, it0, sc0
+                    ):
+                        return
+            except Exception:
+                pass
             return
 
         final_ret = ""
@@ -1286,9 +1445,12 @@ git reset --hard {start_commit}
         max_iterations = self.review_max_iterations
         # 如果 max_iterations 为 0，表示无限 review
         is_infinite = max_iterations == 0
+        last_review_diff_hash: Optional[str] = None
+        last_round_attempted_fix: bool = False
 
         while is_infinite or iteration < max_iterations:
             iteration += 1
+            attempted_fix_this_round = False
 
             # 每轮review开始前询问用户
             if not user_confirm(
@@ -1301,6 +1463,19 @@ git reset --hard {start_commit}
             # 获取从开始到当前的 git diff（提前检测是否有代码修改）
             git_diff = self._check_and_get_git_diff()
             if git_diff is None:
+                return
+            diff_hash = hashlib.sha256(
+                git_diff.encode("utf-8", errors="ignore")
+            ).hexdigest()
+            # 仅在“无限 review”模式下启用熔断：若上一轮已尝试修复，但 diff 仍完全不变，
+            # 说明可能陷入空转（修复工具未产生任何实际代码变更或被回滚）。
+            if is_infinite and last_round_attempted_fix and last_review_diff_hash == diff_hash:
+                PrettyOutput.auto_print(
+                    f"\n🛑 检测到代码审查可能陷入空转：第 {iteration - 1} 轮已尝试修复，但本轮 git diff 与上一轮完全一致。"
+                )
+                PrettyOutput.auto_print(
+                    "💡 建议：检查修复是否真正落盘/是否被回滚，或改用有限审查轮次（如 --review-max-iterations 3），或人工介入调整修复方向。"
+                )
                 return
 
             # 每轮审查开始前显示清晰的提示信息
@@ -1408,6 +1583,7 @@ git reset --hard {start_commit}
             fix_prompt += "\n请根据上述问题进行修复，确保代码正确实现用户需求。"
 
             PrettyOutput.auto_print("🔧 开始修复问题...")
+            attempted_fix_this_round = True
 
             # 调用 super().run() 进行修复
             try:
@@ -1428,6 +1604,8 @@ git reset --hard {start_commit}
                 modification_history += (
                     f"\n\n【第 {iteration} 轮修复总结】\n{fix_summary}"
                 )
+            last_review_diff_hash = diff_hash
+            last_round_attempted_fix = attempted_fix_this_round
 
 
 @app.command()
@@ -1481,9 +1659,9 @@ def cli(
         help="禁用代码审查：在代码修改完成后不进行自动代码审查",
     ),
     review_max_iterations: int = typer.Option(
-        0,
+        3,
         "--review-max-iterations",
-        help="代码审查最大迭代次数，达到上限后停止审查（默认0次，表示无限）",
+        help="代码审查最大迭代次数，达到上限后停止审查（默认3次；设为0表示无限）",
     ),
     worktree: bool = typer.Option(
         False,

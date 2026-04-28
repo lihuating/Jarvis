@@ -141,6 +141,7 @@ Jarvis/
 - 支持会话自动保存和恢复
 - 支持默认规则配置
 - 支持连续任务执行
+- 防重复执行治理（交付落盘/只读验证缓存/只读 `execute_script` 降噪的 A+B+C 组合，详见 [技术文档](docs/technical/implementation/jca_governance_abc.md)）
 
 **关键管理器**：
 - `BuildValidationManager`：构建验证

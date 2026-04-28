@@ -4,6 +4,12 @@
 
 ## 文档列表
 
+### CodeAgent（jca）治理相关
+
+- **[jca（CodeAgent）防重复执行治理（A+B+C）](./jca_governance_abc.md)**
+  - 说明交付落盘短路、只读验证缓存、只读 `execute_script` 降噪的组合方案
+  - 与上下文压缩/工具后处理的关系、排障清单
+
 ### 上下文压缩相关
 
 - **[上下文压缩策略文档](./context_compression_strategies.md)**

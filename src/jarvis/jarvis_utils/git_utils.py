@@ -1256,6 +1256,14 @@ def confirm_add_new_files() -> None:
         return
 
     _confirm_add_new_files_called = True
+    # 非交互模式下（A 策略）：只展示清单/提示，不进行任何交互与副作用操作（不修改 .gitignore）。
+    # 否则 user_confirm 可能自动返回默认值，导致误忽略或误继续。
+    try:
+        from jarvis.jarvis_utils.input import _is_non_interactive_for_current_agent
+
+        is_non_interactive = bool(_is_non_interactive_for_current_agent())
+    except Exception:
+        is_non_interactive = False
 
     def _get_added_lines() -> int:
         """获取新增代码行数"""
@@ -1327,6 +1335,12 @@ def confirm_add_new_files() -> None:
         if not _check_conditions(new_files, added_lines, binary_files):
             break
 
+        if is_non_interactive:
+            PrettyOutput.auto_print(
+                "ℹ️ 当前处于非交互模式：已仅展示新增/二进制/大规模变更清单，不会自动清理、忽略或提交文件。"
+            )
+            break
+
         if not user_confirm(
             "是否要添加这些变更（如果不需要请修改.gitignore文件以忽略不需要的文件）？",
             True,
@@ -1387,6 +1401,15 @@ def confirm_add_new_files() -> None:
 
             # 仅对未跟踪的新文件进行忽略（已跟踪文件无法通过 .gitignore 忽略）
             files_to_ignore = sorted(set(new_files))
+
+            if not user_confirm(
+                "是否将以上未跟踪文件写入 .gitignore 以忽略？（建议先确认确实不需要这些文件）",
+                False,
+            ):
+                PrettyOutput.auto_print(
+                    "ℹ️ 已跳过自动更新 .gitignore。请手动清理不需要的文件或维护 .gitignore 后再继续。"
+                )
+                break
 
             # 读取已存在的 .gitignore 以避免重复添加
             existing_lines: Set[str] = set()
