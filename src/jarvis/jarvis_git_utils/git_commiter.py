@@ -11,8 +11,6 @@ import typer
 import yaml
 from rich.console import Console
 from rich.panel import Panel
-from rich.status import Status
-
 from jarvis.jarvis_platform.registry import PlatformRegistry
 from jarvis.jarvis_utils.rich_box import HORIZONTAL_RULE_BOX
 from jarvis.jarvis_utils.config import get_git_commit_prompt
@@ -21,6 +19,7 @@ from jarvis.jarvis_utils.git_utils import find_git_root_and_cd
 from jarvis.jarvis_utils.git_utils import has_uncommitted_changes
 from jarvis.jarvis_utils.globals import console
 from jarvis.jarvis_utils.output import PrettyOutput
+from jarvis.jarvis_utils.output import status_spinner
 from jarvis.jarvis_utils.tag import ct
 from jarvis.jarvis_utils.tag import ot
 from jarvis.jarvis_utils.utils import decode_output
@@ -397,7 +396,7 @@ commit信息
                     )
 
                     # 使用 Status 显示进度
-                    with Status(
+                    with status_spinner(
                         f"✨ 正在使用{model_display_name}生成提交信息...",
                         spinner="dots",
                         console=console,
@@ -431,7 +430,7 @@ commit信息
                     )
 
                     # 使用 Status 显示进度
-                    with Status(
+                    with status_spinner(
                         f"✨ 正在使用{model_display_name}生成提交信息...",
                         spinner="dots",
                         console=console,
@@ -448,7 +447,7 @@ commit信息
                     )
 
                     # 使用 Status 显示进度
-                    with Status(
+                    with status_spinner(
                         f"✨ 正在使用{model_display_name}生成提交信息...",
                         spinner="dots",
                         console=console,
@@ -463,7 +462,7 @@ commit信息
                         and not commit_message
                     ):
                         # 使用 Status 显示进度
-                        with Status(
+                        with status_spinner(
                             f"✨ 正在使用{model_display_name}生成提交信息...",
                             spinner="dots",
                             console=console,
@@ -486,7 +485,7 @@ commit信息
                     """
 
                     # 使用 Status 显示进度
-                    with Status(
+                    with status_spinner(
                         f"✨ 正在使用{model_display_name}生成提交信息...",
                         spinner="dots",
                         console=console,

@@ -126,6 +126,21 @@ class ScriptTool:
         s = _OSC_PAYLOAD_ORPHAN.sub("", s)
         return s
 
+    @staticmethod
+    def _apply_no_pager_env(env: Dict[str, str]) -> Dict[str, str]:
+        """避免 git diff/log 等进入 pager（less）阻塞，需要用户按 q 才能退出。"""
+        try:
+            e = dict(env or {})
+        except Exception:
+            e = {}
+        # 通用 pager 控制
+        e.setdefault("PAGER", "cat")
+        e.setdefault("GIT_PAGER", "cat")
+        # 避免 less 的初始化与等待（即便仍被触发也尽量不中断）
+        e.setdefault("LESS", "FRX")
+        # 某些环境还会读取 LV（less wrapper），这里不强行覆盖
+        return e
+
     def _execute_on_windows_interactive_pty(
         self, argv: List[str], env: Dict[str, str], get_timeout: Any
     ) -> Dict[str, Any]:
@@ -287,7 +302,7 @@ class ScriptTool:
         import subprocess
 
         cmd = self._get_windows_command(interpreter, script_path, extension)
-        env = os.environ.copy()
+        env = self._apply_no_pager_env(os.environ.copy())
         if interpreter in ("python", "python2", "python3"):
             env["PYTHONIOENCODING"] = "utf-8"
         try:
@@ -441,6 +456,7 @@ class ScriptTool:
                     )
                 else:
                     # Unix/Linux: 使用 script 命令捕获 stdout 和 stderr
+                    env = self._apply_no_pager_env(os.environ.copy())
                     tee_command = (
                         f"script -q -c '{interpreter} {script_path}' {output_file}"
                     )
@@ -448,7 +464,7 @@ class ScriptTool:
                     if is_non_interactive():
                         proc = None
                         try:
-                            proc = subprocess.Popen(tee_command, shell=True)
+                            proc = subprocess.Popen(tee_command, shell=True, env=env)
                             try:
                                 proc.wait(timeout=get_script_execution_timeout())
                             except subprocess.TimeoutExpired:
@@ -501,7 +517,8 @@ class ScriptTool:
                                 except Exception:
                                     pass
                     else:
-                        os.system(tee_command)
+                        # 交互模式也使用 subprocess，以便注入 env（禁用 pager）
+                        subprocess.run(tee_command, shell=True, env=env, check=False)
 
                     try:
                         output = self.get_display_output(output_file)

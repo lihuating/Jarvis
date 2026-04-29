@@ -4,7 +4,6 @@ import json
 import os
 import subprocess
 from datetime import datetime
-from rich.status import Status
 from jarvis.jarvis_utils.globals import console
 from typing import TYPE_CHECKING
 from typing import Any
@@ -15,6 +14,7 @@ from typing import Tuple
 from typing import cast
 
 from jarvis.jarvis_utils.output import PrettyOutput
+from jarvis.jarvis_utils.output import status_spinner
 
 if TYPE_CHECKING:
     from jarvis.jarvis_platform.base import BasePlatform
@@ -87,7 +87,7 @@ class SessionManager:
 
             # 调用模型生成
             response = ""
-            with Status("正在生成会话名称...", console=console) as status:
+            with status_spinner("正在生成会话名称...", console=console) as status:
                 for chunk in cheap_model.chat(prompt):
                     response += chunk
                     status.update(f"正在生成会话名称... ({len(response)} 字符)")

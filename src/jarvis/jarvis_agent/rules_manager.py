@@ -6,9 +6,9 @@ import threading
 from pathlib import Path
 
 from jarvis.jarvis_utils.output import PrettyOutput
+from jarvis.jarvis_utils.output import status_spinner
 
 # -*- coding: utf-8 -*-
-from rich.status import Status
 from jarvis.jarvis_utils.globals import console
 from typing import Dict
 from typing import List
@@ -1344,8 +1344,7 @@ class RulesManager:
             # 调用模型，限制输出长度
             model.set_suppress_output(True)
 
-            # 使用 Status 显示进度
-            with Status(
+            with status_spinner(
                 "🔍 正在分析任务并选择规则...",
                 spinner="dots",
                 console=console,
@@ -1554,8 +1553,7 @@ class RulesManager:
 
             # 调用模型，限制输出长度
             model.set_suppress_output(True)
-            # 使用 Status 显示进度
-            with Status(
+            with status_spinner(
                 "🔍 正在过滤规则内容...",
                 spinner="dots",
                 console=console,

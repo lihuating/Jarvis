@@ -46,6 +46,78 @@ def is_auto_complete(response: str) -> bool:
         return "!!!COMPLETE!!!" in response
 
 
+def user_input_indicates_loop_complete(user_input: str) -> bool:
+    """
+    判断交互模式下用户的非空输入是否表示「结束当前任务、不再继续对话」。
+
+    背景：主循环提示「回车结束；输入文字继续」，但用户常自然输入「符合预期，结束」等，
+    若一律当作下一轮 prompt 会再次调用模型，形成无效循环。
+
+    规则：优先识别否定/继续意图；否则匹配明确的结束类短语（中英）。保守策略，避免
+    将「好的」「继续」等歧义短句误判为结束。
+    """
+    s = (user_input or "").strip()
+    if not s:
+        return False
+
+    negation_markers = (
+        "不要结束",
+        "别结束",
+        "暂不结束",
+        "还不能结束",
+        "不要完成",
+        "别完成",
+        "继续任务",
+        "还要继续",
+        "继续执行",
+        "继续评审",
+        "继续分析",
+    )
+    if any(m in s for m in negation_markers):
+        return False
+
+    completion_markers_cn = (
+        "结束本次任务",
+        "结束任务",
+        "完成任务",
+        "任务结束",
+        "到此为止",
+        "无需继续",
+        "没有新需求",
+        "确认结束",
+        "可以结束",
+        "任务完成",
+        "就先这样",
+        "不用继续",
+        "不需要继续",
+    )
+    if any(m in s for m in completion_markers_cn):
+        return True
+
+    if "符合预期" in s or "符合要求" in s:
+        return True
+
+    low = s.lower().strip()
+    low_core = low.rstrip(".!！").strip()
+    if low_core in {
+        "ok",
+        "done",
+        "q",
+        "quit",
+        "exit",
+        "bye",
+        "finished",
+        "complete",
+        "thats all",
+        "that's all",
+        "no more",
+        "finish",
+    }:
+        return True
+
+    return False
+
+
 def normalize_next_action(next_action: Any) -> str:
     """
     规范化下一步动作为字符串:
@@ -133,6 +205,7 @@ def fix_tool_call_with_llm(content: str, agent: Any, error_msg: str) -> Optional
 __all__ = [
     "join_prompts",
     "is_auto_complete",
+    "user_input_indicates_loop_complete",
     "normalize_next_action",
     "fix_tool_call_with_llm",
 ]

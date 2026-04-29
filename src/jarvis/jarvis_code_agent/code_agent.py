@@ -9,7 +9,7 @@ import threading
 import time
 
 from jarvis.jarvis_utils.output import PrettyOutput
-from rich.status import Status
+from jarvis.jarvis_utils.output import status_spinner
 from jarvis.jarvis_utils.globals import console
 
 # -*- coding: utf-8 -*-
@@ -180,19 +180,8 @@ class _DelayedStatus:
             if self._stop.wait(self._threshold_s):
                 return
             try:
-                # rich.Status 使用 Live 渲染，不走 PrettyOutput/emit_output；
-                # 为避免与全局“无输出提示”看门狗的 Live 冲突，这里暂停看门狗。
-                try:
-                    from jarvis.jarvis_utils.output import OutputWatchdogPaused
-                except Exception:
-                    OutputWatchdogPaused = None
-                if OutputWatchdogPaused:
-                    with OutputWatchdogPaused():
-                        with Status(self._message, spinner="dots", console=console):
-                            self._stop.wait()
-                else:
-                    with Status(self._message, spinner="dots", console=console):
-                        self._stop.wait()
+                with status_spinner(self._message, spinner="dots", console=console):
+                    self._stop.wait()
             except Exception:
                 # UI 提示失败不影响主流程
                 pass
@@ -543,7 +532,7 @@ class CodeAgent(Agent):
             # 需求分类：仅在首次运行时执行（未恢复会话）
             # 如果指定了恢复会话的参数，就不用对需求进行分类了（因为系统提示词早就有了）
             if self.first:
-                with Status(
+                with status_spinner(
                     "🔍 正在分析需求类型...",
                     spinner="dots",
                     console=console,

@@ -53,6 +53,7 @@ from jarvis.jarvis_agent.task_list import TaskListManager
 from jarvis.jarvis_agent.tool_executor import execute_tool_call
 from jarvis.jarvis_agent.user_interaction import UserInteractionHandler
 from jarvis.jarvis_agent.utils import join_prompts
+from jarvis.jarvis_agent.utils import user_input_indicates_loop_complete
 from jarvis.jarvis_memory_organizer.memory_organizer import MemoryOrganizer
 
 # jarvis_platform 相关
@@ -2361,6 +2362,10 @@ class Agent:
             if not processed_input or self._last_handler_returned:
                 # 输入已被处理器处理（如执行了 shell 命令），继续获取下一个输入
                 return LoopAction.CONTINUE
+
+            # 与「回车结束」并列：自然语言确认结束（避免把「符合预期，结束任务」当成新 prompt 再次调模型）
+            if user_input_indicates_loop_complete(processed_input):
+                return LoopAction.COMPLETE
 
             self.session.prompt = processed_input
             # 使用显式动作信号，保留返回类型注释以保持兼容

@@ -11,12 +11,14 @@
 
 from abc import ABC
 from abc import abstractmethod
+from contextlib import contextmanager
 from dataclasses import dataclass
 from enum import Enum
 import re
 from typing import Any
 from typing import Dict
 from typing import List
+from typing import Iterator
 from typing import Optional
 from typing import Tuple
 from datetime import datetime
@@ -94,6 +96,29 @@ class OutputWatchdogPaused:
 
     def __exit__(self, exc_type, exc, tb) -> None:
         resume_output_watchdog()
+
+
+@contextmanager
+def status_spinner(
+    message: str,
+    *,
+    spinner: str = "dots",
+    console: Optional[Any] = None,
+    **status_kwargs: Any,
+) -> Iterator[Any]:
+    """在终端显示 Rich ``Status`` 行期间暂停全局「无输出 → 思考中」看门狗。
+
+    ``Status`` 与看门狗都使用 ``Live`` 刷新同一行，长时间静默时会冲突；业务侧应优先用本函数，
+    而不是裸用 ``rich.status.Status`` 再手动包 ``OutputWatchdogPaused``。
+    """
+    from rich.status import Status
+
+    from jarvis.jarvis_utils.globals import console as default_console
+
+    cons = console if console is not None else default_console
+    with OutputWatchdogPaused():
+        with Status(message, spinner=spinner, console=cons, **status_kwargs) as st:
+            yield st
 
 
 def _is_watchdog_paused() -> bool:

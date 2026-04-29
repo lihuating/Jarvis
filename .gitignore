@@ -38,6 +38,7 @@ Thumbs.db
 .vscode/
 
 # Cursor / SpecStory（AI 会话导出目录，勿入库）
+.specstory
 .specstory/
 
 # Claude / AI 任务缓存与队列（勿入库）
