@@ -930,6 +930,26 @@ class PrettyOutput:
         emit_output(event)
 
     @staticmethod
+    def flush_after_nested_prompts() -> None:
+        """在内置命令串联多层 prompt_toolkit 后、再次打开多行输入前刷新终端缓冲。
+
+        避免 Rich 与 prompt_toolkit 交替控制终端时，上一条 PrettyOutput 与下一轮用户输入回显顺序错乱。
+        """
+        import sys
+
+        try:
+            sys.stdout.flush()
+            sys.stderr.flush()
+        except Exception:
+            pass
+        try:
+            out_f = getattr(console, "file", None)
+            if out_f is not None and hasattr(out_f, "flush"):
+                out_f.flush()
+        except Exception:
+            pass
+
+    @staticmethod
     def section(title: str, output_type: OutputType = OutputType.INFO) -> None:
         """
         在样式化面板中打印章节标题（通过事件 + Sink 机制分发）。

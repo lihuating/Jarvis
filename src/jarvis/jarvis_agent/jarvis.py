@@ -686,6 +686,7 @@ def _run_with_builtin_handler(
     """
     processed_input, should_skip_agent = builtin_input_handler(user_input, agent)
     if should_skip_agent:
+        PrettyOutput.flush_after_nested_prompts()
         # builtin handler 已处理完成，不需要调用 agent
         output_content_ref[0] = ""
         exit_code_ref[0] = 0

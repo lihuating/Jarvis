@@ -249,6 +249,12 @@ BUILTIN_COMMANDS = [
     ("Exit", "退出 Jarvis"),
     ("Commit", "提交代码"),
     ("ToolUsage", "工具使用说明"),
+    ("ToolList", "列出所有可用工具"),
+    ("ToolShow", "显示指定工具的参数/描述"),
+    ("ToolRun", "运行指定工具并回显结果"),
+    ("RuleShow", "显示指定规则内容"),
+    ("RuleActivate", "激活指定规则并更新上下文"),
+    ("RuleDeactivate", "停用指定规则并更新上下文"),
     ("ReloadConfig", "重新加载配置"),
     ("SaveSession", "保存当前会话"),
     ("RestoreSession", "恢复会话"),
@@ -266,6 +272,17 @@ BUILTIN_COMMANDS = [
         "在当前目录生成/更新 JVS_MEMORY.md（优先 cheap LLM，失败则 normal；均失败则报错）",
     ),
     ("BTW", "顺带一问：独立问答，不写入主会话上下文（jvs/jca 均支持）"),
+    ("MethodologyList", "列出所有方法论"),
+    ("MethodologyShow", "显示指定方法论内容"),
+    ("MethodologyUse", "根据需求加载并使用方法论"),
+    ("MethodologyAdd", "添加方法论"),
+    ("MethodologyUpdate", "更新方法论"),
+    ("MethodologyDelete", "删除方法论"),
+    ("TaskAnalysis", "手动触发任务分析（保存记忆/生成方法论）"),
+    ("MemoryTags", "列出所有记忆标签"),
+    ("MemorySave", "保存一条记忆"),
+    ("MemoryRetrieve", "检索记忆"),
+    ("MemoryClear", "清除记忆"),
 ]
 
 
@@ -900,16 +917,12 @@ class FileCompleter(Completer):
         replace_length = len(text_after) + 1
 
         all_completions = []
-        # '#'：内置补全菜单（tags/commands/rules + files）
+        # '#'：仅内置补全菜单（tags/commands），不显示规则与文件候选
         if current_sym != "@":
             all_completions.extend(
                 [(ot(tag), self._get_description(tag)) for tag in self.replace_map.keys()]
             )
             all_completions.extend([(ot(cmd), desc) for cmd, desc in BUILTIN_COMMANDS])
-            # 添加所有规则（包括内置规则、文件规则、YAML规则）到补全列表
-            rules = self._get_all_rules()
-            for rule_name, rule_desc in rules:
-                all_completions.append((f"<rule:{rule_name}>", rule_desc))
 
         # '@'：按当前工作目录逐级补全（不再一次性展开全仓库文件列表）
         if current_sym == "@":
@@ -930,9 +943,9 @@ class FileCompleter(Completer):
                 pass
             return
 
-        # File path candidates
-        try:
-            if current_sym == "@":
+        # File path candidates（仅在 '@' 下启用；避免 '#' 下把文件塞进候选）
+        if current_sym == "@":
+            try:
                 if self._git_files_cache is None:
                     if _GIT_ROOT_CACHE is None:
                         rr = _subprocess.run(
@@ -962,39 +975,9 @@ class FileCompleter(Completer):
                 paths: List[str] = self._git_files_cache or []
                 if not paths:
                     paths = _get_all_files(exclude_git=True)
-            else:
-                if self._all_files_cache is None:
-                    files: List[str] = []
-                    base_dir = _get_completion_root()
-                    for root, dirs, fnames in _os.walk(base_dir, followlinks=False):
-                        # Explicitly include hidden directories (starting with .), but exclude .git, __pycache__, .pytest_cache, etc.
-                        dirs[:] = [
-                            d
-                            for d in dirs
-                            if d
-                            not in {
-                                ".git",
-                                "__pycache__",
-                                ".pytest_cache",
-                                ".mypy_cache",
-                                ".ruff_cache",
-                                "node_modules",
-                                "target",
-                            }
-                        ]
-                        for name in fnames:
-                            files.append(
-                                _os.path.relpath(_os.path.join(root, name), base_dir)
-                            )
-                            if len(files) > self._max_walk_files:
-                                break
-                        if len(files) > self._max_walk_files:
-                            break
-                    self._all_files_cache = files
-                paths = self._all_files_cache or []
-            all_completions.extend([(path, "File") for path in paths])
-        except Exception:
-            pass
+                all_completions.extend([(path, "File") for path in paths])
+            except Exception:
+                pass
 
         if token:
             # Check if token contains only punctuation/special characters

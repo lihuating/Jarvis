@@ -506,6 +506,7 @@ class CodeAgent(Agent):
             while True:
                 processed_input, is_handled = builtin_input_handler(user_input, self)
                 if is_handled:
+                    PrettyOutput.flush_after_nested_prompts()
                     # 内置命令已处理完成，直接返回
                     user_input = get_multiline_input("请输入你的需求（Ctrl+C 退出）")
                     if not user_input:

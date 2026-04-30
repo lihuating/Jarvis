@@ -1191,26 +1191,6 @@ class RulesManager:
             is_loaded = is_loaded or rule_name in self.loaded_rules
             rules_info.append((rule_name, preview, is_loaded, file_path))
 
-        # 处理项目单个规则文件 .jarvis/rule
-        project_rule_path = os.path.join(self.root_dir, ".jarvis", "rule")
-        if os.path.exists(project_rule_path):
-            preview = self.get_rule_preview("project_rule")
-            # 检查状态：使用新的状态管理机制
-            is_loaded = "project_rule" in self._active_rules
-            # 向后兼容：也检查旧的 loaded_rules
-            is_loaded = is_loaded or "project_rule" in self.loaded_rules
-            rules_info.append(("project_rule", preview, is_loaded, project_rule_path))
-
-        # 处理全局单个规则文件 ~/.jarvis/rule
-        global_rule_path = os.path.join(get_data_dir(), "rule")
-        if os.path.exists(global_rule_path):
-            preview = self.get_rule_preview("global_rule")
-            # 检查状态：使用新的状态管理机制
-            is_loaded = "global_rule" in self._active_rules
-            # 向后兼容：也检查旧的 loaded_rules
-            is_loaded = is_loaded or "global_rule" in self.loaded_rules
-            rules_info.append(("global_rule", preview, is_loaded, global_rule_path))
-
         # 处理内置规则索引文件 builtin/rules/rule.md
         try:
             from jarvis.jarvis_utils.template_utils import _get_builtin_dir

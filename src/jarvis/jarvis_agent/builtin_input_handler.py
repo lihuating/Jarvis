@@ -7,6 +7,8 @@ from typing import List
 from typing import Optional
 from typing import Tuple
 
+import yaml
+
 from jarvis.jarvis_utils.config import get_replace_map
 from jarvis.jarvis_utils.output import PrettyOutput
 from rich.table import Table
@@ -351,16 +353,21 @@ def builtin_input_handler(user_input: str, agent_: Any) -> Tuple[str, bool]:
             )
             try:
                 if is_interactive_shell:
-                    result = subprocess.run(
-                        cmd,
-                        shell=True,
-                        stdin=None,
-                        stdout=None,
-                        stderr=None,
-                        cwd=os.getcwd(),
-                    )
-                    if result.returncode != 0:
-                        PrettyOutput.auto_print(f"[退出码 {result.returncode}]")
+                    # 进入交互式 shell 期间会长时间“无 Jarvis 输出”，全局看门狗会误刷“思考中...”
+                    # 且 Live 刷新会污染用户的交互终端，因此在该作用域内暂停看门狗。
+                    from jarvis.jarvis_utils.output import OutputWatchdogPaused
+
+                    with OutputWatchdogPaused():
+                        result = subprocess.run(
+                            cmd,
+                            shell=True,
+                            stdin=None,
+                            stdout=None,
+                            stderr=None,
+                            cwd=os.getcwd(),
+                        )
+                        if result.returncode != 0:
+                            PrettyOutput.auto_print(f"[退出码 {result.returncode}]")
                 else:
                     result = subprocess.run(
                         cmd,
@@ -457,6 +464,159 @@ def builtin_input_handler(user_input: str, agent_: Any) -> Tuple[str, bool]:
         elif tag == "ToolUsage":
             agent.set_addon_prompt(agent.get_tool_usage_prompt())
             continue
+        elif tag == "ToolList":
+            # 执行型：直接列出可用工具（来自当前 agent 的 ToolRegistry）
+            try:
+                tool_registry = agent.get_tool_registry()
+            except Exception:
+                tool_registry = None
+
+            if not tool_registry:
+                PrettyOutput.auto_print("⚠️ 未找到可用的工具注册表（ToolRegistry）。")
+                return "", True
+
+            try:
+                tools = tool_registry.get_all_tools()
+            except Exception as e:
+                PrettyOutput.auto_print(f"⚠️ 获取工具列表失败: {e}")
+                return "", True
+
+            PrettyOutput.auto_print(f"📋 共 {len(tools)} 个工具：")
+            max_show = 50
+            for t in tools[:max_show]:
+                name = t.get("name", "")
+                desc = t.get("description", "") or ""
+                PrettyOutput.auto_print(f"  - {name}: {desc}")
+            if len(tools) > max_show:
+                PrettyOutput.auto_print(f"  ... 还有 {len(tools) - max_show} 个未显示")
+
+            return "", True
+
+        elif tag == "ToolShow":
+            # 执行型：展示指定工具的参数 schema 与描述
+            from jarvis.jarvis_utils.input import get_single_line_input
+
+            q_inline = modified_input.replace("'<ToolShow>'", "").strip()
+            tool_name = q_inline or get_single_line_input(
+                "🔧 ToolShow：请输入工具名（空回车取消） > ", default=""
+            ).strip()
+            if not tool_name:
+                PrettyOutput.auto_print("（已取消 ToolShow）")
+                return "", True
+
+            tool_registry = agent.get_tool_registry()
+            if not tool_registry:
+                PrettyOutput.auto_print("⚠️ 未找到可用的工具注册表（ToolRegistry）。")
+                return "", True
+
+            try:
+                tool = tool_registry.get_tool(tool_name)
+            except Exception:
+                tool = None
+
+            if not tool:
+                PrettyOutput.auto_print(
+                    f"⚠️ 找不到工具 {tool_name}。"
+                )
+                return "", True
+
+            PrettyOutput.auto_print(f"🧩 工具: {tool_name}")
+            PrettyOutput.auto_print(f"  描述: {getattr(tool, 'description', '')}")
+            try:
+                import json
+
+                PrettyOutput.auto_print(
+                    "  参数 schema：\n"
+                    + json.dumps(
+                        getattr(tool, "parameters", {}),
+                        ensure_ascii=False,
+                        indent=2,
+                    )
+                )
+            except Exception:
+                # schema 展示失败则不阻断
+                pass
+            return "", True
+
+        elif tag == "ToolRun":
+            # 执行型：用户指定工具与参数，直接在当前进程里跑该工具并回显输出
+            from jarvis.jarvis_utils.input import get_multiline_input
+            from jarvis.jarvis_utils.input import get_single_line_input
+            from jarvis.jarvis_utils.input import user_confirm
+
+            from jarvis.jarvis_utils.jsonnet_compat import loads as json_loads
+
+            q_inline = modified_input.replace("'<ToolRun>'", "").strip()
+            tool_name = q_inline or get_single_line_input(
+                "🔧 ToolRun：请输入工具名（空回车取消） > ", default=""
+            ).strip()
+            if not tool_name:
+                PrettyOutput.auto_print("（已取消 ToolRun）")
+                return "", True
+
+            tool_registry = agent.get_tool_registry()
+            if not tool_registry:
+                PrettyOutput.auto_print("⚠️ 未找到可用的工具注册表（ToolRegistry）。")
+                return "", True
+
+            try:
+                tool = tool_registry.get_tool(tool_name)
+            except Exception:
+                tool = None
+
+            if not tool:
+                PrettyOutput.auto_print(f"⚠️ 找不到工具 {tool_name}。")
+                return "", True
+
+            # 参数输入：空行代表 {}
+            raw_args = get_multiline_input(
+                "🔧 ToolRun：请输入参数 JSON（空行={}，Ctrl+C取消）",
+                print_on_empty=False,
+            )
+            if not raw_args.strip():
+                args = {}
+            else:
+                try:
+                    parsed = json_loads(raw_args)
+                    args = parsed if isinstance(parsed, dict) else {}
+                except Exception as e:
+                    PrettyOutput.auto_print(f"⚠️ 参数 JSON 解析失败: {e}")
+                    return "", True
+
+            # 执行前确认（与 tool_executor 的 execute_tool_confirm 语义保持一致）
+            if getattr(agent, "execute_tool_confirm", False) and not user_confirm(
+                f"需要执行工具 {tool_name} 确认？", True
+            ):
+                PrettyOutput.auto_print("（已取消工具执行）")
+                return "", True
+
+            PrettyOutput.auto_print(f"🔧 正在执行工具: {tool_name}")
+            try:
+                result = tool_registry.execute_tool(
+                    tool_name, args, agent=agent
+                )
+            except Exception as e:
+                PrettyOutput.auto_print(f"❌ 工具执行失败: {e}")
+                return "", True
+
+            # 回显结果（尽量按 stdout/stderr 结构）
+            if isinstance(result, dict):
+                success = result.get("success", None)
+                if success is True:
+                    PrettyOutput.auto_print("✅ 工具执行成功")
+                elif success is False:
+                    PrettyOutput.auto_print("❌ 工具执行失败")
+                stdout = result.get("stdout", "")
+                stderr = result.get("stderr", "")
+                if stdout:
+                    PrettyOutput.auto_print(stdout)
+                if stderr:
+                    PrettyOutput.auto_print(stderr)
+                PrettyOutput.auto_print(f"📌 返回值字段: {', '.join(result.keys())}")
+            else:
+                PrettyOutput.auto_print(f"📌 返回值: {result}")
+
+            return "", True
         elif tag == "JarvisHelp":
             # Jarvis 使用答疑：本轮强制优先从本仓库源码/文档检索答案（一次性 addon_prompt）
             from jarvis.jarvis_utils.input import get_multiline_input
@@ -663,6 +823,616 @@ def builtin_input_handler(user_input: str, agent_: Any) -> Tuple[str, bool]:
                 console.print(table)
                 console.print(f"\n总计: {len(rules_info)} 个规则\n")
 
+            return "", True
+        elif tag == "RuleShow":
+            # 执行型：显示指定规则的内容（包含文件路径注释）
+            from jarvis.jarvis_utils.input import get_single_line_input
+
+            q_inline = modified_input.replace("'<RuleShow>'", "").strip()
+            rule_name = q_inline or get_single_line_input(
+                "📚 RuleShow：请输入规则名（空回车取消） > ", default=""
+            ).strip()
+            if not rule_name:
+                PrettyOutput.auto_print("（已取消 RuleShow）")
+                return "", True
+
+            rule_content = _get_rule_content(rule_name)
+            if not rule_content:
+                PrettyOutput.auto_print(f"⚠️ 未找到规则: {rule_name}")
+                return "", True
+
+            # 防止单条规则过长刷屏：展示前 2000 字符
+            max_chars = 2000
+            show = rule_content if len(rule_content) <= max_chars else rule_content[:max_chars] + "\n...（内容已截断）"
+            PrettyOutput.auto_print(f"🧩 规则内容预览: {rule_name}")
+            PrettyOutput.auto_print(show)
+            return "", True
+
+        elif tag == "RuleActivate":
+            # 执行型：激活指定规则并把激活结果更新到 addon_prompt（用于下一次模型调用）
+            from jarvis.jarvis_utils.input import get_single_line_input
+
+            q_inline = modified_input.replace("'<RuleActivate>'", "").strip()
+            rule_name = q_inline or get_single_line_input(
+                "📚 RuleActivate：请输入规则名（空回车取消） > ", default=""
+            ).strip()
+            if not rule_name:
+                PrettyOutput.auto_print("（已取消 RuleActivate）")
+                return "", True
+
+            try:
+                activated = agent.rules_manager.activate_rule(rule_name)
+            except Exception as e:
+                PrettyOutput.auto_print(f"⚠️ 激活规则失败: {e}")
+                return "", True
+
+            if not activated:
+                PrettyOutput.auto_print(f"⚠️ 未找到或激活失败: {rule_name}")
+                return "", True
+
+            active_rules_content = agent.rules_manager.get_active_rules_content()
+            if active_rules_content:
+                agent.set_addon_prompt(
+                    f"<rules>\n{active_rules_content}\n</rules>"
+                )
+            PrettyOutput.auto_print(f"✅ 已激活规则: {rule_name}")
+            return "", True
+
+        elif tag == "RuleDeactivate":
+            # 执行型：停用指定规则并更新 addon_prompt
+            from jarvis.jarvis_utils.input import get_single_line_input
+
+            q_inline = modified_input.replace("'<RuleDeactivate>'", "").strip()
+            rule_name = q_inline or get_single_line_input(
+                "📚 RuleDeactivate：请输入规则名（空回车取消） > ", default=""
+            ).strip()
+            if not rule_name:
+                PrettyOutput.auto_print("（已取消 RuleDeactivate）")
+                return "", True
+
+            try:
+                deactivated = agent.rules_manager.deactivate_rule(rule_name)
+            except Exception as e:
+                PrettyOutput.auto_print(f"⚠️ 停用规则失败: {e}")
+                return "", True
+
+            if not deactivated:
+                PrettyOutput.auto_print(f"⚠️ 规则未激活或停用失败: {rule_name}")
+                return "", True
+
+            active_rules_content = agent.rules_manager.get_active_rules_content()
+            if active_rules_content:
+                agent.set_addon_prompt(
+                    f"<rules>\n{active_rules_content}\n</rules>"
+                )
+            else:
+                agent.set_addon_prompt("")
+            PrettyOutput.auto_print(f"✅ 已停用规则: {rule_name}")
+            return "", True
+
+        elif tag == "MethodologyList":
+            # 执行型：列出所有可用方法论的 problem_type
+            try:
+                from jarvis.jarvis_utils.methodology import _load_all_methodologies
+            except Exception as e:
+                PrettyOutput.auto_print(f"⚠️ 导入方法论列表失败: {e}")
+                return "", True
+
+            methodologies = _load_all_methodologies()
+            if not methodologies:
+                PrettyOutput.auto_print("📚 未找到任何方法论")
+                return "", True
+
+            max_show = 60
+            PrettyOutput.auto_print(f"📚 共 {len(methodologies)} 个方法论：")
+            for i, (problem_type, _) in enumerate(methodologies[:max_show], 1):
+                PrettyOutput.auto_print(f"  {i}. {problem_type}")
+            if len(methodologies) > max_show:
+                PrettyOutput.auto_print(f"  ... 还有 {len(methodologies) - max_show} 个未显示")
+            return "", True
+
+        elif tag == "MethodologyShow":
+            # 执行型：展示指定方法论（按 problem_type 匹配）
+            from jarvis.jarvis_utils.input import get_single_line_input
+            import json
+
+            q_inline = modified_input.replace("'<MethodologyShow>'", "").strip()
+            problem_type = q_inline or get_single_line_input(
+                "🧭 MethodologyShow：请输入 problem_type（空回车取消） > ", default=""
+            ).strip()
+            if not problem_type:
+                PrettyOutput.auto_print("（已取消 MethodologyShow）")
+                return "", True
+
+            try:
+                from jarvis.jarvis_utils.methodology import _load_all_methodologies
+            except Exception as e:
+                PrettyOutput.auto_print(f"⚠️ 加载方法论失败: {e}")
+                return "", True
+
+            content = ""
+            for pt, c in _load_all_methodologies():
+                if pt == problem_type:
+                    content = c
+                    break
+
+            if not content:
+                PrettyOutput.auto_print(f"⚠️ 未找到方法论: {problem_type}")
+                return "", True
+
+            max_chars = 2000
+            show = content if len(content) <= max_chars else content[:max_chars] + "\n...（内容已截断）"
+            PrettyOutput.auto_print(f"🧩 方法论内容预览: {problem_type}")
+            PrettyOutput.auto_print(show)
+            return "", True
+
+        elif tag == "MethodologyUse":
+            # 执行型：根据用户输入调用 load_methodology，并把结果写入 addon_prompt
+            from jarvis.jarvis_utils.input import get_multiline_input
+
+            q_inline = modified_input.replace("'<MethodologyUse>'", "").strip()
+            user_text = q_inline or get_multiline_input(
+                "🧭 MethodologyUse：输入需求/问题描述（空行取消，Ctrl+C取消）",
+                print_on_empty=True,
+            ).strip()
+            if not user_text:
+                PrettyOutput.auto_print("（已取消 MethodologyUse）")
+                return "", True
+
+            try:
+                from jarvis.jarvis_utils.methodology import load_methodology
+            except Exception as e:
+                PrettyOutput.auto_print(f"⚠️ 导入 load_methodology 失败: {e}")
+                return "", True
+
+            tool_registry = agent.get_tool_registry()
+            if not tool_registry:
+                PrettyOutput.auto_print("⚠️ 未找到可用 ToolRegistry，无法加载方法论")
+                return "", True
+
+            result = load_methodology(user_text, tool_registry)
+            if not result:
+                PrettyOutput.auto_print("⚠️ 未加载到相关方法论")
+                return "", True
+
+            agent.set_addon_prompt(
+                "以下是历史类似问题的执行经验，可参考：\n" + result
+            )
+            PrettyOutput.auto_print("✅ 方法论已加载到下一次模型调用的上下文")
+            return "", True
+
+        elif tag == "MethodologyAdd" or tag == "MethodologyUpdate":
+            # 执行型：添加/更新方法论（调用 methodology 工具）
+            from jarvis.jarvis_utils.input import get_single_line_input
+            from jarvis.jarvis_utils.input import user_confirm
+
+            operation = "add" if tag == "MethodologyAdd" else "update"
+
+            q_inline = modified_input.replace(f"'<{tag}>'", "").strip()
+            if q_inline:
+                PrettyOutput.auto_print("（提示）请用交互输入方式填写参数；行内额外文本将被忽略。")
+
+            problem_type = get_single_line_input(
+                "🧩 请输入 problem_type（空回车取消） > ", default=""
+            ).strip()
+            if not problem_type:
+                PrettyOutput.auto_print(f"（已取消 {tag}）")
+                return "", True
+
+            scope = get_single_line_input(
+                "🧩 请输入 scope：global/project（空回车默认 global） > ", default="global"
+            ).strip().lower()
+            if not scope:
+                scope = "global"
+            if scope not in ("global", "project"):
+                PrettyOutput.auto_print("⚠️ scope 必须是 global 或 project")
+                return "", True
+
+            content = ""
+            if tag == "MethodologyAdd":
+                # 自动从当前会话中提取“成功达成目标”的方法论内容（无需人工输入）
+                try:
+                    from pathlib import Path
+
+                    from jarvis.jarvis_utils.dialogue_recorder import get_global_recorder
+                    from jarvis.jarvis_utils.output import status_spinner
+
+                    def _build_session_excerpt(max_records: int = 240) -> str:
+                        recorder = get_global_recorder()
+                        session_path = recorder.get_session_file_path()
+                        sid = Path(session_path).stem
+                        records = recorder.read_session(sid) or []
+                        records = records[-max_records:]
+
+                        lines = []
+                        for r in records:
+                            role = str(r.get("role", "") or "").strip() or "unknown"
+                            txt = str(r.get("content", "") or "").strip()
+                            if not txt:
+                                continue
+                            # 单条过长会压爆 token：保守截断
+                            if len(txt) > 1200:
+                                txt = txt[:1200] + "…"
+                            lines.append(f"[{role}] {txt}")
+                        return "\n".join(lines).strip()
+
+                    excerpt = _build_session_excerpt()
+                    if not excerpt:
+                        # 兜底：从模型 messages 抽取
+                        try:
+                            msgs = agent.model.get_messages() or []
+                            tail = msgs[-60:]
+                            lines = []
+                            for m in tail:
+                                role = str(m.get("role", "") or "").strip() or "unknown"
+                                txt = str(m.get("content", "") or "").strip()
+                                if not txt:
+                                    continue
+                                if len(txt) > 1200:
+                                    txt = txt[:1200] + "…"
+                                lines.append(f"[{role}] {txt}")
+                            excerpt = "\n".join(lines).strip()
+                        except Exception:
+                            excerpt = ""
+
+                    prompt = "\n".join(
+                        [
+                            "你是 Jarvis 的“方法论提取器”。",
+                            "目标：从下面的会话片段中，自动总结出【可复用】的方法论，用于以后遇到同类问题时复现成功路径。",
+                            "",
+                            "要求：",
+                            "- 只总结“成功达成目标/解决问题”的步骤与关键决策；避免无关闲聊。",
+                            "- 输出中文 Markdown，结构固定为：",
+                            "  1) ## 问题重述",
+                            "  2) ## 解决流程（编号步骤，尽量可执行）",
+                            "  3) ## 注意事项（坑点/边界/超时/权限/输出缓冲等）",
+                            "  4) ## 示例（可选：给出关键命令/工具调用的示例参数）",
+                            "- 不要输出任何敏感信息（token/key/账号密码/IP 可保留网段或打码）。",
+                            "- 不要提及“我作为模型/我调用了工具”等元叙事。",
+                            "",
+                            f"问题类型（problem_type）：{problem_type}",
+                            "",
+                            "会话片段：",
+                            "```",
+                            excerpt if excerpt else "（会话片段为空）",
+                            "```",
+                        ]
+                    )
+
+                    with status_spinner("🧠 正在自动总结方法论内容...", spinner="dots"):
+                        # 使用当前模型生成（会话内一次性总结）
+                        content = agent.model.chat_until_success(prompt, max_output=6000)  # type: ignore[attr-defined]
+                    content = (content or "").strip()
+                except Exception as e:
+                    PrettyOutput.auto_print(f"⚠️ 自动总结方法论失败：{e}")
+                    content = ""
+            else:
+                # MethodologyUpdate 仍保留人工输入（更新场景通常需要明确内容）
+                from jarvis.jarvis_utils.input import get_multiline_input
+
+                content = get_multiline_input(
+                    f"🧩 请输入方法论内容（{tag}；空行取消，Ctrl+C取消）",
+                    print_on_empty=True,
+                ).strip()
+
+            if not content:
+                PrettyOutput.auto_print(f"（已取消 {tag}）")
+                return "", True
+
+            tool_registry = agent.get_tool_registry()
+            if not tool_registry:
+                PrettyOutput.auto_print("⚠️ 未找到可用 ToolRegistry")
+                return "", True
+
+            args = {
+                "operation": operation,
+                "problem_type": problem_type,
+                "content": content,
+                "scope": scope,
+            }
+
+            if getattr(agent, "execute_tool_confirm", False) and not user_confirm(
+                f"需要执行方法论{operation}确认？", True
+            ):
+                PrettyOutput.auto_print("（已取消方法论写入）")
+                return "", True
+
+            result = tool_registry.execute_tool("methodology", args, agent=agent)
+            if isinstance(result, dict):
+                PrettyOutput.auto_print(
+                    f"✅ 方法论{operation}完成"
+                    + (f"：{result.get('stdout','')}" if result.get("stdout") else "")
+                )
+                if result.get("stderr"):
+                    PrettyOutput.auto_print(result.get("stderr"))
+            else:
+                PrettyOutput.auto_print(f"📌 返回值: {result}")
+            return "", True
+
+        elif tag == "TaskAnalysis":
+            # 执行型：手动触发任务分析（保存记忆、生成方法论等）
+            from jarvis.jarvis_utils.input import get_single_line_input
+            from jarvis.jarvis_utils.output import OutputWatchdogPaused
+
+            q_inline = modified_input.replace(f"'<{tag}>'", "").strip()
+            if q_inline:
+                PrettyOutput.auto_print("（提示）请用交互输入方式填写参数；行内额外文本将被忽略。")
+
+            feedback = get_single_line_input(
+                "📊 可选：你对本次任务完成是否满意？（直接回车跳过） > ", default=""
+            ).strip()
+            try:
+                # analysis 内部可能会使用 Live/面板输出；外层再包一层 Status(Live) 会冲突。
+                # 这里仅暂停“无输出→思考中...”看门狗，避免在分析期间刷屏污染输出。
+                PrettyOutput.auto_print("📊 正在执行任务分析（保存记忆/生成方法论）...")
+                with OutputWatchdogPaused():
+                    agent.analysis(feedback)
+                PrettyOutput.auto_print("✅ 任务分析已完成")
+            except Exception as e:
+                PrettyOutput.auto_print(f"⚠️ 任务分析失败: {e}")
+            return "", True
+
+        elif tag == "MethodologyDelete":
+            # 执行型：删除方法论（调用 methodology 工具）
+            from jarvis.jarvis_utils.input import get_single_line_input
+            from jarvis.jarvis_utils.input import user_confirm
+
+            problem_type = get_single_line_input(
+                "🧩 请输入要删除的 problem_type（空回车取消） > ", default=""
+            ).strip()
+            if not problem_type:
+                PrettyOutput.auto_print("（已取消 MethodologyDelete）")
+                return "", True
+
+            scope = get_single_line_input(
+                "🧩 请输入 scope：global/project（空回车默认 global） > ", default="global"
+            ).strip().lower()
+            if not scope:
+                scope = "global"
+            if scope not in ("global", "project"):
+                PrettyOutput.auto_print("⚠️ scope 必须是 global 或 project")
+                return "", True
+
+            tool_registry = agent.get_tool_registry()
+            if not tool_registry:
+                PrettyOutput.auto_print("⚠️ 未找到可用 ToolRegistry")
+                return "", True
+
+            args = {
+                "operation": "delete",
+                "problem_type": problem_type,
+                "scope": scope,
+            }
+
+            if getattr(agent, "execute_tool_confirm", False) and not user_confirm(
+                "需要执行方法论删除确认？", True
+            ):
+                PrettyOutput.auto_print("（已取消方法论删除）")
+                return "", True
+
+            result = tool_registry.execute_tool("methodology", args, agent=agent)
+            if isinstance(result, dict):
+                PrettyOutput.auto_print(
+                    "✅ 方法论删除完成"
+                    + (f"：{result.get('stdout','')}" if result.get("stdout") else "")
+                )
+                if result.get("stderr"):
+                    PrettyOutput.auto_print(result.get("stderr"))
+            else:
+                PrettyOutput.auto_print(f"📌 返回值: {result}")
+            return "", True
+        elif tag == "MemoryTags":
+            # 执行型：展示所有已出现的记忆标签（从 short/project/global 归集）
+            try:
+                from jarvis.jarvis_utils.globals import get_all_memory_tags
+            except Exception as e:
+                PrettyOutput.auto_print(f"⚠️ 获取内存标签失败: {e}")
+                return "", True
+
+            tags_by_type = get_all_memory_tags() or {}
+            if not tags_by_type:
+                PrettyOutput.auto_print("📭 未找到任何记忆标签")
+                return "", True
+
+            PrettyOutput.auto_print("🏷️ 记忆标签概览：")
+            # 稳定输出顺序
+            for m_type in ["short_term", "project_long_term", "global_long_term"]:
+                t_list = tags_by_type.get(m_type, []) or []
+                if not t_list:
+                    continue
+                show_max = 60
+                preview = ", ".join(t_list[:show_max])
+                if len(t_list) > show_max:
+                    preview += f", ...（共 {len(t_list)} 个）"
+                PrettyOutput.auto_print(f"  - {m_type}: {preview}")
+            return "", True
+
+        elif tag == "MemorySave":
+            # 执行型：保存一条记忆（调用 memory 工具 action=save）
+            from jarvis.jarvis_utils.input import get_single_line_input
+            from jarvis.jarvis_utils.input import get_multiline_input
+            from jarvis.jarvis_utils.input import user_confirm
+
+            memory_type = get_single_line_input(
+                "🧠 MemorySave：memory_type=project_long_term/global_long_term/short_term > ",
+                default="short_term",
+            ).strip()
+            if not memory_type:
+                PrettyOutput.auto_print("（已取消 MemorySave）")
+                return "", True
+            if memory_type not in (
+                "project_long_term",
+                "global_long_term",
+                "short_term",
+            ):
+                PrettyOutput.auto_print(
+                    "⚠️ memory_type 必须是 project_long_term/global_long_term/short_term"
+                )
+                return "", True
+
+            tags_str = get_single_line_input(
+                "🏷️ tags：用逗号分隔（可空，回车跳过） > ", default=""
+            ).strip()
+            tags = [t.strip() for t in tags_str.split(",") if t.strip()] if tags_str else []
+
+            content = get_multiline_input(
+                "🧠 MemorySave：请输入要保存的内容（空行取消，Ctrl+C取消）",
+                print_on_empty=True,
+            ).strip()
+            if not content:
+                PrettyOutput.auto_print("（已取消 MemorySave）")
+                return "", True
+
+            # 执行前确认（save 不一定不可逆，但仍建议遵循 execute_tool_confirm）
+            if getattr(agent, "execute_tool_confirm", False) and not user_confirm(
+                f"需要执行 memory.save（memory_type={memory_type}）确认？", True
+            ):
+                PrettyOutput.auto_print("（已取消记忆保存）")
+                return "", True
+
+            tool_registry = agent.get_tool_registry()
+            if not tool_registry:
+                PrettyOutput.auto_print("⚠️ 未找到可用的 ToolRegistry")
+                return "", True
+
+            args = {
+                "action": "save",
+                "memories": [
+                    {"memory_type": memory_type, "tags": tags, "content": content}
+                ],
+            }
+            result = tool_registry.execute_tool("memory", args, agent=agent)
+            if isinstance(result, dict):
+                if result.get("success") is True:
+                    PrettyOutput.auto_print("✅ 记忆保存成功")
+                if result.get("stdout"):
+                    PrettyOutput.auto_print(result["stdout"])
+                if result.get("stderr"):
+                    PrettyOutput.auto_print(result["stderr"])
+            else:
+                PrettyOutput.auto_print(f"📌 返回值: {result}")
+            return "", True
+
+        elif tag == "MemoryRetrieve":
+            # 执行型：检索记忆（调用 memory 工具 action=retrieve）
+            from jarvis.jarvis_utils.input import get_single_line_input
+            from jarvis.jarvis_utils.input import get_multiline_input
+
+            memory_types_str = get_single_line_input(
+                "🔎 MemoryRetrieve：memory_types（逗号分隔，可选 all/project_long_term/global_long_term/short_term） > ",
+                default="all",
+            ).strip()
+            if not memory_types_str:
+                PrettyOutput.auto_print("（已取消 MemoryRetrieve）")
+                return "", True
+            memory_types = [t.strip() for t in memory_types_str.split(",") if t.strip()]
+
+            tags_str = get_single_line_input(
+                "🏷️ tags 过滤（可空，逗号分隔） > ", default=""
+            ).strip()
+            tags = [t.strip() for t in tags_str.split(",") if t.strip()] if tags_str else []
+
+            limit_str = get_single_line_input(
+                "📌 limit（返回最大数量） > ", default="5"
+            ).strip()
+            try:
+                limit = int(limit_str) if limit_str else 5
+            except Exception:
+                limit = 5
+            if limit <= 0:
+                limit = 5
+
+            smart_str = get_single_line_input(
+                "🧠 是否启用 smart_search？y/N > ", default="n"
+            ).strip().lower()
+            smart_search = smart_str in ("y", "yes", "true", "1")
+            query = ""
+            if smart_search:
+                query = get_multiline_input(
+                    "🧠 smart_search=true：请输入语义检索 query（空行取消）",
+                    print_on_empty=True,
+                ).strip()
+                if not query:
+                    PrettyOutput.auto_print("（已取消 MemoryRetrieve）")
+                    return "", True
+
+            tool_registry = agent.get_tool_registry()
+            if not tool_registry:
+                PrettyOutput.auto_print("⚠️ 未找到可用的 ToolRegistry")
+                return "", True
+
+            args = {
+                "action": "retrieve",
+                "memory_types": memory_types,
+                "tags": tags,
+                "limit": limit,
+                "smart_search": smart_search,
+                "query": query,
+            }
+            result = tool_registry.execute_tool("memory", args, agent=agent)
+            if isinstance(result, dict):
+                if result.get("success") is True:
+                    PrettyOutput.auto_print("✅ 记忆检索完成")
+                if result.get("stdout"):
+                    PrettyOutput.auto_print(result["stdout"])
+                if result.get("stderr"):
+                    PrettyOutput.auto_print(result["stderr"])
+            else:
+                PrettyOutput.auto_print(f"📌 返回值: {result}")
+            return "", True
+
+        elif tag == "MemoryClear":
+            # 执行型：清除记忆（调用 memory 工具 action=clear，且必须 confirm=true）
+            from jarvis.jarvis_utils.input import get_single_line_input
+            from jarvis.jarvis_utils.input import user_confirm
+
+            memory_types_str = get_single_line_input(
+                "🧹 MemoryClear：memory_types（逗号分隔，支持 all/xxx，空回车取消） > ",
+                default="all",
+            ).strip()
+            if not memory_types_str:
+                PrettyOutput.auto_print("（已取消 MemoryClear）")
+                return "", True
+            memory_types = [t.strip() for t in memory_types_str.split(",") if t.strip()]
+
+            tags_str = get_single_line_input(
+                "🏷️ tags 过滤（可空，逗号分隔） > ", default=""
+            ).strip()
+            tags = [t.strip() for t in tags_str.split(",") if t.strip()] if tags_str else []
+
+            ids_str = get_single_line_input(
+                "🆔 memory_ids（可空，逗号分隔，若不填将按 tags/memory_types 过滤） > ",
+                default="",
+            ).strip()
+            memory_ids = [t.strip() for t in ids_str.split(",") if t.strip()] if ids_str else []
+
+            # 让用户显式确认不可逆操作
+            if not user_confirm("⚠️ 该操作不可恢复，确认清除？", default=False):
+                PrettyOutput.auto_print("（已取消 MemoryClear）")
+                return "", True
+
+            tool_registry = agent.get_tool_registry()
+            if not tool_registry:
+                PrettyOutput.auto_print("⚠️ 未找到可用的 ToolRegistry")
+                return "", True
+
+            args = {
+                "action": "clear",
+                "memory_types": memory_types,
+                "tags": tags,
+                "memory_ids": memory_ids,
+                "confirm": True,
+            }
+            result = tool_registry.execute_tool("memory", args, agent=agent)
+            if isinstance(result, dict):
+                if result.get("success") is True:
+                    PrettyOutput.auto_print("✅ 记忆清除完成")
+                if result.get("stdout"):
+                    PrettyOutput.auto_print(result["stdout"])
+                if result.get("stderr"):
+                    PrettyOutput.auto_print(result["stderr"])
+            else:
+                PrettyOutput.auto_print(f"📌 返回值: {result}")
             return "", True
         elif tag == "SaveSession":
             # 检查是否允许使用SaveSession命令

@@ -4,6 +4,11 @@
 负责处理Agent的记忆保存和检索功能
 """
 
+# TODO[JARVIS-memory-compare-claude]: 与 claude_code（Session Memory、memdir 类型体系、manifest 召回等）
+# 对比后的可选优化，当前不实施，仅作工程内跟踪；后续实现时可检索本标签。
+# 方向概要：可选会话级滚动摘要；记忆类型/提示与「勿记可从仓库推导内容」对齐；两阶段召回（清单再精读）；
+# 可选团队记忆路径与权限；MemoryTool 的 memory_id 生成与 smart_search 语义能力等。
+
 from typing import Any
 
 from jarvis.jarvis_agent.events import BEFORE_HISTORY_CLEAR
