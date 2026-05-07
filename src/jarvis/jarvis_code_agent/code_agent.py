@@ -6,7 +6,6 @@
 import hashlib
 import os
 import threading
-import time
 
 from jarvis.jarvis_utils.output import PrettyOutput
 from jarvis.jarvis_utils.output import status_spinner
@@ -40,7 +39,6 @@ from jarvis.jarvis_code_agent.code_agent_delivery import (
     marker_paths,
     parse_delivery_block,
     task_fingerprint,
-    user_requests_force_rerun,
     write_delivery_artifact,
     write_marker,
 )
@@ -76,7 +74,6 @@ from jarvis.jarvis_utils.input import user_confirm
 from jarvis.jarvis_utils.tmux_wrapper import check_and_launch_tmux
 from jarvis.jarvis_utils.tmux_wrapper import dispatch_to_tmux_window
 
-from jarvis.jarvis_utils.output import OutputType  # 保留用于语法高亮
 from jarvis.jarvis_utils.utils import _acquire_single_instance_lock
 from jarvis.jarvis_utils.utils import init_env
 from jarvis.jarvis_utils.tag import ot
@@ -246,6 +243,9 @@ class CodeAgent(Agent):
 
         # 节流：避免在同一份 diff 被多次处理后重复做影响分析
         self._last_impact_analysis_diff_hash: Optional[str] = None
+        # 熔断：连续构建/静态检查失败计数，防止模型反复修复同一问题陷入死循环
+        self._consecutive_check_failures: int = 0
+        self._last_check_failure_hash: Optional[str] = None
 
     def get_user_origin_input(self) -> str:
         """获取原始用户输入（CodeAgent重写）
@@ -979,6 +979,9 @@ git reset --hard {start_commit}
                 impact_report, self, final_ret
             )
 
+            # 熔断检测：记录检查前的 addon_prompt，用于判断本轮检查是否注入了修复提示
+            addon_before_checks = getattr(self.session, "addon_prompt", None) or ""
+
             # 构建验证
             config = BuildValidationConfig(self.root_dir)
             (build_validation_result, final_ret) = (
@@ -991,6 +994,37 @@ git reset --hard {start_commit}
             final_ret = self.lint_manager.handle_static_analysis(
                 modified_files, build_validation_result, config, self, final_ret
             )
+
+            # 熔断：如果本轮检查注入了修复提示（addon_prompt 变化），计算连续失败次数
+            addon_after_checks = getattr(self.session, "addon_prompt", None) or ""
+            check_injected_fix_prompt = addon_after_checks != addon_before_checks
+            if check_injected_fix_prompt:
+                # 用 diff 文件列表的 hash 判断是否为同一组文件的同一类错误
+                files_hash = hashlib.sha256(
+                    ",".join(sorted(modified_files)).encode()
+                ).hexdigest()
+                if files_hash == self._last_check_failure_hash:
+                    self._consecutive_check_failures += 1
+                else:
+                    self._consecutive_check_failures = 1
+                    self._last_check_failure_hash = files_hash
+                # 连续失败超过阈值时，清除修复提示并发出警告，阻止死循环
+                max_consecutive = 3
+                if self._consecutive_check_failures > max_consecutive:
+                    PrettyOutput.auto_print(
+                        f"🛑 熔断：构建/静态检查已连续失败 {self._consecutive_check_failures} 次，"
+                        "停止自动修复以避免死循环。"
+                    )
+                    PrettyOutput.auto_print(
+                        "💡 建议：手动检查上述文件，或使用 git stash/reset 回退到安全状态。"
+                    )
+                    # 恢复到检查前的 addon_prompt，丢弃本轮注入的修复提示
+                    self.set_addon_prompt(addon_before_checks)
+                    self._consecutive_check_failures = 0
+            else:
+                # 检查通过，重置计数器
+                self._consecutive_check_failures = 0
+                self._last_check_failure_hash = None
         else:
             return
         # 用户确认最终结果

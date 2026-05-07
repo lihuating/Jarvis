@@ -1835,9 +1835,18 @@ def switch_model_group(agent: Any) -> bool:
     Console().print(table)
 
     # 用户选择（循环直到输入有效）
+    # 等待用户输入属于"正常静默"，暂停无输出看门狗，避免误触发思考中提示
+    try:
+        from jarvis.jarvis_utils.output import OutputWatchdogPaused
+    except Exception:
+        OutputWatchdogPaused = None
     PrettyOutput.auto_print("")
     while True:
-        choice = input("请输入模型组编号 (0 取消): ").strip()
+        if OutputWatchdogPaused:
+            with OutputWatchdogPaused():
+                choice = input("请输入模型组编号 (0 取消): ").strip()
+        else:
+            choice = input("请输入模型组编号 (0 取消): ").strip()
 
         if choice == "0":
             PrettyOutput.auto_print("🚫 已取消切换")

@@ -20,6 +20,12 @@ from jarvis.jarvis_utils.config import get_data_dir, read_text_file
 
 # Lint工具对应的自动修复命令映射（lint工具名 -> 自动修复命令模板）
 # 用于在发现lint告警时，提示用户可用的自动修复工具
+#
+# 注意：mypy 默认未启用（误报多且无自动修复），如需启用请在项目级
+# .jarvis/lint_tools.yaml 中添加，例如：
+#   ".py":
+#     - "ruff check {file_path}"
+#     - "mypy {file_path}"
 LINT_AUTO_FIX_COMMANDS: Dict[str, List[str]] = {
     # Python
     "ruff": ["ruff check --fix {file_path}", "ruff format {file_path}"],
@@ -76,23 +82,18 @@ LINT_COMMAND_TEMPLATES_BY_FILE: Dict[str, List[str]] = {
     # Python
     ".py": [
         "ruff check {file_path}",
-        "mypy {file_path}",
     ],
     ".pyw": [
         "ruff check {file_path}",
-        "mypy {file_path}",
     ],
     ".pyi": [
         "ruff check {file_path}",
-        "mypy {file_path}",
     ],
     ".pyx": [
         "ruff check {file_path}",
-        "mypy {file_path}",
     ],
     ".pxd": [
         "ruff check {file_path}",
-        "mypy {file_path}",
     ],
     # Rust
     ".rs": ["cargo clippy --message-format=short"],
