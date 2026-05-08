@@ -1,0 +1,14 @@
+{
+  "id": "20260507_094805_367573",
+  "type": "global_long_term",
+  "tags": [
+    "9200基站",
+    "黑匣子",
+    "RMP_OSS",
+    "故障定位",
+    "iFlow知识库"
+  ],
+  "content": "## RMP OSS 黑匣子解析\n\n黑匣子记录在保留内存中，包含以下记录条目：\nSys Exception、Oss Restart、Bsp Reboot、Kernel Exception、Vmp Reboot、BTS Save、Bsp Init Fail、Dead Loop、Cpu Status、Ub Used Info、Task Create/Delete、Proc Create/Delete、Proc Schedu、Oss Malloc Fail、Get Ub Fail、Comm Broken/Setup、Sys Init Point、Mem Detector、Mem Overwrite、Free UB Fail、Task Deadlock、Rudp Break、OSS_Malloc Overwriten、CPU Version No、CPU Use Rate High、DSP Power Down Report、HR Record、Kern Events、MsgTimeOver1s、Send Msg Fail、Syn Msg Moni、Tcp Big Msg Fail、WATCHDOGREC、File Errno Moni、Timer HighLev/LowLev Err Info、MALLOC_STATS、Int Monitor、Task Proc Swtch、Set Clock Rec、RngBuf excced Rec、LastMin FeedDog、Send PsMsg Fail、SemaphoreV fail、long jump、append queue fail、Task MsgQ Full、Long time msg record、app state、signal、Netlink Msg、reboot cb func、RebootType、sysInfo、TimeInfo、infoSnap、memExh、netInfo、CPUStatusInfo 等",
+  "created_at": "2026-05-07T09:48:05.367605",
+  "updated_at": "2026-05-07T09:48:05.367611"
+}

@@ -1,0 +1,237 @@
+# yaml-language-server: $schema=../../../media/vdc/code/Jarvis/src/jarvis/jarvis_data/config_schema.json
+mcp:
+  - name: zhipu_web_search_prime
+    type: streamable
+    base_url: https://open.bigmodel.cn/api/mcp/web_search_prime/
+    endpoint_path: mcp
+    auth_token: b06e94950e134918bc4df1922cc9b5f3.1xWaECTD4kcPTy0z
+    timeout: [10, 60]
+ENV: {}
+git_commit_prompt: ''
+llms:
+  openai_iflow_rome_30ba3b:
+    platform: openai
+    model: iflow-rome-30ba3b
+    max_input_token_count: 128000
+    llm_config:
+      openai_api_key: sk-7359ef74fc8bb66d5a70896af5342f2e
+      openai_api_base: https://apis.iflow.cn/v1
+  openai_qwen3_coder_plus:
+    platform: openai
+    model: qwen3-coder-plus
+    max_input_token_count: 1000000
+    llm_config:
+      openai_api_key: sk-7359ef74fc8bb66d5a70896af5342f2e
+      openai_api_base: https://apis.iflow.cn/v1
+  openai_qwen3_max:
+    platform: openai
+    model: qwen3-max
+    max_input_token_count: 128000
+    llm_config:
+      openai_api_key: sk-7359ef74fc8bb66d5a70896af5342f2e
+      openai_api_base: https://apis.iflow.cn/v1
+  openai_qwen3_vl_plus:
+    platform: openai
+    model: qwen3-vl-plus
+    max_input_token_count: 128000
+    llm_config:
+      openai_api_key: sk-7359ef74fc8bb66d5a70896af5342f2e
+      openai_api_base: https://apis.iflow.cn/v1
+  openai_qwen3_max_preview:
+    platform: openai
+    model: qwen3-max-preview
+    max_input_token_count: 128000
+    llm_config:
+      openai_api_key: sk-7359ef74fc8bb66d5a70896af5342f2e
+      openai_api_base: https://apis.iflow.cn/v1
+  openai_kimi_k2_0905:
+    platform: openai
+    model: kimi-k2-0905
+    max_input_token_count: 128000
+    llm_config:
+      openai_api_key: sk-7359ef74fc8bb66d5a70896af5342f2e
+      openai_api_base: https://apis.iflow.cn/v1
+  openai_glm_4_6:
+    platform: openai
+    model: glm-4.6
+    max_input_token_count: 128000
+    llm_config:
+      openai_api_key: b06e94950e134918bc4df1922cc9b5f3.1xWaECTD4kcPTy0z
+      openai_api_base: https://open.bigmodel.cn/api/coding/paas/v4
+  openai_kimi_k2:
+    platform: openai
+    model: kimi-k2
+    max_input_token_count: 128000
+    llm_config:
+      openai_api_key: sk-7359ef74fc8bb66d5a70896af5342f2e
+      openai_api_base: https://apis.iflow.cn/v1
+  openai_deepseek_v3_2:
+    platform: openai
+    model: deepseek-v3.2
+    max_input_token_count: 128000
+    llm_config:
+      openai_api_key: sk-7359ef74fc8bb66d5a70896af5342f2e
+      openai_api_base: https://apis.iflow.cn/v1
+  openai_deepseek_r1:
+    platform: openai
+    model: deepseek-r1
+    max_input_token_count: 128000
+    llm_config:
+      openai_api_key: sk-7359ef74fc8bb66d5a70896af5342f2e
+      openai_api_base: https://apis.iflow.cn/v1
+  openai_deepseek_v3:
+    platform: openai
+    model: deepseek-v3
+    max_input_token_count: 128000
+    llm_config:
+      openai_api_key: sk-7359ef74fc8bb66d5a70896af5342f2e
+      openai_api_base: https://apis.iflow.cn/v1
+  openai_qwen3_32b:
+    platform: openai
+    model: qwen3-32b
+    max_input_token_count: 128000
+    llm_config:
+      openai_api_key: sk-7359ef74fc8bb66d5a70896af5342f2e
+      openai_api_base: https://apis.iflow.cn/v1
+  openai_qwen3_235b_a22b_thinking_2507:
+    platform: openai
+    model: qwen3-235b-a22b-thinking-2507
+    max_input_token_count: 128000
+    llm_config:
+      openai_api_key: sk-7359ef74fc8bb66d5a70896af5342f2e
+      openai_api_base: https://apis.iflow.cn/v1
+  openai_qwen3_235b_a22b_instruct:
+    platform: openai
+    model: qwen3-235b-a22b-instruct
+    max_input_token_count: 128000
+    llm_config:
+      openai_api_key: sk-7359ef74fc8bb66d5a70896af5342f2e
+      openai_api_base: https://apis.iflow.cn/v1
+  openai_qwen3_235b:
+    platform: openai
+    model: qwen3-235b
+    max_input_token_count: 128000
+    llm_config:
+      openai_api_key: sk-7359ef74fc8bb66d5a70896af5342f2e
+      openai_api_base: https://apis.iflow.cn/v1
+  openai_glm_4_5:
+    platform: openai
+    model: glm-4.5
+    max_input_token_count: 128000
+    llm_config:
+      openai_api_key: b06e94950e134918bc4df1922cc9b5f3.1xWaECTD4kcPTy0z
+      openai_api_base: https://open.bigmodel.cn/api/coding/paas/v4
+  openai_glm_4_5_air:
+    platform: openai
+    model: glm-4.5-air
+    max_input_token_count: 128000
+    llm_config:
+      openai_api_key: b06e94950e134918bc4df1922cc9b5f3.1xWaECTD4kcPTy0z
+      openai_api_base: https://open.bigmodel.cn/api/coding/paas/v4
+  openai_glm_4_7:
+    platform: openai
+    model: glm-4.7
+    max_input_token_count: 200000
+    llm_config:
+      openai_api_key: b06e94950e134918bc4df1922cc9b5f3.1xWaECTD4kcPTy0z
+      openai_api_base: https://open.bigmodel.cn/api/coding/paas/v4
+  openai_glm_5_1:
+    platform: openai
+    model: GLM-5.1
+    max_input_token_count: 200000
+    llm_config:
+      openai_api_key: b06e94950e134918bc4df1922cc9b5f3.1xWaECTD4kcPTy0z
+      openai_api_base: https://open.bigmodel.cn/api/coding/paas/v4
+  openai_glm_zte:
+    platform: openai
+    model: R-T-3-cao2-glm-5.1-g1
+    max_input_token_count: 200000
+    llm_config:
+      openai_api_key: aione_7780ce46d9582ef4_57fa9a7b87e1876655ca5064c4b6e2d4
+      openai_api_base: https://wxai-sap.zx.zte.com.cn/v1
+  openai_minimax_zte:
+    platform: openai
+    model: R-T-2-sun1-MiniMax-M2.7-highspeed
+    max_input_token_count: 200000
+    llm_config:
+      openai_api_key: aione_e7adf3074bda893e_bcbef3b256168a23fb9a45c2fcbee0fc
+      openai_api_base: https://wxai-sap.zx.zte.com.cn/v1
+embeddings: {}
+rerankers: {}
+llm_group: minimax_zte
+llm_groups:
+  qwen3_coder_plus:
+    normal_llm: openai_qwen3_coder_plus
+    cheap_llm: ''
+    smart_llm: ''
+  glm_4_7:
+    normal_llm: openai_glm_5_1
+    cheap_llm: openai_glm_4_5_air
+    smart_llm: openai_glm_5_1
+  glm_zte:
+    normal_llm: openai_glm_zte
+    cheap_llm: openai_glm_zte
+    smart_llm: openai_glm_zte
+  minimax_zte:
+    normal_llm: openai_minimax_zte
+    cheap_llm: openai_minimax_zte
+    smart_llm: openai_minimax_zte
+execute_tool_confirm: false
+tool_filter_threshold: 30
+script_execution_timeout: 300
+confirm_before_apply_patch: false
+data_path: ~/.jarvis
+pretty_output: true
+use_methodology: true
+use_analysis: true
+tool_load_dirs: []
+methodology_dirs: []
+agent_definition_dirs: []
+multi_agent_dirs: []
+roles_dirs: []
+rules_load_dirs: []
+after_tool_call_cb_dirs: []
+central_methodology_repo: ''
+central_tool_repo: ''
+central_rules_repo: ''
+print_prompt: false
+print_error_traceback: false
+enable_tmux: false
+enable_static_analysis: false
+enable_build_validation: false
+build_validation_timeout: 30
+enable_impact_analysis: false
+force_save_memory: false
+enable_git_jca_switch: true
+enable_startup_config_selector: true
+immediate_abort: true
+save_session_history: false
+skip_predefined_tasks: false
+addon_prompt_threshold: 1024
+enable_intent_recognition: true
+enable_memory_organizer: false
+tool_group: ''
+tool_groups: []
+rag_group: ''
+rag_groups:
+  text:
+    embedding: default-text-embedding
+    reranker: default-text-reranker
+    use_bm25: true
+    use_rerank: true
+  code:
+    embedding: default-code-embedding
+    reranker: ''
+replace_map: {}
+SHELL: /bin/bash
+conversation_turn_threshold: 200
+diff_visualization_mode: side_by_side
+diff_show_line_numbers: true
+diff_large_file_threshold: 300
+# CodeAgent（jca）在工具调用后是否在终端展示“整段工作区 git diff”。
+# 关闭后仍会执行影响分析、构建验证与静态分析；仅减少终端输出噪音。
+code_agent_show_git_diff: false
+enable_llm_auto_model_selection: true
+enable_llm_auto_smart_model_selection: false   # 默认：不自动用 smart；要大任务自动 smart 时改为 true
+llm_auto_model_small_task_token_threshold: 800
+llm_auto_model_large_task_token_threshold: 4000

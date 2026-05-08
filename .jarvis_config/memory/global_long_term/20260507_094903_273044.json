@@ -1,0 +1,13 @@
+{
+  "id": "20260507_094903_273044",
+  "type": "global_long_term",
+  "tags": [
+    "并行SubAgent",
+    "TODO",
+    "Jarvis增强",
+    "iFlow知识库"
+  ],
+  "content": "## 并行 SubAgent 功能 TODO\n\n### 功能目标：\n- 支持并行执行多个子任务，每个可使用不同模型档位（cheap/normal/smart）\n- 提高任务执行效率，降低成本\n- 兼容现有 SubAgentTool\n\n### 实现方案（方案三：增强现有 SubAgentTool）：\n- 新增参数：model_tier（指定模型档位）\n- 新增参数：parallel_group（并行组标识）\n- 实现并行执行机制（ThreadPoolExecutor 或 asyncio）\n\n### 技术要点：\n1. 修改 SubAgentTool 的 parameters 定义\n2. 在 execute 方法中支持创建不同档位的模型实例\n3. 实现并行执行管理器\n4. 添加超时和错误处理\n\n### 文件位置：\n- 主要修改：src/jarvis/jarvis_agent/sub_agent.py\n- 可能新增：src/jarvis/jarvis_agent/parallel_executor.py\n\n### 优先级：中等",
+  "created_at": "2026-05-07T09:49:03.273085",
+  "updated_at": "2026-05-07T09:49:03.273091"
+}

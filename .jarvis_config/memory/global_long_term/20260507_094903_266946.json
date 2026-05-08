@@ -1,0 +1,14 @@
+{
+  "id": "20260507_094903_266946",
+  "type": "global_long_term",
+  "tags": [
+    "9200基站",
+    "故障定位",
+    "RMP_OSS",
+    "调试技巧",
+    "iFlow知识库"
+  ],
+  "content": "## RMP OSS 故障定位思路和技巧\n\n### 故障定位通用流程：\n1. 确认故障现象（类型、影响范围、发生时间、复现规律）\n2. 收集日志信息\n3. 分析黑匣子\n4. 定位根因\n5. 验证方案\n6. 制定改进措施\n\n### 单板复位故障定位：\n- 检查顺序：BBX_Simplelog.cur -> 黑匣子.bbx.gz -> Kernel-XX.log.gz -> 串口日志\n- 常见原因：死锁、死循环、内存越界、看门狗超时、硬件异常、电源问题\n\n### 容器复位故障定位：\n- 检查顺序：exit.txt-0X.gz -> 黑匣子.bbx.gz -> coredump文件 -> 容器启动log -> dockerd.log\n- 常见原因：段错误、断言失败、未捕获异常、资源耗尽、依赖服务异常\n\n### CPU冲高故障定位：\n- 检查顺序：OssCoreCpu.log(单核) -> OssCpu.log(整体) -> OssCpuLoop.log(循环) -> 线程调度日志\n- 常见原因：死循环、频繁中断、大量计算任务、锁竞争、消息队列堆积\n\n### 内存泄漏故障定位：\n- 检查顺序：MemLeak_XXXXXX.log -> ProcMemInfo.log -> oomMoni_XXXXXX.log -> mem.log\n- 常见原因：内存未释放、循环引用、缓冲区溢出、大内存申请、内存碎片\n\n### RUDP断链故障定位：\n- 检查顺序：rudp断链告警 -> IPMI日志 -> 保活消息日志 -> 通信日志 -> 网络状态\n- 常见原因：网络故障、对端异常、保活超时、资源耗尽、配置错误\n\n### 调试技巧：\n- gdb调试：gdb <executable> <coredump>，bt 查看调用栈\n- 线程分析：PrintThreadSummary 查看所有线程信息\n- 消息队列：OSS_DbgShowQ 查看调度任务邮箱深度\n- CPU监控：OpenCPUPrn2S 打开 2s CPU 利用率打印，CloseCPUPrn 关闭\n- 内存监控：查看 /proc/meminfo、/proc/mm/processinfo\n- 日志过滤：使用 grep、awk 等工具\n\n### 预防措施：\n- 加强代码审查（内存管理、并发控制、异常处理）\n- 完善单元测试\n- 增加关键路径日志\n- 建立完善的监控告警机制\n- 定期巡检",
+  "created_at": "2026-05-07T09:49:03.266979",
+  "updated_at": "2026-05-07T09:49:03.266985"
+}

@@ -1,0 +1,15 @@
+{
+  "id": "20260507_094805_372303",
+  "type": "global_long_term",
+  "tags": [
+    "9200基站",
+    "通信配置",
+    "热补丁",
+    "RMP_OSS",
+    "RUDP",
+    "iFlow知识库"
+  ],
+  "content": "## RMP OSS 通信配置、热补丁和RUDP\n\n### 通信配置：\nCOMM_INNER_ROUTE(内部路由)、COMM_485_ROUTE(485路由)、COMM_IPMI_ROUTE(IPMI路由)、COMM_INTERCORE_ROUTE(核间路由)、COMM_AGENT_ROUTE(Agent路由)、COMM_5G_AGENT(5G Agent)、COMM_RUDP_ROUTE(RUDP路由)、COMM_PS_ROUTE(PS路由)\n\n### CPP LINK 流程：\n主控 LTE 容器是 server，基带板 APP 进程是 client，主控动态注册 ITRAN_FOR_SDR_MULTICAST pubsub 能力并设置 3s 循环定时器广播 chip 信息，基带板上电后请求主控 IP 和 MAC 并设置 5s 循环定时器\n\n### 热补丁：\n- 查看激活信息：OSS_DbgShowAllUnifiedPatchstat 和 OSS_DbgShowAllUnifiedPatchInfo\n- 手动打热补丁：OSS_LoadAndActUnifiedPatch(\"/oss_ci.exe\", PATCH_FILE, \"v1\")\n- 方案包括 so 热补丁和 o 文件热补丁\n\n### RUDP 通信：\n- 应用场景：RRU 板内 CPU MCS 之间、RRU 和 BBU 之间 FDD 制式、BBU 内 LTE 容器和 VBP 从核之间\n- RRU 和 SMM 心跳保活：RRU 单向上报 RUDP 保活报文给主控 BUM 容器，18S 未收到会上报 rudp 断链\n- RUDP 保活消息流程：RRU APP 进程根据 BUM 容器逻辑地址构造保活消息发到 VBP，VBP 上 RUDP 收包线程解析后通过 pubsub 发送消息到 BUM 容器",
+  "created_at": "2026-05-07T09:48:05.372328",
+  "updated_at": "2026-05-07T09:48:05.372333"
+}

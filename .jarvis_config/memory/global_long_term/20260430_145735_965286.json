@@ -1,0 +1,13 @@
+{
+  "id": "20260430_145735_965286",
+  "type": "global_long_term",
+  "tags": [
+    "9200基站",
+    "CPU分析",
+    "DPDK",
+    "线程模型"
+  ],
+  "content": "## 9200基站CPU线程模型知识\n\n### DPDK线程\n- lcore-worker-N: DPDK数据面轮询线程, 绑定独占CPU核, 100%占用是正常设计行为\n- lcore-slave: DPDK从线程, 同为轮询模式\n- rte-worker: DPDK rte轮询线程\n- 这些线程在oss_moni.c中注册为THREAD_IGNORE_DEAD, 排除死循环检测\n\n### 日志格式\n- CPU率单位: ‰(千分比), 1000‰ = 100%\n- 采样格式: Tid ThreadName CpuId RunTimes(ns) CpuRate(permillage)\n- HWM.EXE是主进程\n\n### 异常判断经验\n- CPU率超过1000‰(100%)通常是统计异常(多实例累加)\n- 采样次数极少(1-2次)的任务通常是偶发激活, 不具参考性\n- 采样次数远超总轮次说明该任务名对应多个线程实例",
+  "created_at": "2026-04-30T14:57:35.965317",
+  "updated_at": "2026-04-30T14:57:35.965334"
+}

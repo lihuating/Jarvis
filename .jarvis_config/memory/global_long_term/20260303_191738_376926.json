@@ -1,0 +1,14 @@
+{
+  "id": "20260303_191738_376926",
+  "type": "global_long_term",
+  "tags": [
+    "天气API",
+    "Open-Meteo",
+    "技术知识",
+    "API使用",
+    "天气查询"
+  ],
+  "content": "Open-Meteo天气API使用方法：\n1. API URL格式：https://api.open-meteo.com/v1/forecast?latitude={纬度}&longitude={经度}&daily=temperature_2m_max,temperature_2m_min,weathercode,wind_speed_10m_max&timezone=Asia%2FShanghai\n2. 西安坐标：纬度34.3416，经度108.9398\n3. 参数说明：\n   - daily=temperature_2m_max,temperature_2m_min：最高和最低气温\n   - daily=weathercode：天气代码（WMO代码）\n   - daily=wind_speed_10m_max：最大风速\n   - timezone：时区设置（Asia/Shanghai）\n4. 返回格式：JSON，包含latitude, longitude, daily数据等\n5. 天气代码：3表示多云，61表示小雨，80表示阵雨，45表示雾\n6. 优点：免费、无需API密钥、支持多语言、数据准确",
+  "created_at": "2026-03-03T19:17:38.376952",
+  "updated_at": "2026-03-03T19:17:38.376957"
+}

@@ -1,0 +1,13 @@
+{
+  "id": "20260507_141757_698251",
+  "type": "global_long_term",
+  "tags": [
+    "iFlow知识库",
+    "迁移完成",
+    "Jarvis规则",
+    "Jarvis工具"
+  ],
+  "content": "## iFlow 知识迁移到 Jarvis - 已完成\n\n### 已创建的规则文件（~/.jarvis/rules/）：\n1. `code_review.md` (184行) - 代码审查规则，来自 iFlow code-reviewer skill\n2. `base_station_9200.md` (141行) - 9200基站操作规范，来自 iFlow 9200_operate_pub skill\n3. `xlsx_operation.md` (198行) - Excel操作规则，来自 iFlow xlsx skill\n4. `pptx_operation.md` (265行) - PPT操作规则，融合 SKILL.md + html2pptx.md + ooxml.md\n\n### 已创建的工具文件（~/.jarvis/tools/）：\n5. `base_station_9200.py` (403行) - 9200基站综合操作工具，支持远程命令执行、文件下载、日志采集、系统信息查询\n\n### 已保存的全局长期记忆（12条）：\n- 覆盖模块职责、日志路径、黑匣子解析、容器故障定位、内存CPU、通信配置热补丁、调度OP业务、故障定位思路技巧、SSH登录操作、OSS工具使用、工作规范、SubAgent TODO\n\n### 元数据：\n- 原始知识来源：~/.iflow/ 目录（14个md文件）\n- 迁移时间：2026-05-07\n- 转化方案：规则（行为指导）+ 工具（有输入输出的操作）",
+  "created_at": "2026-05-07T14:17:57.698306",
+  "updated_at": "2026-05-07T14:17:57.698313"
+}

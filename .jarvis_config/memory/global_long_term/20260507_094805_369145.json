@@ -1,0 +1,14 @@
+{
+  "id": "20260507_094805_369145",
+  "type": "global_long_term",
+  "tags": [
+    "9200基站",
+    "容器故障",
+    "gdb调试",
+    "RMP_OSS",
+    "iFlow知识库"
+  ],
+  "content": "## RMP OSS 容器故障定位\n\n- 容器拉起异常查看黑匣子 exit.txt、dockerd.log、容器启动log\n- 容器段错误查看黑匣子信息、栈越界日志、使用 gdb 解析 coredump 文件\n- coredump 位置：/logs/oss/Coredump 或 /logs/oss/CoredumpBak\n- gdb 调试命令：gdb <executable> <coredump>，bt 查看调用栈，info registers 查看寄存器，info locals 查看局部变量，print 打印变量，list 查看源代码，thread apply all bt 打印所有线程堆栈",
+  "created_at": "2026-05-07T09:48:05.369178",
+  "updated_at": "2026-05-07T09:48:05.369183"
+}

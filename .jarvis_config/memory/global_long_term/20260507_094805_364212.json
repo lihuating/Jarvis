@@ -1,0 +1,14 @@
+{
+  "id": "20260507_094805_364212",
+  "type": "global_long_term",
+  "tags": [
+    "9200基站",
+    "OSS工程",
+    "模块职责",
+    "团队职责",
+    "iFlow知识库"
+  ],
+  "content": "## OSS 工程模块职责\n\n- oss_itran 目录下本团队负责 moni、sdr2itran、hotpatch、sym、bbx、comm 部分\n- common 目录下的代码是 oss_aau 和 oss_itran 目录下的源文件都会引用调用的\n- oss_aau 目录下本团队负责 sche、op通信、file、voslog、sym、hotpatch 等模块\n- 本团队负责 sym、hotpatch、comm、init、moni、toil 等模块\n- 在 RMP OSS 工程目录下，NBSA03 编译宏(_LOGIC_NBSA03) 表示的是 NTN D01 单板（也称 NTND01 单板）\n- 用户住在西安",
+  "created_at": "2026-05-07T09:48:05.364247",
+  "updated_at": "2026-05-07T09:48:05.364262"
+}

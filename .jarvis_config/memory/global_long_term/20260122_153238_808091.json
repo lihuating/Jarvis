@@ -1,0 +1,12 @@
+{
+  "id": "20260122_153238_808091",
+  "type": "global_long_term",
+  "tags": [
+    "jarvis",
+    "update",
+    "installation"
+  ],
+  "content": "更新 Jarvis 的方法：\n1. Jarvis 是通过 uv 工具安装的（位于 /home/10186806@zte.intra/.local/share/uv/tools/jarvis-ai-assistant/）\n2. 使用命令 `uv tool update jarvis-ai-assistant` 来更新 Jarvis\n3. 该命令会更新 Jarvis 及其依赖包\n4. 如果是通过源码安装的，更新时会重建环境并更新依赖包",
+  "created_at": "2026-01-22T15:32:38.808136",
+  "updated_at": "2026-01-22T15:32:38.808143"
+}

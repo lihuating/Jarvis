@@ -1,0 +1,14 @@
+{
+  "id": "20260507_094903_271543",
+  "type": "global_long_term",
+  "tags": [
+    "iFlow",
+    "配置备份",
+    "故障定位规范",
+    "Work_Copo",
+    "iFlow知识库"
+  ],
+  "content": "## iFlow 配置备份和故障定位工作规范\n\n### iFlow 配置文件备份位置：\n- ~/.iflow/settings.json.backup.20260205_165414\n- ~/.iflow/iflow_accounts.json.backup.20260205_165425\n\n### iflow 脚本执行规范：\n- 使用 nm 命令必须使用绝对路径 /bin/nm\n\n### 故障定位分析工作规范：\n- 进行 OSS 故障定位分析时，中间文件和采集信息必须在当前工作目录下创建 bug_xx（xx 是数字，如 bug_01、bug_02）专用目录\n- 所有采集的信息、中间文件、分析结果都必须放在该目录下\n- 严禁在工程其他目录下创建或保存中间文件\n- 每次分析新问题时创建新的 bug_xx 目录，编号按顺序递增\n\n### Work Copo VSCode 插件团队协作方案：\n- 方案 A 推荐共享仓库架构，6人共享同一个 Git 仓库通过 Git 同步\n- 消息格式需添加发送者标识（工号+姓名）\n- 需要 Git 同步机制（自动 pull/push）和冲突处理\n- 配置项扩展：teamMode、teamRepoUrl、syncInterval(30秒)、syncStrategy\n\n### 使用 jarvis_generator skill 时：\n- Rule 文件保存在 ~/.jarvis/rules/\n- Tool 文件保存在 ~/.jarvis/tools/",
+  "created_at": "2026-05-07T09:49:03.271577",
+  "updated_at": "2026-05-07T09:49:03.271583"
+}

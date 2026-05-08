@@ -1,0 +1,12 @@
+{
+  "id": "20260228_150628_349355",
+  "type": "global_long_term",
+  "tags": [
+    "jvs",
+    "version",
+    "jarvis"
+  ],
+  "content": "jvs (Jarvis AI Assistant) 版本信息：2.0.15。项目名称：jarvis-ai-assistant。源码位置：/media/vdc/code/Jarvis/。配置文件：pyproject.toml。",
+  "created_at": "2026-02-28T15:06:28.349389",
+  "updated_at": "2026-02-28T15:06:28.349396"
+}

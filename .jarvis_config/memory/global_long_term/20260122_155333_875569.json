@@ -1,0 +1,12 @@
+{
+  "id": "20260122_155333_875569",
+  "type": "global_long_term",
+  "tags": [
+    "iCenter_access",
+    "oss_tool",
+    "zte_internal"
+  ],
+  "content": "访问ZTE内部iCenter页面的方法：使用oss icenter get命令，需要提供space-id和page-id参数。例如：oss icenter get --space-id <space_id> --page-id <page_id>。此方法可以绕过read_webpage工具无法处理JavaScript渲染页面的限制，直接获取iCenter系统的页面内容。",
+  "created_at": "2026-01-22T15:53:33.875645",
+  "updated_at": "2026-01-22T15:53:33.875654"
+}

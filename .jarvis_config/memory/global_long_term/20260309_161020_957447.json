@@ -1,0 +1,14 @@
+{
+  "id": "20260309_161020_957447",
+  "type": "global_long_term",
+  "tags": [
+    "基站运维",
+    "文件传输",
+    "SSH",
+    "base64",
+    "scp替代方案"
+  ],
+  "content": "基站无 scp 环境的文件传输解决方案：\n\n当目标主机（如基站）没有 scp 命令时，可以使用以下方法进行文件传输：\n\n1. **上传文件到目标主机**：\n   sshpass -p 'password' ssh -o StrictHostKeyChecking=no user@host 'cat > /remote/path/file' < local_file\n\n2. **从目标主机下载文件**：\n   sshpass -p 'password' ssh -o StrictHostKeyChecking=no user@host 'base64 /remote/path/file' | base64 -d > local_file\n\n3. **执行远程命令**：\n   sshpass -p 'password' ssh -o StrictHostKeyChecking=no user@host 'command'\n\n适用场景：\n- 基站、嵌入式设备等受限环境\n- 没有 scp、rcp 等文件传输工具的系统\n- 需要通过 SSH 进行文件操作的场景\n\n注意：base64 传输会增加约 33% 的数据量，大文件传输时间较长。",
+  "created_at": "2026-03-09T16:10:20.957495",
+  "updated_at": "2026-03-09T16:10:20.957501"
+}

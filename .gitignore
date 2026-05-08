@@ -3,12 +3,26 @@ __pycache__
 run.sh
 .vscode
 *.txt
+
+# .jarvis 目录配置
+!.jarvis/
+.jarvis/sessions/           # 忽略会话历史（大文件）
+.jarvis/symbol_cache/      # 忽略符号缓存
+# 取消 .jarvis 目录下 .txt 文件的忽略（除了 sessions 和 symbol_cache）
+!.jarvis/memory/*.txt
+!.jarvis/methodologies/*.txt
+!.jarvis/rules/*.txt
+!.jarvis/spec/*.txt
+!.jarvis/evolution/*.txt
+!.jarvis/task_lists/*.txt
+!.jarvis/jsec/*.txt
+
+# .jarvis_config 目录（全局配置同步）将被跟踪
+!.jarvis_config/
 temp_scripts
 dist
 *egg-info.jarvis
-# .jarvis
-!.jarvis/rule
-!.jarvis/rules
+# .jarvis_config (全局配置同步目录，整个目录将被跟踪)
 jarvis_ai_assistant.egg-info
 PKG-INFO
 .jarvis-*
@@ -160,15 +174,5 @@ obj/
 # .NET
 /obj/
 coverage.xml
-.jarvis/build_validation_config.yaml
-.jarvis/.last_memory_organizer_check
-.jarvis/symbol_cache
 
-.jarvis/history
-.jarvis/rag
-.jarvis/task_lists
-.jarvis/knowledge_graph
-goals
-site
-.jarvis/sessions
 

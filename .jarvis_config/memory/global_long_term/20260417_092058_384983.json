@@ -1,0 +1,14 @@
+{
+  "id": "20260417_092058_384983",
+  "type": "global_long_term",
+  "tags": [
+    "zte_system",
+    "热补丁",
+    "pch文件格式",
+    "JiNOS",
+    "HAPAT"
+  ],
+  "content": "JiNOS热补丁.pch文件格式解析：\n1. 文件整体结构 = PCH头部(0x1CC字节) + ELF共享库\n2. PCH头部字段：\n   - 偏移0x08: 魔数 0x55AA55AA\n   - 偏移0x14: 版本字符串 如'V4.0'\n   - 偏移0x20: 编译用户 如'root'\n   - 偏移0x44: 未知标记(0x00000001)\n   - 偏移0x48: 补丁代码大小\n   - 偏移0x4C: 另一大小字段\n   - 偏移0x50: 构建标识 如'[-1]'\n   - 偏移0xC8: 补丁函数名(带后缀) 如'XOS_DbgShowPhyAddr_patch34'\n   - 偏移0x148: 被替换的原始函数名 如'XOS_DbgShowPhyAddr'\n3. 偏移0x1CC开始是标准ELF64共享库(DYN类型, x86_64)\n4. ELF内含.kpatch.version节 记录补丁工具版本 如'upatch_V7.04.03B1'\n5. ELF的.dynsym中: UND XOS_GetPhysAddress表示对原库函数的依赖; FUNC XOS_DbgShowPhyAddr_patch34是补丁函数\n6. 命名规则: {补丁ID}_{版本号}_{库名}.pch 如 198471368_34_libtulip.pch",
+  "created_at": "2026-04-17T09:20:58.385079",
+  "updated_at": "2026-04-17T09:20:58.385090"
+}

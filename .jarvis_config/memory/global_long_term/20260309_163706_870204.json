@@ -1,0 +1,13 @@
+{
+  "id": "20260309_163706_870204",
+  "type": "global_long_term",
+  "tags": [
+    "jarvis",
+    "工具",
+    "工具注册",
+    "ToolRegistry"
+  ],
+  "content": "Jarvis工具注册机制：1) ToolRegistry初始化时依次加载内置、外部、MCP工具；2) 外部工具从.jarvis/tools/目录自动扫描所有.py文件；3) 工具类必须具备name/description/parameters/execute属性，且name需与文件名一致；4) 工具注册后可通过配置的use_list/dont_use_list进行过滤；5) 重启Jarvis后新工具自动生效",
+  "created_at": "2026-03-09T16:37:06.870260",
+  "updated_at": "2026-03-09T16:37:06.870276"
+}

@@ -1,0 +1,15 @@
+{
+  "id": "20260507_094805_373807",
+  "type": "global_long_term",
+  "tags": [
+    "9200基站",
+    "调度",
+    "OP模板",
+    "业务知识",
+    "RMP_OSS",
+    "iFlow知识库"
+  ],
+  "content": "## RMP OSS 调度、OP和业务知识\n\n### 调度和工作流程：\n- OP CPU 利用率计算通过 ddwOPRunningTime\n- 打开 2s CPU 利用率使用 OpenCPUPrn2S，关闭使用 CloseCPUPrn\n- 查看进程内所有线程信息使用 PrintThreadSummary\n- 查看调度任务邮箱深度使用 OSS_DbgShowQ\n- OP 上电时间打点使用 OSS_DbgShowOpStartUpTime\n- OP 模板类型：typedef VOID (*UniBTSProcEntry_Type)(WORD16, WORD16, VOID *, VOID *) 等\n\n### 业务知识：\n- 容器弹缩机制\n- LTE 容器线程占用 core 情况包括 UserSCH0-15、TIMER、MONI、CommUdpDaemonTa、CommRudpProtoTa 等线程\n- NTN 单板存储硬件方案",
+  "created_at": "2026-05-07T09:48:05.373833",
+  "updated_at": "2026-05-07T09:48:05.373838"
+}

@@ -1,0 +1,15 @@
+{
+  "id": "20260305_151332_262560",
+  "type": "global_long_term",
+  "tags": [
+    "oss工具",
+    "命令行",
+    "使用指南",
+    "icenter",
+    "rdc",
+    "uac"
+  ],
+  "content": "OSS Utils CLI 使用总结：\n\n1. 工具概述\n   - 统一的命令行工具，处理 RDC、iCenter 和 UAC 相关操作\n   - 基本命令结构：oss [OPTIONS] COMMAND [ARGS]\n\n2. 主要子命令：\n   - oss rdc: RDC工作项查询（search等）\n   - oss icenter: iCenter页面管理\n     * create: 创建新页面\n     * update: 更新页面内容\n     * subtree: 获取页面的第一层子节点\n     * get: 获取指定页面内容\n   - oss uac: UAC认证操作\n\n3. 使用流程：\n   - 步骤1：查看帮助信息（oss --help, oss icenter --help）\n   - 步骤2：确认必要参数（如space-id, page-id）\n   - 步骤3：执行命令\n   - 步骤4：验证结果\n\n4. iCenter页面获取示例：\n   - 命令：oss icenter get --space-id <空间ID> --page-id <页面ID>\n   - 可选：--username <用户名> --password <密码>\n   - 认证：默认使用缓存信息，失败时提示输入\n\n5. URL参数提取：\n   - 空间ID格式：https://i.zte.com.cn/#/shared/<空间ID>/wiki/page/<页面ID>/view\n\n6. 注意事项：\n   - 查询前先了解子命令功能和参数\n   - 修改操作前先备份或确认安全性\n   - 遵循认证和安全最佳实践\n   - 禁止在生产环境未经测试直接使用复杂操作",
+  "created_at": "2026-03-05T15:13:32.262608",
+  "updated_at": "2026-03-05T15:13:32.262614"
+}

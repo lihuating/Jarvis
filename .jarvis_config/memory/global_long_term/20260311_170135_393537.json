@@ -1,0 +1,11 @@
+{
+  "id": "20260311_170135_393537",
+  "type": "global_long_term",
+  "tags": [
+    "天气查询",
+    "wttr.in"
+  ],
+  "content": "天气查询方法：当需要查询天气时，可以使用 wttr.in 网站服务，格式为 https://wttr.in/城市名?lang=zh&format=3，返回简洁的天气信息（城市:天气图标 +温度）。例如十堰：https://wttr.in/Shiyan?lang=zh&format=3",
+  "created_at": "2026-03-11T17:01:35.393594",
+  "updated_at": "2026-03-11T17:01:35.393603"
+}

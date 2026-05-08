@@ -1,0 +1,12 @@
+{
+  "id": "20260122_155333_877324",
+  "type": "global_long_term",
+  "tags": [
+    "oss_command",
+    "iCenter",
+    "zte_system"
+  ],
+  "content": "OSS工具的iCenter命令使用方法：\n1. 查看帮助：oss icenter --help\n2. 获取页面：oss icenter get --space-id <space_id> --page-id <page_id>\n3. 创建页面：oss icenter create\n4. 更新页面：oss icenter update\n5. 获取子节点：oss icenter subtree\n注意：如果系统没有缓存认证信息，可能需要提供用户名和密码参数。",
+  "created_at": "2026-01-22T15:53:33.877364",
+  "updated_at": "2026-01-22T15:53:33.877370"
+}

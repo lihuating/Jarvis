@@ -1,0 +1,14 @@
+{
+  "id": "20260507_094805_365980",
+  "type": "global_long_term",
+  "tags": [
+    "9200基站",
+    "日志分类",
+    "RMP_OSS",
+    "日志路径",
+    "iFlow知识库"
+  ],
+  "content": "## RMP OSS 日志文件分类与路径\n\n### 日志文件分类：\n单板复位相关（BBX日志、内核日志、串口日志、优雅复位日志）、容器复位相关（exit.txt、黑匣子、coredump、docker日志）、CPU相关（单核/整体CPU冲高日志、CPU循环日志）、消息过滤相关（msgrecord日志）、内存相关（ProcMemInfo、MemLeak、oomMoni、mem日志）、初始化相关（mgr_init、cpplink、init日志）、ushell相关（命令输入日志）、内核相关（Kernel日志）、通信相关（TCP大包、IPMI、rudp断链、bootp日志）、文件相关（FileOperLogInfo、文件描述符）、FTP相关（服务器端/客户端日志）、基带板相关（从核黑匣子、共享内存）、热补丁、安全相关、进程退出、其它（关键事件、自愈回调、命令行记录）\n\n### 日志路径规则：\n- 主控板日志：/logs/OssLog/ 或 /logs/oss/oss/容器名/\n- 基带板日志：/mnt/flash/OssLog/ 或 /mnt/flash/BBX/\n- PB单板日志：/mnt/flash/BBX/ 或 /mnt/flash/OssLog/\n- 日志后缀：.cur（当前）、.bak（备份）、.gz（压缩）\n\n### 关键日志文件：\n- 单板复位：BBX_Simplelog.cur、黑匣子 .bbx.gz、Kernel-XX.log.gz\n- 容器复位：exit.txt-0X.gz、黑匣子 .bbx.gz、coredump 文件\n- CPU：OssCoreCpu.log、OssCpu.log、OssCpuLoop.log\n- 内存：ProcMemInfo.log、MemLeak_XXXXXX.log、oomMoni_XXXXXX.log\n- 初始化：mgr_init.log、cpplink_info\n- 通信：HwmpackageInfo.log（TCP大包）、ipmimsg.log（IPMI）、bootp.log",
+  "created_at": "2026-05-07T09:48:05.366017",
+  "updated_at": "2026-05-07T09:48:05.366022"
+}

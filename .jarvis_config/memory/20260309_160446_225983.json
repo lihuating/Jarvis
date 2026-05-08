@@ -1,0 +1,13 @@
+{
+  "id": "20260309_160446_225983",
+  "type": "project_long_term",
+  "tags": [
+    "基站",
+    "vsw_mem_collect",
+    "10.236.108.181",
+    "环境限制"
+  ],
+  "content": "基站 10.236.108.181 环境限制：\n1. 没有 scp 命令，无法使用 scp 传输文件\n2. 需要使用 SSH + base64 方式传输文件\n3. 上传脚本：sshpass -p 'Itran_2430!@#' ssh -o StrictHostKeyChecking=no itran@10.236.108.181 'cat > /home/itran/vsw_mem_full.sh' < ~/Jarvis/vsw_mem_full.sh\n4. 下载文件：sshpass -p 'Itran_2430!@#' ssh -o StrictHostKeyChecking=no itran@10.236.108.181 'base64 /home/itran/file' | base64 -d > local_file\n5. 基站登录信息：用户名 itran，密码 Itran_2430!@#",
+  "created_at": "2026-03-09T16:04:46.226038",
+  "updated_at": "2026-03-09T16:04:46.226045"
+}
