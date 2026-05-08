@@ -11,7 +11,7 @@
 - **聚焦代码开发**：专为代码任务优化，提供完整的代码分析、编辑、验证、提交工作流
 
 ### 主要技术栈
-- **编程语言**：Python 3.12
+- **编程语言**：Python 3.12 + Rust（高性能工具）
 - **核心依赖**：
   - LLM 集成：OpenAI (1.78.1)、Anthropic (>=0.40.0)
   - 代码分析：tree-sitter 系列支持多种语言（Python、JavaScript、TypeScript、Rust、Go、Java、C/C++、Ruby、PHP、SQL、Markdown、HTML、CSS、Bash 等）
@@ -19,6 +19,8 @@
   - Web 框架：FastAPI (0.115.12)、Uvicorn (0.33.0)
   - 终端 UI：Rich (14.0.0)、Prompt Toolkit (3.0.50)
   - Windows 自动化：pywinauto (>=0.6.9)
+  - Rust 集成：PyO3、maturin（Python-Rust 绑定）
+  - VSCode 扩展：TypeScript、Node.js
   - 其他：requests、pyyaml、tiktoken、pillow、markitdown、jsonnet、ddgr、typer、pathspec、plotext 等
 
 ### 项目版本
@@ -53,6 +55,16 @@ Jarvis/
 │   ├── jarvis_windows/           # Windows 桌面自动化工具
 │   ├── jarvis_data/              # 数据配置
 │   └── scripts/                  # 脚本工具
+├── src/jarvis_rust_tools/        # Rust 高性能工具集（PyO3 绑定）
+│   ├── src/                      # Rust 源代码
+│   ├── Cargo.toml                # Rust 项目配置
+│   ├── pyproject.toml            # Python 绑定配置
+│   └── README.md                 # Rust 工具说明
+├── VscodeTool/                   # VSCode 扩展（TypeScript）
+│   ├── src/                      # TypeScript 源代码
+│   ├── package.json              # Node.js 项目配置
+│   ├── tsconfig.json             # TypeScript 配置
+│   └── BUILD_INSTALL_USAGE.md    # 构建和使用文档
 ├── tests/                        # 测试套件
 │   ├── jarvis_agent/
 │   ├── jarvis_code_agent/
@@ -92,6 +104,12 @@ Jarvis/
 │   ├── evolution/                # 进化记录
 │   ├── sessions/                 # 会话文件
 │   └── ...
+├── .jarvis_config/               # 配置和数据目录（工作区级别）
+│   ├── config.yaml               # 工作区配置文件
+│   ├── memory/
+│   ├── methodologies/
+│   ├── rules/
+│   └── tools/
 ├── pyproject.toml                # 项目配置（现代）
 ├── setup.py                      # 项目配置（传统）
 ├── Dockerfile                    # Docker 镜像
@@ -248,6 +266,35 @@ Jarvis/
 - MCP 协议客户端
 - 支持与 MCP 服务器通信
 
+#### Rust 高性能工具集
+**位置**：`src/jarvis_rust_tools/`
+- **性能优化**：使用 Rust 实现高性能模块，通过 PyO3 与 Python 绑定
+- **核心功能**：
+  - 快速文件 I/O（内存映射技术）
+  - 优化的字符串处理和正则表达式匹配
+  - 高效的 Token 计算和缓存
+- **性能提升**：相比纯 Python 实现，提供 2-10x 的性能提升
+- **使用方式**：
+  ```python
+  from jarvis_rust_tools import fast_read_file, calculate_tokens_optimized
+  content = fast_read_file("example.py", 1, 100)
+  token_count = calculate_tokens_optimized(content)
+  ```
+
+#### VSCode 扩展
+**位置**：`VscodeTool/`
+- **功能**：提供 VSCode 内的 Jarvis 集成体验
+- **核心特性**：
+  - Chat 窗口（Webview）
+  - 支持注入：选区 / 当前文件 / 选取路径（资源管理器）
+  - 后端可选 `jca`（默认）或 `jvs`
+- **开发语言**：TypeScript + Node.js
+- **配置选项**：
+  - `jarvis.backend`: `jca` / `jvs`（默认 `jca`）
+  - `jarvis.commandPath`: 可选后端命令绝对路径
+  - `jarvis.nonInteractive`: 是否加 `-n`（默认 true）
+  - `jarvis.disableReview`: 仅对 `jca`，是否加 `--disable-review`（默认 true）
+
 ## 主要命令
 
 | 命令 | 快捷方式 | 功能 |
@@ -295,6 +342,20 @@ iex ((New-Object System.Net.WebClient).DownloadString('https://raw.githubusercon
 git clone https://github.com/skyfireitdiy/Jarvis.git
 cd Jarvis
 pip3 install -e .
+```
+
+#### Rust 工具安装（可选，性能优化）
+```bash
+# 安装 Rust 工具链（如果尚未安装）
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+source $HOME/.cargo/env
+
+# 安装 maturin（Rust-Python 绑定工具）
+pip install maturin
+
+# 编译并安装 Rust 工具
+cd src/jarvis_rust_tools
+maturin develop
 ```
 
 #### 使用 uv 安装
@@ -353,6 +414,35 @@ from jarvis.jarvis_code_agent.code_agent import CodeAgent
 agent = CodeAgent()
 agent.run('修复 user/service.py 中的登录验证 bug')
 ```
+
+#### VSCode 扩展使用
+
+**安装扩展**：
+```bash
+# 在 VSCode 中安装扩展
+code --install-extension /path/to/VscodeTool/jarvis-vscode-ext.vsix
+```
+
+**开发模式运行**：
+```bash
+cd VscodeTool
+npm install
+npm run compile
+# 按 F5 启动 Extension Development Host
+```
+
+**配置**：
+在 VSCode 设置中配置：
+- `jarvis.backend`: `jca` 或 `jvs`（默认 `jca`）
+- `jarvis.commandPath`: 可选后端命令绝对路径
+- `jarvis.nonInteractive`: 是否加 `-n`（默认 true）
+- `jarvis.disableReview`: 仅对 `jca`，是否加 `--disable-review`（默认 true）
+
+**使用**：
+1. 打开命令面板（Ctrl+Shift+P）
+2. 运行 `Jarvis: Open Chat`
+3. 在 Chat 窗口中与 Jarvis 交互
+4. 支持注入选区、当前文件或资源管理器中选择的路径
 
 ### 测试
 
@@ -536,7 +626,8 @@ jarvis_code_agent (代码代理)
 ├── jarvis_agent (继承)
 ├── jarvis_git_utils (Git 工具)
 ├── jarvis_jck (工具检查)
-└── jarvis_lsp (LSP 代码分析)
+├── jarvis_lsp (LSP 代码分析)
+└── jarvis_rust_tools (可选，性能优化)
 
 jarvis_sec (安全分析)
 ├── jarvis_agent
@@ -553,15 +644,25 @@ jarvis_browser (浏览器自动化)
 jarvis_windows (Windows 自动化)
 ├── jarvis_agent
 └── pywinauto 集成
+
+jarvis_rust_tools (Rust 高性能工具)
+├── PyO3 (Python-Rust 绑定)
+└── Rust 标准库
+
+VscodeTool (VSCode 扩展)
+├── TypeScript
+├── Node.js
+└── VSCode Extension API
 ```
 
 ### 外部依赖
 - Python 3.12
+- Rust（可选，用于 jarvis_rust_tools 性能优化）
 - Docker（可选）
 - Clang（可选，用于 C/C++ 分析）
-- Rust（可选，用于 C→Rust 迁移）
 - Playwright（用于浏览器自动化）
 - pywinauto（用于 Windows 桌面自动化）
+- Node.js（用于 VSCode 扩展开发）
 
 ## 新增功能（v2.0.16 - v2.0.19）
 
@@ -588,6 +689,26 @@ jarvis_windows (Windows 自动化)
 - 性能指标可视化：显示首 token 响应时间和生成速度
 - 更新机制智能化：后台静默检查更新，小版本自动更新
 - 配置流程优化：支持手动输入，增加 API 连通性测试
+
+### 持续演进功能
+
+#### Rust 高性能工具集
+- **性能优化**：使用 Rust 实现高性能模块，通过 PyO3 与 Python 绑定
+- **核心功能**：
+  - 快速文件 I/O（内存映射技术）
+  - 优化的字符串处理和正则表达式匹配
+  - 高效的 Token 计算和缓存
+- **性能提升**：相比纯 Python 实现，提供 2-10x 的性能提升
+- **渐进式迁移**：采用渐进式迁移策略，确保系统稳定性和向后兼容性
+
+#### VSCode 扩展
+- **功能**：提供 VSCode 内的 Jarvis 集成体验
+- **核心特性**：
+  - Chat 窗口（Webview）
+  - 支持注入：选区 / 当前文件 / 选取路径（资源管理器）
+  - 后端可选 `jca`（默认）或 `jvs`
+- **开发语言**：TypeScript + Node.js
+- **配置灵活性**：支持多种配置选项，满足不同使用场景
 
 ## 架构演变（v2.0.1 - v2.0.19）
 
@@ -736,10 +857,12 @@ Jarvis 是一个设计精良、功能强大的 AI 应用开发 SDK，具有以�
 8. **工作流规范**：ARCHER 工作流确保任务执行质量
 9. **会话管理**：自动保存、智能恢复、Git 一致性检查
 10. **规则系统**：自动选择、智能筛选、状态管理
-11. **性能优化**：进度显示、工具筛选、更新机制
-12. **用户体验**：性格系统、交互优化、反馈及时
+11. **性能优化**：进度显示、工具筛选、更新机制、Rust 高性能工具（2-10x 性能提升）
+12. **用户体验**：性格系统、交互优化、反馈及时、VSCode 扩展集成
 13. **架构简化**：移除低价值模块，聚焦核心代码生成能力
 14. **跨平台支持**：Linux、Windows（WSL 或原生）、macOS
 15. **持续演进**：快速迭代，持续优化，响应社区反馈
+16. **多语言支持**：Python + Rust 混编，TypeScript（VSCode 扩展）
+17. **IDE 集成**：VSCode 扩展提供无缝开发体验
 
 适合个人开发者、AI 应用探索者以及需要处理各种技术任务的工程师使用。

@@ -1,8 +1,9 @@
 #!/bin/bash
 
 # sync_jarvis_config.sh
-# 用于将全局配置同步到当前工程目录的 .jarvis/ 子目录
-# 用法: ./sync_jarvis_config.sh [--force]
+# 默认：将用户目录 ~/.jarvis 同步到当前工程下的 .jarvis_config/
+# 反向（--reverse）：将当前工程下的 .jarvis_config/ 同步到 ~/.jarvis
+# 用法: ./sync_jarvis_config.sh [--force] [--reverse]
 
 set -e
 
@@ -15,9 +16,7 @@ NC='\033[0m' # No Color
 
 # 默认配置
 FORCE_MODE=false
-SOURCE_DIR="$HOME/.jarvis"
-# 目标目录：使用独立的 .jarvis_config 目录，避免与项目 .jarvis 混在一起
-TARGET_DIR=".jarvis_config"
+REVERSE_MODE=false
 
 # 解析参数
 while [[ $# -gt 0 ]]; do
@@ -26,12 +25,21 @@ while [[ $# -gt 0 ]]; do
             FORCE_MODE=true
             shift
             ;;
+        --reverse|-r|--to-home)
+            REVERSE_MODE=true
+            shift
+            ;;
         --help|-h)
-            echo "用法: $0 [--force]"
+            echo "用法: $0 [--force] [--reverse]"
+            echo ""
+            echo "模式:"
+            echo "  默认            ~/.jarvis  →  ./.jarvis_config（工程内配置）"
+            echo "  --reverse, -r  ./.jarvis_config  →  ~/.jarvis（写回全局）"
+            echo "  --to-home       同 --reverse"
             echo ""
             echo "选项:"
-            echo "  --force, -f    强制覆盖，不询问确认"
-            echo "  --help, -h     显示此帮助信息"
+            echo "  --force, -f     强制覆盖，不询问确认"
+            echo "  --help, -h      显示此帮助信息"
             exit 0
             ;;
         *)
@@ -42,15 +50,30 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
+if [ "$REVERSE_MODE" = true ]; then
+    SOURCE_DIR=".jarvis_config"
+    TARGET_DIR="$HOME/.jarvis"
+    SYNC_FLOW="工程 .jarvis_config → 用户目录 ~/.jarvis"
+else
+    SOURCE_DIR="$HOME/.jarvis"
+    TARGET_DIR=".jarvis_config"
+    SYNC_FLOW="用户目录 ~/.jarvis → 工程 .jarvis_config"
+fi
+
 echo -e "${BLUE}========================================${NC}"
-echo -e "${BLUE}  Jarvis 全局配置同步工具${NC}"
+echo -e "${BLUE}  Jarvis 配置同步工具${NC}"
 echo -e "${BLUE}========================================${NC}"
+echo -e "${YELLOW}当前模式:${NC} $SYNC_FLOW"
 echo ""
 
 # 检查源目录
 if [ ! -d "$SOURCE_DIR" ]; then
     echo -e "${RED}错误: 源目录不存在: $SOURCE_DIR${NC}"
-    echo "请确保 Jarvis 已正确安装并运行过"
+    if [ "$REVERSE_MODE" = true ]; then
+        echo "请在项目根目录执行，并确保已存在 .jarvis_config（可先运行本脚本不带 --reverse 从全局拉取）"
+    else
+        echo "请确保 Jarvis 已正确安装并运行过"
+    fi
     exit 1
 fi
 
@@ -64,7 +87,7 @@ fi
 
 # 显示同步信息
 echo -e "${YELLOW}同步信息:${NC}"
-echo "  源目录: $SOURCE_DIR"
+echo "  源目录:   $SOURCE_DIR"
 echo "  目标目录: $TARGET_DIR"
 echo ""
 
@@ -114,12 +137,12 @@ sync_item() {
     local src="$1"
     local dst="$2"
     local name="$3"
-    
+
     if [ ! -e "$src" ]; then
         echo -e "${YELLOW}跳过: $name (源不存在)${NC}"
         return
     fi
-    
+
     if [ -d "$src" ]; then
         # 目录同步
         if [ -n "$(ls -A "$src" 2>/dev/null)" ]; then
@@ -179,8 +202,13 @@ echo -e "${BLUE}========================================${NC}"
 echo -e "${GREEN}同步完成!${NC}"
 echo -e "${BLUE}========================================${NC}"
 echo ""
-echo "配置已同步到: $(pwd)/$TARGET_DIR"
+if [ "$REVERSE_MODE" = true ]; then
+    echo "配置已同步到: $TARGET_DIR"
+else
+    echo "配置已同步到: $(pwd)/$TARGET_DIR"
+fi
 echo ""
 echo "提示:"
-echo "  - 如果需要恢复，请使用反向同步"
-echo "  - 或直接将 $TARGET_DIR 目录复制到其他电脑的 ~/.jarvis/"
+echo "  - 默认: ~/.jarvis → ./.jarvis_config"
+echo "  - 写回全局: $0 --reverse   （./.jarvis_config → ~/.jarvis）"
+echo "  - 覆盖前建议备份 ~/.jarvis 或提交 .jarvis_config 到版本库"

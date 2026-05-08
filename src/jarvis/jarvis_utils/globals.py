@@ -9,6 +9,7 @@
 """
 
 import os
+import threading
 
 # 全局变量：保存消息历史
 from typing import Any
@@ -41,6 +42,9 @@ running_agent_stack: List[str] = []  # 正在运行的agent栈（最顶层是当
 g_in_chat: int = 0
 # 表示是否接收到中断信号
 g_interrupt: int = 0
+# 流式输出期间按 ESC：待与「本轮已提交给模型的输入」合并后重新提问（由 BasePlatform._chat 消费）
+_stream_esc_merge_lock = threading.Lock()
+_stream_esc_merge_ctx: Optional[Dict[str, str]] = None
 # 上次“部分显示”时保存的完整内容，供 Ctrl+R 查看全部使用
 last_truncated_full_content: Optional[str] = None
 # 上次截断内容的标题（如工具名），用于展开时显示
@@ -243,6 +247,25 @@ def get_interrupt() -> int:
         int: 当前中断计数
     """
     return g_interrupt
+
+
+def offer_stream_esc_merge(original_message: str, partial_response: str) -> None:
+    """由流式输出层在检测到 ESC 时写入；供平台层合并追问后重新调用模型。"""
+    global _stream_esc_merge_ctx
+    with _stream_esc_merge_lock:
+        _stream_esc_merge_ctx = {
+            "original_message": original_message,
+            "partial_response": partial_response,
+        }
+
+
+def consume_stream_esc_merge_context() -> Optional[Dict[str, str]]:
+    """取出并清空 ESC 合并上下文；若无则返回 None。"""
+    global _stream_esc_merge_ctx
+    with _stream_esc_merge_lock:
+        ctx = _stream_esc_merge_ctx
+        _stream_esc_merge_ctx = None
+        return ctx
 
 
 def set_last_message(message: str) -> None:

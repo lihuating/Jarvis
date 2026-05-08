@@ -4,4 +4,7 @@ tsconfig.json
 node_modules/**
 .vscode/**
 **/*.map
+_vsix_unpack/**
+*.zip
+**/_t.zip
 
