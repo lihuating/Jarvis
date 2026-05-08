@@ -1542,7 +1542,6 @@ class PrettyOutput:
             def _thinking_esc_merge_return() -> Tuple[str, float]:
                 esc_hit.clear()
                 offer_stream_esc_merge(message, "")
-                _esc_cleanup()
                 return "", time.time() - start_time
 
             # 仅当持续 3 秒以上无首个 chunk 时才显示「思考中」，单行、无边框、不加粗
@@ -1586,123 +1585,107 @@ class PrettyOutput:
                 return "", time.time() - start_time
 
             first_chunk = first_chunk_result[0] or ""
-        # 使用“尾部窗口”限制渲染成本，避免随着全文增长 wrap 越来越慢
-        try:
-            max_window_chars = int(os.environ.get("JARVIS_STREAM_MAX_WINDOW_CHARS", "20000"))
-        except Exception:
-            max_window_chars = 20000
-        if max_window_chars < 2000:
-            max_window_chars = 2000
-
-        display_plain = ""  # 仅保留尾部窗口内容（用于 wrap 渲染）
-        text_content = Text("", overflow="fold")
-        panel = Panel(
-            text_content,  # 后续会复用 panel，只更新 renderable/subtitle
-            title=None,
-            subtitle=None,
-            border_style="cyan",
-            box=HORIZONTAL_RULE_BOX,
-            expand=True,
-        )
-
-        response = ""
-        last_subtitle_update_time = time.time()
-        subtitle_update_interval = 1  # subtitle 更新间隔（秒）
-        update_count = 0  # 更新计数器
-
-        def _update_panel_subtitle_with_token(
-            panel_obj: Panel, response_text: str, is_completed: bool = False
-        ):
-            """更新面板的 subtitle，显示 token 信息。"""
+            # 使用“尾部窗口”限制渲染成本，避免随着全文增长 wrap 越来越慢
             try:
-                threshold = 100  # 默认阈值
-                try:
-                    max_input = get_platform_max_input_token_count()
-                    current_context = get_context_token_count()
-                    threshold = max_input - current_context if max_input else 100
-                except Exception:
-                    pass
-
-                current_time = time.time()
-                duration = current_time - start_time
-
-                try:
-                    used_tokens = get_used_token_count()
-                    conversation_turn = get_conversation_turn()
-
-                    if is_completed:
-                        panel_obj.subtitle = (
-                            f"[bold green]✓ {current_time:.0f} | "
-                            f"({conversation_turn}/{threshold}) | "
-                            f"tokens: {used_tokens} | "
-                            f"耗时: {duration:.2f}秒[/bold green]"
-                        )
-                    else:
-                        hint = (
-                            "正在回答... (ESC 合并补充 · Ctrl+C 中断)"
-                            if enable_stream_esc_merge
-                            else "正在回答... (按 Ctrl+C 中断)"
-                        )
-                        panel_obj.subtitle = (
-                            f"[yellow]{current_time:.0f} | "
-                            f"({conversation_turn}/{threshold}) | "
-                            f"tokens: {used_tokens} | "
-                            f"{hint}[/yellow]"
-                        )
-                except Exception:
-                    # 如果获取 token 信息失败，使用简化版本
-                    if is_completed:
-                        panel_obj.subtitle = (
-                            f"[bold green]✓ {current_time:.0f} | "
-                            f"耗时: {duration:.2f}秒[/bold green]"
-                        )
-                    else:
-                        hint2 = (
-                            "正在回答... (ESC 合并补充 · Ctrl+C 中断)"
-                            if enable_stream_esc_merge
-                            else "正在回答... (按 Ctrl+C 中断)"
-                        )
-                        panel_obj.subtitle = (
-                            f"[yellow]{current_time:.0f} | "
-                            f"{hint2}[/yellow]"
-                        )
+                max_window_chars = int(
+                    os.environ.get("JARVIS_STREAM_MAX_WINDOW_CHARS", "20000")
+                )
             except Exception:
-                # 如果更新 subtitle 失败，使用默认值
-                current_time = time.time()
-                duration = current_time - start_time
-                if is_completed:
-                    panel_obj.subtitle = (
-                        f"[bold green]✓ 耗时: {duration:.2f}秒[/bold green]"
-                    )
-                else:
-                    hint3 = (
-                        "正在回答... (ESC 合并补充 · Ctrl+C 中断)"
-                        if enable_stream_esc_merge
-                        else "正在回答... (按 Ctrl+C 中断)"
-                    )
-                    panel_obj.subtitle = f"[yellow]{hint3}[/yellow]"
+                max_window_chars = 20000
+            if max_window_chars < 2000:
+                max_window_chars = 2000
 
-        stop_esc_poll = threading.Event()
-        esc_hit = threading.Event()
-        esc_poll_thread = None
-        tty_esc_state = None
+            display_plain = ""  # 仅保留尾部窗口内容（用于 wrap 渲染）
+            text_content = Text("", overflow="fold")
+            panel = Panel(
+                text_content,  # 后续会复用 panel，只更新 renderable/subtitle
+                title=None,
+                subtitle=None,
+                border_style="cyan",
+                box=HORIZONTAL_RULE_BOX,
+                expand=True,
+            )
 
-        with _rich_live_slot(), Live(
-            panel, refresh_per_second=4, transient=True
-        ) as live:
-            try:
-                if enable_stream_esc_merge:
-                    from jarvis.jarvis_utils.stream_esc_key import (
-                        install_stdio_cbreak_for_esc_poll,
-                    )
-                    from jarvis.jarvis_utils.stream_esc_key import (
-                        spawn_esc_poll_thread,
-                    )
+            response = ""
+            last_subtitle_update_time = time.time()
+            subtitle_update_interval = 1  # subtitle 更新间隔（秒）
+            update_count = 0  # 更新计数器
 
-                    tty_esc_state = install_stdio_cbreak_for_esc_poll()
-                    esc_poll_thread = spawn_esc_poll_thread(
-                        stop_esc_poll, esc_hit, tty_esc_state
-                    )
+            def _update_panel_subtitle_with_token(
+                panel_obj: Panel, response_text: str, is_completed: bool = False
+            ):
+                """更新面板的 subtitle，显示 token 信息。"""
+                try:
+                    threshold = 100  # 默认阈值
+                    try:
+                        max_input = get_platform_max_input_token_count()
+                        current_context = get_context_token_count()
+                        threshold = max_input - current_context if max_input else 100
+                    except Exception:
+                        pass
+
+                    current_time = time.time()
+                    duration = current_time - start_time
+
+                    try:
+                        used_tokens = get_used_token_count()
+                        conversation_turn = get_conversation_turn()
+
+                        if is_completed:
+                            panel_obj.subtitle = (
+                                f"[bold green]✓ {current_time:.0f} | "
+                                f"({conversation_turn}/{threshold}) | "
+                                f"tokens: {used_tokens} | "
+                                f"耗时: {duration:.2f}秒[/bold green]"
+                            )
+                        else:
+                            hint = (
+                                "正在回答... (ESC 合并补充 · Ctrl+C 中断)"
+                                if enable_stream_esc_merge
+                                else "正在回答... (按 Ctrl+C 中断)"
+                            )
+                            panel_obj.subtitle = (
+                                f"[yellow]{current_time:.0f} | "
+                                f"({conversation_turn}/{threshold}) | "
+                                f"tokens: {used_tokens} | "
+                                f"{hint}[/yellow]"
+                            )
+                    except Exception:
+                        # 如果获取 token 信息失败，使用简化版本
+                        if is_completed:
+                            panel_obj.subtitle = (
+                                f"[bold green]✓ {current_time:.0f} | "
+                                f"耗时: {duration:.2f}秒[/bold green]"
+                            )
+                        else:
+                            hint2 = (
+                                "正在回答... (ESC 合并补充 · Ctrl+C 中断)"
+                                if enable_stream_esc_merge
+                                else "正在回答... (按 Ctrl+C 中断)"
+                            )
+                            panel_obj.subtitle = (
+                                f"[yellow]{current_time:.0f} | "
+                                f"{hint2}[/yellow]"
+                            )
+                except Exception:
+                    # 如果更新 subtitle 失败，使用默认值
+                    current_time = time.time()
+                    duration = current_time - start_time
+                    if is_completed:
+                        panel_obj.subtitle = (
+                            f"[bold green]✓ 耗时: {duration:.2f}秒[/bold green]"
+                        )
+                    else:
+                        hint3 = (
+                            "正在回答... (ESC 合并补充 · Ctrl+C 中断)"
+                            if enable_stream_esc_merge
+                            else "正在回答... (按 Ctrl+C 中断)"
+                        )
+                        panel_obj.subtitle = f"[yellow]{hint3}[/yellow]"
+
+            with _rich_live_slot(), Live(
+                panel, refresh_per_second=4, transient=True
+            ) as live:
 
                 def _update_panel_content(content: str, update_subtitle: bool = False):
                     nonlocal response, last_subtitle_update_time, update_count, text_content, panel, display_plain
@@ -1892,13 +1875,7 @@ class PrettyOutput:
                 _flush_buffer()
                 # 在结束前，将面板内容替换为完整响应，确保最后一次渲染的 panel 显示全部内容
 
-            finally:
-                stop_esc_poll.set()
-                if esc_poll_thread is not None:
-                    esc_poll_thread.join(timeout=1.5)
-                if tty_esc_state is not None:
-                    from jarvis.jarvis_utils.stream_esc_key import restore_stdio_attrs
-
-                    restore_stdio_attrs(tty_esc_state)
+        finally:
+            _esc_cleanup()
 
         return response, time.time() - start_time
