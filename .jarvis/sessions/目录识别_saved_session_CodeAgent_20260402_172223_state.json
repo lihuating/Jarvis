@@ -1,0 +1,47 @@
+{
+  "short_term_memories": [],
+  "session_manager": {
+    "prompt": "",
+    "user_data": {
+      "__memory_save_prompted__": false,
+      "__last_executed_tool__": "read_code",
+      "__executed_tools__": [
+        "execute_script",
+        "execute_script",
+        "read_code"
+      ]
+    },
+    "addon_prompt": "",
+    "conversation_length": 0,
+    "non_interactive": false
+  },
+  "agent_runtime": {
+    "addon_prompt_skip_rounds": 0,
+    "no_tool_call_count": 0,
+    "last_response_content": "",
+    "recent_memories": [],
+    "MAX_RECENT_MEMORIES": 10,
+    "memory_tags": [],
+    "first": false
+  },
+  "metadata": {
+    "agent_name": "CodeAgent",
+    "timestamp": "20260402_172223"
+  },
+  "codeagent": {
+    "disable_review": false,
+    "review_max_iterations": 0,
+    "tool_group": null,
+    "root_dir": "/media/vdc/code/Jarvis",
+    "prefix": "",
+    "suffix": ""
+  },
+  "rules_manager": {
+    "loaded_rules": [
+      "builtin:performance/rust_performance.md"
+    ],
+    "active_rules": [
+      "builtin:performance/rust_performance.md"
+    ]
+  }
+}

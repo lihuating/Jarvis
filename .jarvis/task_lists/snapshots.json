@@ -1,0 +1,262 @@
+{
+  "snapshots": {
+    "tasklist-1": [
+      {
+        "main_goal": "完善Jarvis VSCode插件，支持1-3个VSCode实例同时使用",
+        "tasks": {},
+        "max_active_tasks": 10,
+        "version": 1
+      },
+      {
+        "main_goal": "完善Jarvis VSCode插件，支持1-3个VSCode实例同时使用",
+        "tasks": {
+          "task-1": {
+            "task_id": "task-1",
+            "task_name": "更新package.json和tsconfig.json配置",
+            "task_desc": "更新VscodeTool/package.json：添加Activity Bar图标、侧边栏视图(jarvis.chatPanel)、esbuild构建脚本、必要的devDependencies(marked, highlight.js, esbuild)。更新VscodeTool/tsconfig.json适配esbuild打包。添加media目录和图标文件。\n\n文件路径：/media/vdc/code/Jarvis/VscodeTool/package.json, /media/vdc/code/Jarvis/VscodeTool/tsconfig.json\n==================================================\n公共背景信息:\n参考 /home/10186806@zte.intra/vdc/code/Jarvis_sky/src/jarvis/jarvis_vscode_extension/ 的实现，完善 /media/vdc/code/Jarvis/VscodeTool/。保持child_process子进程模式（jca/jvs后端），添加侧边栏UI、改进Chat面板、支持Markdown渲染。\n\n全局约束：\n1. 不引入WebSocket/Gateway依赖，保持子进程模式\n2. 不修改任何Python后端代码\n3. 使用esbuild构建\n4. TypeScript严格模式\n\n必须要求：\n1. 侧边栏Activity Bar显示Jarvis图标\n2. Chat面板支持Markdown渲染和流式输出\n3. 保留选区/文件/资源管理器上下文注入功能\n4. 多个VSCode窗口可独立使用\n\n禁止事项：\n1. 禁止引入ws等WebSocket依赖\n2. 禁止修改src/jarvis/下的Python代码\n\n验证标准：\n1. npm run build 编译成功\n2. 插件可加载，侧边栏和Chat面板正常显示",
+            "status": "pending",
+            "expected_output": "1) package.json包含Activity Bar、侧边栏视图、esbuild构建脚本\n2) tsconfig.json正确配置\n3) media目录下有图标文件",
+            "agent_type": "main",
+            "create_time": 1778208942379,
+            "update_time": 1778208942379,
+            "dependencies": [],
+            "actual_output": null,
+            "model_call_count": 0
+          },
+          "task-2": {
+            "task_id": "task-2",
+            "task_name": "重写extension.ts核心代码",
+            "task_desc": "重写VscodeTool/src/extension.ts，实现：\n1. JarvisChatPanelProvider - 侧边栏Webview View（替代原有浮动面板）\n2. 保留子进程后端（jca/jvs spawn）\n3. 保留上下文注入（selection/file/explorer）\n4. 改进Chat UI：Markdown渲染(marked+highlight.js)、流式输出、更好的样式\n5. 保留所有原有命令(jarvis.openChat, sendSelectionToChat等)\n6. 多VSCode实例支持（每个extension host独立）\n\n文件路径：/media/vdc/code/Jarvis/VscodeTool/src/extension.ts\n参考：/home/10186806@zte.intra/vdc/code/Jarvis_sky/src/jarvis/jarvis_vscode_extension/src/extension.ts 的UI模式\n==================================================\n公共背景信息:\n参考 /home/10186806@zte.intra/vdc/code/Jarvis_sky/src/jarvis/jarvis_vscode_extension/ 的实现，完善 /media/vdc/code/Jarvis/VscodeTool/。保持child_process子进程模式（jca/jvs后端），添加侧边栏UI、改进Chat面板、支持Markdown渲染。\n\n全局约束：\n1. 不引入WebSocket/Gateway依赖，保持子进程模式\n2. 不修改任何Python后端代码\n3. 使用esbuild构建\n4. TypeScript严格模式\n\n必须要求：\n1. 侧边栏Activity Bar显示Jarvis图标\n2. Chat面板支持Markdown渲染和流式输出\n3. 保留选区/文件/资源管理器上下文注入功能\n4. 多个VSCode窗口可独立使用\n\n禁止事项：\n1. 禁止引入ws等WebSocket依赖\n2. 禁止修改src/jarvis/下的Python代码\n\n验证标准：\n1. npm run build 编译成功\n2. 插件可加载，侧边栏和Chat面板正常显示",
+            "status": "pending",
+            "expected_output": "1) extension.ts实现侧边栏Chat面板\n2) 支持Markdown渲染\n3) 支持流式输出显示\n4) 保留所有原有命令和上下文注入\n5) 代码结构清晰，函数单一职责",
+            "agent_type": "main",
+            "create_time": 1778208942379,
+            "update_time": 1778208942379,
+            "dependencies": [
+              "task-1"
+            ],
+            "actual_output": null,
+            "model_call_count": 0
+          },
+          "task-3": {
+            "task_id": "task-3",
+            "task_name": "验证编译和功能完整性",
+            "task_desc": "在/media/vdc/code/Jarvis/VscodeTool/目录下执行npm install && npm run build，确保编译成功无错误。检查生成的dist/extension.js文件。\n==================================================\n公共背景信息:\n参考 /home/10186806@zte.intra/vdc/code/Jarvis_sky/src/jarvis/jarvis_vscode_extension/ 的实现，完善 /media/vdc/code/Jarvis/VscodeTool/。保持child_process子进程模式（jca/jvs后端），添加侧边栏UI、改进Chat面板、支持Markdown渲染。\n\n全局约束：\n1. 不引入WebSocket/Gateway依赖，保持子进程模式\n2. 不修改任何Python后端代码\n3. 使用esbuild构建\n4. TypeScript严格模式\n\n必须要求：\n1. 侧边栏Activity Bar显示Jarvis图标\n2. Chat面板支持Markdown渲染和流式输出\n3. 保留选区/文件/资源管理器上下文注入功能\n4. 多个VSCode窗口可独立使用\n\n禁止事项：\n1. 禁止引入ws等WebSocket依赖\n2. 禁止修改src/jarvis/下的Python代码\n\n验证标准：\n1. npm run build 编译成功\n2. 插件可加载，侧边栏和Chat面板正常显示",
+            "status": "pending",
+            "expected_output": "1) npm run build编译成功无错误\n2) dist/extension.js正确生成\n3) 所有TypeScript类型检查通过",
+            "agent_type": "main",
+            "create_time": 1778208942379,
+            "update_time": 1778208942379,
+            "dependencies": [
+              "task-2"
+            ],
+            "actual_output": null,
+            "model_call_count": 0
+          }
+        },
+        "max_active_tasks": 10,
+        "version": 4
+      },
+      {
+        "main_goal": "完善Jarvis VSCode插件，支持1-3个VSCode实例同时使用",
+        "tasks": {
+          "task-1": {
+            "task_id": "task-1",
+            "task_name": "更新package.json和tsconfig.json配置",
+            "task_desc": "更新VscodeTool/package.json：添加Activity Bar图标、侧边栏视图(jarvis.chatPanel)、esbuild构建脚本、必要的devDependencies(marked, highlight.js, esbuild)。更新VscodeTool/tsconfig.json适配esbuild打包。添加media目录和图标文件。\n\n文件路径：/media/vdc/code/Jarvis/VscodeTool/package.json, /media/vdc/code/Jarvis/VscodeTool/tsconfig.json\n==================================================\n公共背景信息:\n参考 /home/10186806@zte.intra/vdc/code/Jarvis_sky/src/jarvis/jarvis_vscode_extension/ 的实现，完善 /media/vdc/code/Jarvis/VscodeTool/。保持child_process子进程模式（jca/jvs后端），添加侧边栏UI、改进Chat面板、支持Markdown渲染。\n\n全局约束：\n1. 不引入WebSocket/Gateway依赖，保持子进程模式\n2. 不修改任何Python后端代码\n3. 使用esbuild构建\n4. TypeScript严格模式\n\n必须要求：\n1. 侧边栏Activity Bar显示Jarvis图标\n2. Chat面板支持Markdown渲染和流式输出\n3. 保留选区/文件/资源管理器上下文注入功能\n4. 多个VSCode窗口可独立使用\n\n禁止事项：\n1. 禁止引入ws等WebSocket依赖\n2. 禁止修改src/jarvis/下的Python代码\n\n验证标准：\n1. npm run build 编译成功\n2. 插件可加载，侧边栏和Chat面板正常显示",
+            "status": "running",
+            "expected_output": "1) package.json包含Activity Bar、侧边栏视图、esbuild构建脚本\n2) tsconfig.json正确配置\n3) media目录下有图标文件",
+            "agent_type": "main",
+            "create_time": 1778208942379,
+            "update_time": 1778208959238,
+            "dependencies": [],
+            "actual_output": null,
+            "model_call_count": 0
+          },
+          "task-2": {
+            "task_id": "task-2",
+            "task_name": "重写extension.ts核心代码",
+            "task_desc": "重写VscodeTool/src/extension.ts，实现：\n1. JarvisChatPanelProvider - 侧边栏Webview View（替代原有浮动面板）\n2. 保留子进程后端（jca/jvs spawn）\n3. 保留上下文注入（selection/file/explorer）\n4. 改进Chat UI：Markdown渲染(marked+highlight.js)、流式输出、更好的样式\n5. 保留所有原有命令(jarvis.openChat, sendSelectionToChat等)\n6. 多VSCode实例支持（每个extension host独立）\n\n文件路径：/media/vdc/code/Jarvis/VscodeTool/src/extension.ts\n参考：/home/10186806@zte.intra/vdc/code/Jarvis_sky/src/jarvis/jarvis_vscode_extension/src/extension.ts 的UI模式\n==================================================\n公共背景信息:\n参考 /home/10186806@zte.intra/vdc/code/Jarvis_sky/src/jarvis/jarvis_vscode_extension/ 的实现，完善 /media/vdc/code/Jarvis/VscodeTool/。保持child_process子进程模式（jca/jvs后端），添加侧边栏UI、改进Chat面板、支持Markdown渲染。\n\n全局约束：\n1. 不引入WebSocket/Gateway依赖，保持子进程模式\n2. 不修改任何Python后端代码\n3. 使用esbuild构建\n4. TypeScript严格模式\n\n必须要求：\n1. 侧边栏Activity Bar显示Jarvis图标\n2. Chat面板支持Markdown渲染和流式输出\n3. 保留选区/文件/资源管理器上下文注入功能\n4. 多个VSCode窗口可独立使用\n\n禁止事项：\n1. 禁止引入ws等WebSocket依赖\n2. 禁止修改src/jarvis/下的Python代码\n\n验证标准：\n1. npm run build 编译成功\n2. 插件可加载，侧边栏和Chat面板正常显示",
+            "status": "pending",
+            "expected_output": "1) extension.ts实现侧边栏Chat面板\n2) 支持Markdown渲染\n3) 支持流式输出显示\n4) 保留所有原有命令和上下文注入\n5) 代码结构清晰，函数单一职责",
+            "agent_type": "main",
+            "create_time": 1778208942379,
+            "update_time": 1778208942379,
+            "dependencies": [
+              "task-1"
+            ],
+            "actual_output": null,
+            "model_call_count": 0
+          },
+          "task-3": {
+            "task_id": "task-3",
+            "task_name": "验证编译和功能完整性",
+            "task_desc": "在/media/vdc/code/Jarvis/VscodeTool/目录下执行npm install && npm run build，确保编译成功无错误。检查生成的dist/extension.js文件。\n==================================================\n公共背景信息:\n参考 /home/10186806@zte.intra/vdc/code/Jarvis_sky/src/jarvis/jarvis_vscode_extension/ 的实现，完善 /media/vdc/code/Jarvis/VscodeTool/。保持child_process子进程模式（jca/jvs后端），添加侧边栏UI、改进Chat面板、支持Markdown渲染。\n\n全局约束：\n1. 不引入WebSocket/Gateway依赖，保持子进程模式\n2. 不修改任何Python后端代码\n3. 使用esbuild构建\n4. TypeScript严格模式\n\n必须要求：\n1. 侧边栏Activity Bar显示Jarvis图标\n2. Chat面板支持Markdown渲染和流式输出\n3. 保留选区/文件/资源管理器上下文注入功能\n4. 多个VSCode窗口可独立使用\n\n禁止事项：\n1. 禁止引入ws等WebSocket依赖\n2. 禁止修改src/jarvis/下的Python代码\n\n验证标准：\n1. npm run build 编译成功\n2. 插件可加载，侧边栏和Chat面板正常显示",
+            "status": "pending",
+            "expected_output": "1) npm run build编译成功无错误\n2) dist/extension.js正确生成\n3) 所有TypeScript类型检查通过",
+            "agent_type": "main",
+            "create_time": 1778208942379,
+            "update_time": 1778208942379,
+            "dependencies": [
+              "task-2"
+            ],
+            "actual_output": null,
+            "model_call_count": 0
+          }
+        },
+        "max_active_tasks": 10,
+        "version": 5
+      },
+      {
+        "main_goal": "完善Jarvis VSCode插件，支持1-3个VSCode实例同时使用",
+        "tasks": {
+          "task-1": {
+            "task_id": "task-1",
+            "task_name": "更新package.json和tsconfig.json配置",
+            "task_desc": "更新VscodeTool/package.json：添加Activity Bar图标、侧边栏视图(jarvis.chatPanel)、esbuild构建脚本、必要的devDependencies(marked, highlight.js, esbuild)。更新VscodeTool/tsconfig.json适配esbuild打包。添加media目录和图标文件。\n\n文件路径：/media/vdc/code/Jarvis/VscodeTool/package.json, /media/vdc/code/Jarvis/VscodeTool/tsconfig.json\n==================================================\n公共背景信息:\n参考 /home/10186806@zte.intra/vdc/code/Jarvis_sky/src/jarvis/jarvis_vscode_extension/ 的实现，完善 /media/vdc/code/Jarvis/VscodeTool/。保持child_process子进程模式（jca/jvs后端），添加侧边栏UI、改进Chat面板、支持Markdown渲染。\n\n全局约束：\n1. 不引入WebSocket/Gateway依赖，保持子进程模式\n2. 不修改任何Python后端代码\n3. 使用esbuild构建\n4. TypeScript严格模式\n\n必须要求：\n1. 侧边栏Activity Bar显示Jarvis图标\n2. Chat面板支持Markdown渲染和流式输出\n3. 保留选区/文件/资源管理器上下文注入功能\n4. 多个VSCode窗口可独立使用\n\n禁止事项：\n1. 禁止引入ws等WebSocket依赖\n2. 禁止修改src/jarvis/下的Python代码\n\n验证标准：\n1. npm run build 编译成功\n2. 插件可加载，侧边栏和Chat面板正常显示",
+            "status": "completed",
+            "expected_output": "1) package.json包含Activity Bar、侧边栏视图、esbuild构建脚本\n2) tsconfig.json正确配置\n3) media目录下有图标文件",
+            "agent_type": "main",
+            "create_time": 1778208942379,
+            "update_time": 1778210252404,
+            "dependencies": [],
+            "actual_output": "package.json已更新：添加Activity Bar、侧边栏视图(jarvis.chatPanel)、esbuild构建脚本、media图标。tsconfig.json保持不变（兼容esbuild）。media目录创建了jarvis-128.png和jarvis-activitybar.png。",
+            "model_call_count": 0
+          },
+          "task-2": {
+            "task_id": "task-2",
+            "task_name": "重写extension.ts核心代码",
+            "task_desc": "重写VscodeTool/src/extension.ts，实现：\n1. JarvisChatPanelProvider - 侧边栏Webview View（替代原有浮动面板）\n2. 保留子进程后端（jca/jvs spawn）\n3. 保留上下文注入（selection/file/explorer）\n4. 改进Chat UI：Markdown渲染(marked+highlight.js)、流式输出、更好的样式\n5. 保留所有原有命令(jarvis.openChat, sendSelectionToChat等)\n6. 多VSCode实例支持（每个extension host独立）\n\n文件路径：/media/vdc/code/Jarvis/VscodeTool/src/extension.ts\n参考：/home/10186806@zte.intra/vdc/code/Jarvis_sky/src/jarvis/jarvis_vscode_extension/src/extension.ts 的UI模式\n==================================================\n公共背景信息:\n参考 /home/10186806@zte.intra/vdc/code/Jarvis_sky/src/jarvis/jarvis_vscode_extension/ 的实现，完善 /media/vdc/code/Jarvis/VscodeTool/。保持child_process子进程模式（jca/jvs后端），添加侧边栏UI、改进Chat面板、支持Markdown渲染。\n\n全局约束：\n1. 不引入WebSocket/Gateway依赖，保持子进程模式\n2. 不修改任何Python后端代码\n3. 使用esbuild构建\n4. TypeScript严格模式\n\n必须要求：\n1. 侧边栏Activity Bar显示Jarvis图标\n2. Chat面板支持Markdown渲染和流式输出\n3. 保留选区/文件/资源管理器上下文注入功能\n4. 多个VSCode窗口可独立使用\n\n禁止事项：\n1. 禁止引入ws等WebSocket依赖\n2. 禁止修改src/jarvis/下的Python代码\n\n验证标准：\n1. npm run build 编译成功\n2. 插件可加载，侧边栏和Chat面板正常显示",
+            "status": "pending",
+            "expected_output": "1) extension.ts实现侧边栏Chat面板\n2) 支持Markdown渲染\n3) 支持流式输出显示\n4) 保留所有原有命令和上下文注入\n5) 代码结构清晰，函数单一职责",
+            "agent_type": "main",
+            "create_time": 1778208942379,
+            "update_time": 1778208942379,
+            "dependencies": [
+              "task-1"
+            ],
+            "actual_output": null,
+            "model_call_count": 0
+          },
+          "task-3": {
+            "task_id": "task-3",
+            "task_name": "验证编译和功能完整性",
+            "task_desc": "在/media/vdc/code/Jarvis/VscodeTool/目录下执行npm install && npm run build，确保编译成功无错误。检查生成的dist/extension.js文件。\n==================================================\n公共背景信息:\n参考 /home/10186806@zte.intra/vdc/code/Jarvis_sky/src/jarvis/jarvis_vscode_extension/ 的实现，完善 /media/vdc/code/Jarvis/VscodeTool/。保持child_process子进程模式（jca/jvs后端），添加侧边栏UI、改进Chat面板、支持Markdown渲染。\n\n全局约束：\n1. 不引入WebSocket/Gateway依赖，保持子进程模式\n2. 不修改任何Python后端代码\n3. 使用esbuild构建\n4. TypeScript严格模式\n\n必须要求：\n1. 侧边栏Activity Bar显示Jarvis图标\n2. Chat面板支持Markdown渲染和流式输出\n3. 保留选区/文件/资源管理器上下文注入功能\n4. 多个VSCode窗口可独立使用\n\n禁止事项：\n1. 禁止引入ws等WebSocket依赖\n2. 禁止修改src/jarvis/下的Python代码\n\n验证标准：\n1. npm run build 编译成功\n2. 插件可加载，侧边栏和Chat面板正常显示",
+            "status": "pending",
+            "expected_output": "1) npm run build编译成功无错误\n2) dist/extension.js正确生成\n3) 所有TypeScript类型检查通过",
+            "agent_type": "main",
+            "create_time": 1778208942379,
+            "update_time": 1778208942379,
+            "dependencies": [
+              "task-2"
+            ],
+            "actual_output": null,
+            "model_call_count": 0
+          }
+        },
+        "max_active_tasks": 10,
+        "version": 6
+      },
+      {
+        "main_goal": "完善Jarvis VSCode插件，支持1-3个VSCode实例同时使用",
+        "tasks": {
+          "task-1": {
+            "task_id": "task-1",
+            "task_name": "更新package.json和tsconfig.json配置",
+            "task_desc": "更新VscodeTool/package.json：添加Activity Bar图标、侧边栏视图(jarvis.chatPanel)、esbuild构建脚本、必要的devDependencies(marked, highlight.js, esbuild)。更新VscodeTool/tsconfig.json适配esbuild打包。添加media目录和图标文件。\n\n文件路径：/media/vdc/code/Jarvis/VscodeTool/package.json, /media/vdc/code/Jarvis/VscodeTool/tsconfig.json\n==================================================\n公共背景信息:\n参考 /home/10186806@zte.intra/vdc/code/Jarvis_sky/src/jarvis/jarvis_vscode_extension/ 的实现，完善 /media/vdc/code/Jarvis/VscodeTool/。保持child_process子进程模式（jca/jvs后端），添加侧边栏UI、改进Chat面板、支持Markdown渲染。\n\n全局约束：\n1. 不引入WebSocket/Gateway依赖，保持子进程模式\n2. 不修改任何Python后端代码\n3. 使用esbuild构建\n4. TypeScript严格模式\n\n必须要求：\n1. 侧边栏Activity Bar显示Jarvis图标\n2. Chat面板支持Markdown渲染和流式输出\n3. 保留选区/文件/资源管理器上下文注入功能\n4. 多个VSCode窗口可独立使用\n\n禁止事项：\n1. 禁止引入ws等WebSocket依赖\n2. 禁止修改src/jarvis/下的Python代码\n\n验证标准：\n1. npm run build 编译成功\n2. 插件可加载，侧边栏和Chat面板正常显示",
+            "status": "completed",
+            "expected_output": "1) package.json包含Activity Bar、侧边栏视图、esbuild构建脚本\n2) tsconfig.json正确配置\n3) media目录下有图标文件",
+            "agent_type": "main",
+            "create_time": 1778208942379,
+            "update_time": 1778210252404,
+            "dependencies": [],
+            "actual_output": "package.json已更新：添加Activity Bar、侧边栏视图(jarvis.chatPanel)、esbuild构建脚本、media图标。tsconfig.json保持不变（兼容esbuild）。media目录创建了jarvis-128.png和jarvis-activitybar.png。",
+            "model_call_count": 0
+          },
+          "task-2": {
+            "task_id": "task-2",
+            "task_name": "重写extension.ts核心代码",
+            "task_desc": "重写VscodeTool/src/extension.ts，实现：\n1. JarvisChatPanelProvider - 侧边栏Webview View（替代原有浮动面板）\n2. 保留子进程后端（jca/jvs spawn）\n3. 保留上下文注入（selection/file/explorer）\n4. 改进Chat UI：Markdown渲染(marked+highlight.js)、流式输出、更好的样式\n5. 保留所有原有命令(jarvis.openChat, sendSelectionToChat等)\n6. 多VSCode实例支持（每个extension host独立）\n\n文件路径：/media/vdc/code/Jarvis/VscodeTool/src/extension.ts\n参考：/home/10186806@zte.intra/vdc/code/Jarvis_sky/src/jarvis/jarvis_vscode_extension/src/extension.ts 的UI模式\n==================================================\n公共背景信息:\n参考 /home/10186806@zte.intra/vdc/code/Jarvis_sky/src/jarvis/jarvis_vscode_extension/ 的实现，完善 /media/vdc/code/Jarvis/VscodeTool/。保持child_process子进程模式（jca/jvs后端），添加侧边栏UI、改进Chat面板、支持Markdown渲染。\n\n全局约束：\n1. 不引入WebSocket/Gateway依赖，保持子进程模式\n2. 不修改任何Python后端代码\n3. 使用esbuild构建\n4. TypeScript严格模式\n\n必须要求：\n1. 侧边栏Activity Bar显示Jarvis图标\n2. Chat面板支持Markdown渲染和流式输出\n3. 保留选区/文件/资源管理器上下文注入功能\n4. 多个VSCode窗口可独立使用\n\n禁止事项：\n1. 禁止引入ws等WebSocket依赖\n2. 禁止修改src/jarvis/下的Python代码\n\n验证标准：\n1. npm run build 编译成功\n2. 插件可加载，侧边栏和Chat面板正常显示",
+            "status": "completed",
+            "expected_output": "1) extension.ts实现侧边栏Chat面板\n2) 支持Markdown渲染\n3) 支持流式输出显示\n4) 保留所有原有命令和上下文注入\n5) 代码结构清晰，函数单一职责",
+            "agent_type": "main",
+            "create_time": 1778208942379,
+            "update_time": 1778210270832,
+            "dependencies": [
+              "task-1"
+            ],
+            "actual_output": "extension.ts已重写：JarvisChatViewProvider实现侧边栏Webview View、保留子进程后端(jca/jvs spawn)、保留上下文注入(selection/file/explorer)、改进Chat UI(Markdown渲染、流式输出、VSCode主题变量样式)、新增newChat命令。代码结构清晰，函数单一职责。",
+            "model_call_count": 0
+          },
+          "task-3": {
+            "task_id": "task-3",
+            "task_name": "验证编译和功能完整性",
+            "task_desc": "在/media/vdc/code/Jarvis/VscodeTool/目录下执行npm install && npm run build，确保编译成功无错误。检查生成的dist/extension.js文件。\n==================================================\n公共背景信息:\n参考 /home/10186806@zte.intra/vdc/code/Jarvis_sky/src/jarvis/jarvis_vscode_extension/ 的实现，完善 /media/vdc/code/Jarvis/VscodeTool/。保持child_process子进程模式（jca/jvs后端），添加侧边栏UI、改进Chat面板、支持Markdown渲染。\n\n全局约束：\n1. 不引入WebSocket/Gateway依赖，保持子进程模式\n2. 不修改任何Python后端代码\n3. 使用esbuild构建\n4. TypeScript严格模式\n\n必须要求：\n1. 侧边栏Activity Bar显示Jarvis图标\n2. Chat面板支持Markdown渲染和流式输出\n3. 保留选区/文件/资源管理器上下文注入功能\n4. 多个VSCode窗口可独立使用\n\n禁止事项：\n1. 禁止引入ws等WebSocket依赖\n2. 禁止修改src/jarvis/下的Python代码\n\n验证标准：\n1. npm run build 编译成功\n2. 插件可加载，侧边栏和Chat面板正常显示",
+            "status": "pending",
+            "expected_output": "1) npm run build编译成功无错误\n2) dist/extension.js正确生成\n3) 所有TypeScript类型检查通过",
+            "agent_type": "main",
+            "create_time": 1778208942379,
+            "update_time": 1778208942379,
+            "dependencies": [
+              "task-2"
+            ],
+            "actual_output": null,
+            "model_call_count": 0
+          }
+        },
+        "max_active_tasks": 10,
+        "version": 7
+      },
+      {
+        "main_goal": "完善Jarvis VSCode插件，支持1-3个VSCode实例同时使用",
+        "tasks": {
+          "task-1": {
+            "task_id": "task-1",
+            "task_name": "更新package.json和tsconfig.json配置",
+            "task_desc": "更新VscodeTool/package.json：添加Activity Bar图标、侧边栏视图(jarvis.chatPanel)、esbuild构建脚本、必要的devDependencies(marked, highlight.js, esbuild)。更新VscodeTool/tsconfig.json适配esbuild打包。添加media目录和图标文件。\n\n文件路径：/media/vdc/code/Jarvis/VscodeTool/package.json, /media/vdc/code/Jarvis/VscodeTool/tsconfig.json\n==================================================\n公共背景信息:\n参考 /home/10186806@zte.intra/vdc/code/Jarvis_sky/src/jarvis/jarvis_vscode_extension/ 的实现，完善 /media/vdc/code/Jarvis/VscodeTool/。保持child_process子进程模式（jca/jvs后端），添加侧边栏UI、改进Chat面板、支持Markdown渲染。\n\n全局约束：\n1. 不引入WebSocket/Gateway依赖，保持子进程模式\n2. 不修改任何Python后端代码\n3. 使用esbuild构建\n4. TypeScript严格模式\n\n必须要求：\n1. 侧边栏Activity Bar显示Jarvis图标\n2. Chat面板支持Markdown渲染和流式输出\n3. 保留选区/文件/资源管理器上下文注入功能\n4. 多个VSCode窗口可独立使用\n\n禁止事项：\n1. 禁止引入ws等WebSocket依赖\n2. 禁止修改src/jarvis/下的Python代码\n\n验证标准：\n1. npm run build 编译成功\n2. 插件可加载，侧边栏和Chat面板正常显示",
+            "status": "completed",
+            "expected_output": "1) package.json包含Activity Bar、侧边栏视图、esbuild构建脚本\n2) tsconfig.json正确配置\n3) media目录下有图标文件",
+            "agent_type": "main",
+            "create_time": 1778208942379,
+            "update_time": 1778210252404,
+            "dependencies": [],
+            "actual_output": "package.json已更新：添加Activity Bar、侧边栏视图(jarvis.chatPanel)、esbuild构建脚本、media图标。tsconfig.json保持不变（兼容esbuild）。media目录创建了jarvis-128.png和jarvis-activitybar.png。",
+            "model_call_count": 0
+          },
+          "task-2": {
+            "task_id": "task-2",
+            "task_name": "重写extension.ts核心代码",
+            "task_desc": "重写VscodeTool/src/extension.ts，实现：\n1. JarvisChatPanelProvider - 侧边栏Webview View（替代原有浮动面板）\n2. 保留子进程后端（jca/jvs spawn）\n3. 保留上下文注入（selection/file/explorer）\n4. 改进Chat UI：Markdown渲染(marked+highlight.js)、流式输出、更好的样式\n5. 保留所有原有命令(jarvis.openChat, sendSelectionToChat等)\n6. 多VSCode实例支持（每个extension host独立）\n\n文件路径：/media/vdc/code/Jarvis/VscodeTool/src/extension.ts\n参考：/home/10186806@zte.intra/vdc/code/Jarvis_sky/src/jarvis/jarvis_vscode_extension/src/extension.ts 的UI模式\n==================================================\n公共背景信息:\n参考 /home/10186806@zte.intra/vdc/code/Jarvis_sky/src/jarvis/jarvis_vscode_extension/ 的实现，完善 /media/vdc/code/Jarvis/VscodeTool/。保持child_process子进程模式（jca/jvs后端），添加侧边栏UI、改进Chat面板、支持Markdown渲染。\n\n全局约束：\n1. 不引入WebSocket/Gateway依赖，保持子进程模式\n2. 不修改任何Python后端代码\n3. 使用esbuild构建\n4. TypeScript严格模式\n\n必须要求：\n1. 侧边栏Activity Bar显示Jarvis图标\n2. Chat面板支持Markdown渲染和流式输出\n3. 保留选区/文件/资源管理器上下文注入功能\n4. 多个VSCode窗口可独立使用\n\n禁止事项：\n1. 禁止引入ws等WebSocket依赖\n2. 禁止修改src/jarvis/下的Python代码\n\n验证标准：\n1. npm run build 编译成功\n2. 插件可加载，侧边栏和Chat面板正常显示",
+            "status": "completed",
+            "expected_output": "1) extension.ts实现侧边栏Chat面板\n2) 支持Markdown渲染\n3) 支持流式输出显示\n4) 保留所有原有命令和上下文注入\n5) 代码结构清晰，函数单一职责",
+            "agent_type": "main",
+            "create_time": 1778208942379,
+            "update_time": 1778210270832,
+            "dependencies": [
+              "task-1"
+            ],
+            "actual_output": "extension.ts已重写：JarvisChatViewProvider实现侧边栏Webview View、保留子进程后端(jca/jvs spawn)、保留上下文注入(selection/file/explorer)、改进Chat UI(Markdown渲染、流式输出、VSCode主题变量样式)、新增newChat命令。代码结构清晰，函数单一职责。",
+            "model_call_count": 0
+          },
+          "task-3": {
+            "task_id": "task-3",
+            "task_name": "验证编译和功能完整性",
+            "task_desc": "在/media/vdc/code/Jarvis/VscodeTool/目录下执行npm install && npm run build，确保编译成功无错误。检查生成的dist/extension.js文件。\n==================================================\n公共背景信息:\n参考 /home/10186806@zte.intra/vdc/code/Jarvis_sky/src/jarvis/jarvis_vscode_extension/ 的实现，完善 /media/vdc/code/Jarvis/VscodeTool/。保持child_process子进程模式（jca/jvs后端），添加侧边栏UI、改进Chat面板、支持Markdown渲染。\n\n全局约束：\n1. 不引入WebSocket/Gateway依赖，保持子进程模式\n2. 不修改任何Python后端代码\n3. 使用esbuild构建\n4. TypeScript严格模式\n\n必须要求：\n1. 侧边栏Activity Bar显示Jarvis图标\n2. Chat面板支持Markdown渲染和流式输出\n3. 保留选区/文件/资源管理器上下文注入功能\n4. 多个VSCode窗口可独立使用\n\n禁止事项：\n1. 禁止引入ws等WebSocket依赖\n2. 禁止修改src/jarvis/下的Python代码\n\n验证标准：\n1. npm run build 编译成功\n2. 插件可加载，侧边栏和Chat面板正常显示",
+            "status": "completed",
+            "expected_output": "1) npm run build编译成功无错误\n2) dist/extension.js正确生成\n3) 所有TypeScript类型检查通过",
+            "agent_type": "main",
+            "create_time": 1778208942379,
+            "update_time": 1778210281066,
+            "dependencies": [
+              "task-2"
+            ],
+            "actual_output": "npm run build编译成功，生成dist/extension.js (18.4kb)，无错误。",
+            "model_call_count": 0
+          }
+        },
+        "max_active_tasks": 10,
+        "version": 8
+      }
+    ]
+  }
+}
