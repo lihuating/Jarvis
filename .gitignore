@@ -8,6 +8,7 @@ run.sh
 !.jarvis/
 .jarvis/sessions/           # 忽略会话历史（大文件）
 .jarvis/symbol_cache/      # 忽略符号缓存
+.jarvis/task_lists/        # 忽略任务列表快照
 # 取消 .jarvis 目录下 .txt 文件的忽略（除了 sessions 和 symbol_cache）
 !.jarvis/memory/*.txt
 !.jarvis/methodologies/*.txt
