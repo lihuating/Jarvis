@@ -227,7 +227,6 @@ def _run_btw_isolated_chat(user_question: str) -> None:
             max_output=0,
             check_interrupt=get_interrupt,
             panel_lock=plat._panel_lock,
-            enable_stream_esc_merge=False,
         )
     except Exception as e:
         PrettyOutput.auto_print(f"⚠️ BTW 失败: {e}")

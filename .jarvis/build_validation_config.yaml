@@ -1,4 +1,0 @@
-disable_build_validation: true
-disable_reason: 用户选择禁用（项目可能需要在特殊环境中构建）
-disabled_at: /media/vdc/code/Jarvis
-has_been_asked: true

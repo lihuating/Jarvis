@@ -47,7 +47,6 @@ from jarvis.jarvis_utils.globals import set_in_chat
 from jarvis.jarvis_utils.output import PrettyOutput
 from jarvis.jarvis_utils.tag import ct
 from jarvis.jarvis_utils.tag import ot
-from jarvis.jarvis_agent.utils import join_prompts
 from jarvis.jarvis_utils.utils import while_success
 from jarvis.jarvis_utils.utils import while_true
 
@@ -421,7 +420,7 @@ class BasePlatform(ABC):
         )
         return response
 
-    def _chat(self, message: str, max_output: int = 0, _esc_merge_depth: int = 0):
+    def _chat(self, message: str, max_output: int = 0):
         import time
 
         start_time = time.time()
@@ -446,22 +445,6 @@ class BasePlatform(ABC):
                 response, first_token_time = self._chat_with_pretty_output(
                     message, start_time, max_output
                 )
-                esc_merge_ctx = G.consume_stream_esc_merge_context()
-                if esc_merge_ctx is not None and _esc_merge_depth < 8:
-                    from jarvis.jarvis_utils.input import get_multiline_input
-                    from jarvis.jarvis_utils.output import OutputWatchdogPaused
-
-                    orig = esc_merge_ctx.get("original_message") or message
-                    with OutputWatchdogPaused():
-                        extra = get_multiline_input(
-                            "输出已由 ESC 中断。请输入补充或修正内容（将追加在上一次输入之后，一并作为新问题提交给模型；直接回车则保留已输出片段并进入下一轮）：",
-                            print_on_empty=False,
-                        )
-                    if extra and extra.strip():
-                        merged = join_prompts([orig, extra.strip()])
-                        return self._chat(
-                            merged, max_output, _esc_merge_depth + 1
-                        )
             else:
                 response = self._chat_with_simple_output(message, start_time, max_output)
 
@@ -591,10 +574,6 @@ class BasePlatform(ABC):
             # 这可以防止之前的中断（如Ctrl+C）影响新对话的首次调用
             # 修复问题：用户中断后再次执行任务时，方法论加载失败（返回结果为空）
             set_interrupt(False)
-            try:
-                G.consume_stream_esc_merge_context()
-            except Exception:
-                pass
             set_in_chat(True)
             if not self.suppress_output and is_print_prompt():
                 PrettyOutput.auto_print(f"👤 {message}")  # 保留用于语法高亮

@@ -61,65 +61,26 @@ npm run compile
 
 ## 打包与安装（可选）
 
-**重要：本扩展未发布到 VS Code / Open VSX 应用商店。** 在扩展市场搜索「Jarvis」通常**搜不到**，必须通过下面任一方式安装。
+当前工程未内置 `vsce` 打包依赖。如果你需要生成 `.vsix`：
 
-### 1) 先编译（必须）
-
-`package.json` 的入口是 `dist/extension.js`。若仓库里没有 `dist/`，必须先执行：
+1) 安装 vsce
 
 ```bash
-cd VscodeTool
-npm install
+npm i -g @vscode/vsce
+```
+
+2) 打包
+
+```bash
+cd /media/vdc/code/Jarvis/VscodeTool
 npm run compile
+vsce package
 ```
 
-没有 `dist/extension.js` 就打出来的 `.vsix` 安装后会**无法激活**或报「找不到 main」。
+会生成类似 `jarvis-vscode-tool-0.1.0.vsix`。
 
-### 2) 打包 `.vsix`
-
-本仓库已在 `devDependencies` 中声明 `@vscode/vsce`，推荐用项目内版本：
-
-```bash
-cd VscodeTool
-npm run compile
-npx @vscode/vsce package
-```
-
-（若已全局安装，也可用 `vsce package`。）
-
-会生成类似 `jarvis-vscode-tool-0.1.1.vsix`。
-
-### 3) 安装 `.vsix`
-
-**图形界面**
-
-- **VS Code**：扩展视图 → 右上角 `⋯` → **Install from VSIX…** → 选择上述 `.vsix`。
-- **Cursor**：同样通过命令面板 `Extensions: Install from VSIX...`（或扩展面板中的「从 VSIX 安装」）选择文件。
-
-**命令行（推荐，便于确认报错）**
-
-- VS Code（需 `code` 在 PATH 中）：
-
-```bash
-code --install-extension jarvis-vscode-tool-0.1.1.vsix
-```
-
-- Cursor（可执行文件名因安装路径而异，常见为 `cursor`）：
-
-```bash
-cursor --install-extension jarvis-vscode-tool-0.1.1.vsix
-```
-
-安装成功后扩展 id 为 **`jarvis.jarvis-vscode-tool`**，可在已安装扩展列表中搜索 `jarvis` 核对。
-
-### 4) 仍装不上时自检
-
-| 现象 | 处理 |
-|------|------|
-| 市场搜不到 Jarvis | 正常：未上架，请用 VSIX。 |
-| 提示与当前 VS Code 版本不兼容 | 升级 VS Code / Cursor 至 **1.90+**（见 `package.json` → `engines.vscode`）。 |
-| 安装后扩展不工作 | 确认 `dist/extension.js` 已打进包；重新 `npm run compile` 后再 `vsce package`。 |
-| Chat 无输出 | 见下文「Chat 能打开，但不出结果」：`jca`/`jvs` 与 `PATH` 或 `jarvis.commandPath`。 |
+3) 安装 `.vsix`
+- VSCode：Extensions 视图 → 右上角 “...” → **Install from VSIX…**
 
 ## 常见问题
 

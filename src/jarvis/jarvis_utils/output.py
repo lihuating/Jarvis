@@ -62,19 +62,6 @@ _WATCHDOG_PAUSE_COUNT = 0
 _WATCHDOG_SILENCE_THRESHOLD_S = 10.0
 _WATCHDOG_POLL_INTERVAL_S = 1.0
 
-# Rich 同一 console 全局仅允许一个 Live；看门狗线程与 stream_chat 等不能并发 Live。
-_RICH_LIVE_EXCLUSIVE = threading.Lock()
-
-
-@contextmanager
-def _rich_live_slot() -> Iterator[None]:
-    """阻塞占用 Rich Live 互斥槽，避免与看门狗或其它 Live 冲突。"""
-    _RICH_LIVE_EXCLUSIVE.acquire()
-    try:
-        yield
-    finally:
-        _RICH_LIVE_EXCLUSIVE.release()
-
 
 def pause_output_watchdog() -> None:
     """暂停全局“无输出提示”看门狗（支持嵌套）。用于等待用户输入等正常静默场景。"""
@@ -177,46 +164,41 @@ def _ensure_output_watchdog_started() -> None:
                     silent_for = now - (_LAST_OUTPUT_TS or now)
                     # 静默超过阈值时，展示“思考中...”动态提示，直到任意输出恢复
                     if (not live_active) and silent_for >= _WATCHDOG_SILENCE_THRESHOLD_S:
-                        # 主线程若已占用 Live（如流式面板），非阻塞跳过，下轮再试
-                        if not _RICH_LIVE_EXCLUSIVE.acquire(blocking=False):
-                            pass
-                        else:
-                            live_active = True
+                        live_active = True
+                        try:
+                            from rich.live import Live
+                            from rich.text import Text
+
+                            # 清空活动事件，进入等待“有输出恢复”的阶段
                             try:
-                                from rich.live import Live
-                                from rich.text import Text
-
-                                # 清空活动事件，进入等待“有输出恢复”的阶段
-                                try:
-                                    _OUTPUT_ACTIVITY_EVENT.clear()
-                                except Exception:
-                                    pass
-
-                                thinking_dots = 0
-                                text_content = Text("思考中.", style="bright_cyan")
-                                with Live(
-                                    text_content, refresh_per_second=4, transient=True
-                                ) as live:
-                                    # 直到检测到任何输出（emit_output touch）才退出
-                                    while True:
-                                        if _is_watchdog_paused():
-                                            break
-                                        try:
-                                            if _OUTPUT_ACTIVITY_EVENT.wait(timeout=0.4):
-                                                break
-                                        except Exception:
-                                            break
-                                        thinking_dots = (thinking_dots + 1) % 4
-                                        dots_str = "." * (thinking_dots + 1)
-                                        live.update(
-                                            Text(f"思考中{dots_str}", style="bright_cyan")
-                                        )
+                                _OUTPUT_ACTIVITY_EVENT.clear()
                             except Exception:
-                                # Live 失败则静默，不影响主流程
                                 pass
-                            finally:
-                                _RICH_LIVE_EXCLUSIVE.release()
-                                live_active = False
+
+                            thinking_dots = 0
+                            text_content = Text("思考中.", style="bright_cyan")
+                            with Live(
+                                text_content, refresh_per_second=4, transient=True
+                            ) as live:
+                                # 直到检测到任何输出（emit_output touch）才退出
+                                while True:
+                                    if _is_watchdog_paused():
+                                        break
+                                    try:
+                                        if _OUTPUT_ACTIVITY_EVENT.wait(timeout=0.4):
+                                            break
+                                    except Exception:
+                                        break
+                                    thinking_dots = (thinking_dots + 1) % 4
+                                    dots_str = "." * (thinking_dots + 1)
+                                    live.update(
+                                        Text(f"思考中{dots_str}", style="bright_cyan")
+                                    )
+                        except Exception:
+                            # Live 失败则静默，不影响主流程
+                            pass
+                        finally:
+                            live_active = False
                 except Exception:
                     pass
                 time.sleep(_WATCHDOG_POLL_INTERVAL_S)
@@ -1420,17 +1402,16 @@ class PrettyOutput:
             return
         thinking_dots = 0
         text_content = Text("思考中.", style="bright_cyan")
-        with _rich_live_slot():
-            with Live(text_content, refresh_per_second=4, transient=True) as live:
-                while not stop_event.wait(interval):
-                    thinking_dots = (thinking_dots + 1) % 4
-                    dots_str = "." * (thinking_dots + 1)
-                    text_content = Text(f"思考中{dots_str}", style="bright_cyan")
-                    live.update(text_content)
-                    try:
-                        _touch_output()
-                    except Exception:
-                        pass
+        with Live(text_content, refresh_per_second=4, transient=True) as live:
+            while not stop_event.wait(interval):
+                thinking_dots = (thinking_dots + 1) % 4
+                dots_str = "." * (thinking_dots + 1)
+                text_content = Text(f"思考中{dots_str}", style="bright_cyan")
+                live.update(text_content)
+                try:
+                    _touch_output()
+                except Exception:
+                    pass
 
     @staticmethod
     def stream_chat_with_panel(
@@ -1447,7 +1428,6 @@ class PrettyOutput:
         max_output: int = 0,
         check_interrupt=None,
         panel_lock=None,
-        enable_stream_esc_merge: bool = True,
     ) -> Tuple[str, float]:
         """使用面板显示流式聊天输出。
 
@@ -1465,7 +1445,6 @@ class PrettyOutput:
             max_output: 最大输出长度
             check_interrupt: 检查中断的函数
             panel_lock: 面板锁
-            enable_stream_esc_merge: 是否启用 ESC 中断并合并追问（BTW 等旁路应设为 False）
 
         返回:
             Tuple[str, float]: (响应内容, 耗时)
@@ -1476,35 +1455,9 @@ class PrettyOutput:
         from rich.live import Live
         from rich.panel import Panel
         from rich.text import Text
-        from jarvis.jarvis_utils.globals import consume_stream_esc_merge_context
         from jarvis.jarvis_utils.globals import get_interrupt
-        from jarvis.jarvis_utils.globals import offer_stream_esc_merge
         from jarvis.jarvis_utils.config import is_immediate_abort
         from jarvis.jarvis_utils.rich_box import HORIZONTAL_RULE_BOX
-
-        try:
-            consume_stream_esc_merge_context()
-        except Exception:
-            pass
-
-        stop_esc_poll = threading.Event()
-        esc_hit = threading.Event()
-        esc_poll_thread: Optional[threading.Thread] = None
-        tty_esc_state = None
-        esc_cleanup_done = False
-
-        def _esc_cleanup() -> None:
-            nonlocal esc_cleanup_done
-            if esc_cleanup_done:
-                return
-            esc_cleanup_done = True
-            stop_esc_poll.set()
-            if esc_poll_thread is not None:
-                esc_poll_thread.join(timeout=1.5)
-            if tty_esc_state is not None:
-                from jarvis.jarvis_utils.stream_esc_key import restore_stdio_attrs
-
-                restore_stdio_attrs(tty_esc_state)
 
         # 用于后台线程存放首个 chunk 或 StopIteration
         first_chunk_result = [None]
@@ -1524,249 +1477,166 @@ class PrettyOutput:
                 first_chunk_result[0] = None
 
         fetch_thread = threading.Thread(target=_fetch_first_chunk, daemon=True)
+        fetch_thread.start()
 
-        try:
-            if enable_stream_esc_merge:
-                from jarvis.jarvis_utils.stream_esc_key import (
-                    install_stdio_cbreak_for_esc_poll,
-                )
-                from jarvis.jarvis_utils.stream_esc_key import spawn_esc_poll_thread
+        # 仅当持续 3 秒以上无首个 chunk 时才显示「思考中」，单行、无边框、不加粗
+        thinking_delay = 3.0
+        elapsed = 0.0
+        check_interval = 0.2
+        while elapsed < thinking_delay and fetch_thread.is_alive():
+            time.sleep(check_interval)
+            elapsed += check_interval
+        if fetch_thread.is_alive():
+            thinking_dots = 0
+            text_content = Text("思考中.", style="bright_cyan")
+            with Live(text_content, refresh_per_second=4, transient=True) as live:
+                while fetch_thread.is_alive():
+                    thinking_dots = (thinking_dots + 1) % 4
+                    dots_str = "." * (thinking_dots + 1)
+                    text_content = Text(f"思考中{dots_str}", style="bright_cyan")
+                    live.update(text_content)
+                    time.sleep(0.4)
+        fetch_thread.join()
 
-                tty_esc_state = install_stdio_cbreak_for_esc_poll()
-                esc_poll_thread = spawn_esc_poll_thread(
-                    stop_esc_poll, esc_hit, tty_esc_state
-                )
-
-            fetch_thread.start()
-
-            def _thinking_esc_merge_return() -> Tuple[str, float]:
-                esc_hit.clear()
-                offer_stream_esc_merge(message, "")
-                return "", time.time() - start_time
-
-            # 仅当持续 3 秒以上无首个 chunk 时才显示「思考中」，单行、无边框、不加粗
-            thinking_delay = 3.0
-            elapsed = 0.0
-            check_interval = 0.2
-            while elapsed < thinking_delay and fetch_thread.is_alive():
-                if enable_stream_esc_merge and esc_hit.is_set():
-                    return _thinking_esc_merge_return()
-                time.sleep(check_interval)
-                elapsed += check_interval
-            if fetch_thread.is_alive():
-                thinking_dots = 0
-                text_content = Text("思考中.", style="bright_cyan")
-                with _rich_live_slot():
-                    with Live(text_content, refresh_per_second=4, transient=True) as live:
-                        while fetch_thread.is_alive():
-                            if enable_stream_esc_merge and esc_hit.is_set():
-                                return _thinking_esc_merge_return()
-                            thinking_dots = (thinking_dots + 1) % 4
-                            dots_str = "." * (thinking_dots + 1)
-                            text_content = Text(f"思考中{dots_str}", style="bright_cyan")
-                            live.update(text_content)
-                            time.sleep(0.4)
-            fetch_thread.join()
-
-            # 首 chunk 获取失败：给出友好错误并降级（返回空响应，避免交互卡死）
-            if first_chunk_error[0] is not None:
-                try:
-                    PrettyOutput.auto_print(
-                        f"⚠️ 模型响应超时或网络异常：{first_chunk_error[0]}\n"
-                        f"   建议：检查网络/代理，或稍后重试。"
-                    )
-                except Exception:
-                    pass
-                append_session_history(message, "")
-                return "", time.time() - start_time
-
-            if stop_iteration_flag[0]:
-                append_session_history(message, "")
-                return "", time.time() - start_time
-
-            first_chunk = first_chunk_result[0] or ""
-            # 使用“尾部窗口”限制渲染成本，避免随着全文增长 wrap 越来越慢
+        # 首 chunk 获取失败：给出友好错误并降级（返回空响应，避免交互卡死）
+        if first_chunk_error[0] is not None:
             try:
-                max_window_chars = int(
-                    os.environ.get("JARVIS_STREAM_MAX_WINDOW_CHARS", "20000")
+                PrettyOutput.auto_print(
+                    f"⚠️ 模型响应超时或网络异常：{first_chunk_error[0]}\n"
+                    f"   建议：检查网络/代理，或稍后重试。"
                 )
             except Exception:
-                max_window_chars = 20000
-            if max_window_chars < 2000:
-                max_window_chars = 2000
+                pass
+            append_session_history(message, "")
+            return "", time.time() - start_time
 
-            display_plain = ""  # 仅保留尾部窗口内容（用于 wrap 渲染）
-            text_content = Text("", overflow="fold")
-            panel = Panel(
-                text_content,  # 后续会复用 panel，只更新 renderable/subtitle
-                title=None,
-                subtitle=None,
-                border_style="cyan",
-                box=HORIZONTAL_RULE_BOX,
-                expand=True,
-            )
+        if stop_iteration_flag[0]:
+            append_session_history(message, "")
+            return "", time.time() - start_time
 
-            response = ""
-            last_subtitle_update_time = time.time()
-            subtitle_update_interval = 1  # subtitle 更新间隔（秒）
-            update_count = 0  # 更新计数器
+        first_chunk = first_chunk_result[0] or ""
+        # 使用“尾部窗口”限制渲染成本，避免随着全文增长 wrap 越来越慢
+        try:
+            max_window_chars = int(os.environ.get("JARVIS_STREAM_MAX_WINDOW_CHARS", "20000"))
+        except Exception:
+            max_window_chars = 20000
+        if max_window_chars < 2000:
+            max_window_chars = 2000
 
-            def _update_panel_subtitle_with_token(
-                panel_obj: Panel, response_text: str, is_completed: bool = False
-            ):
-                """更新面板的 subtitle，显示 token 信息。"""
+        display_plain = ""  # 仅保留尾部窗口内容（用于 wrap 渲染）
+        text_content = Text("", overflow="fold")
+        panel = Panel(
+            text_content,  # 后续会复用 panel，只更新 renderable/subtitle
+            title=None,
+            subtitle=None,
+            border_style="cyan",
+            box=HORIZONTAL_RULE_BOX,
+            expand=True,
+        )
+
+        response = ""
+        last_subtitle_update_time = time.time()
+        subtitle_update_interval = 1  # subtitle 更新间隔（秒）
+        update_count = 0  # 更新计数器
+
+        def _update_panel_subtitle_with_token(
+            panel_obj: Panel, response_text: str, is_completed: bool = False
+        ):
+            """更新面板的 subtitle，显示 token 信息。"""
+            try:
+                threshold = 100  # 默认阈值
                 try:
-                    threshold = 100  # 默认阈值
-                    try:
-                        max_input = get_platform_max_input_token_count()
-                        current_context = get_context_token_count()
-                        threshold = max_input - current_context if max_input else 100
-                    except Exception:
-                        pass
-
-                    current_time = time.time()
-                    duration = current_time - start_time
-
-                    try:
-                        used_tokens = get_used_token_count()
-                        conversation_turn = get_conversation_turn()
-
-                        if is_completed:
-                            panel_obj.subtitle = (
-                                f"[bold green]✓ {current_time:.0f} | "
-                                f"({conversation_turn}/{threshold}) | "
-                                f"tokens: {used_tokens} | "
-                                f"耗时: {duration:.2f}秒[/bold green]"
-                            )
-                        else:
-                            hint = (
-                                "正在回答... (ESC 合并补充 · Ctrl+C 中断)"
-                                if enable_stream_esc_merge
-                                else "正在回答... (按 Ctrl+C 中断)"
-                            )
-                            panel_obj.subtitle = (
-                                f"[yellow]{current_time:.0f} | "
-                                f"({conversation_turn}/{threshold}) | "
-                                f"tokens: {used_tokens} | "
-                                f"{hint}[/yellow]"
-                            )
-                    except Exception:
-                        # 如果获取 token 信息失败，使用简化版本
-                        if is_completed:
-                            panel_obj.subtitle = (
-                                f"[bold green]✓ {current_time:.0f} | "
-                                f"耗时: {duration:.2f}秒[/bold green]"
-                            )
-                        else:
-                            hint2 = (
-                                "正在回答... (ESC 合并补充 · Ctrl+C 中断)"
-                                if enable_stream_esc_merge
-                                else "正在回答... (按 Ctrl+C 中断)"
-                            )
-                            panel_obj.subtitle = (
-                                f"[yellow]{current_time:.0f} | "
-                                f"{hint2}[/yellow]"
-                            )
+                    max_input = get_platform_max_input_token_count()
+                    current_context = get_context_token_count()
+                    threshold = max_input - current_context if max_input else 100
                 except Exception:
-                    # 如果更新 subtitle 失败，使用默认值
-                    current_time = time.time()
-                    duration = current_time - start_time
+                    pass
+
+                current_time = time.time()
+                duration = current_time - start_time
+
+                try:
+                    used_tokens = get_used_token_count()
+                    conversation_turn = get_conversation_turn()
+
                     if is_completed:
                         panel_obj.subtitle = (
-                            f"[bold green]✓ 耗时: {duration:.2f}秒[/bold green]"
+                            f"[bold green]✓ {current_time:.0f} | "
+                            f"({conversation_turn}/{threshold}) | "
+                            f"tokens: {used_tokens} | "
+                            f"耗时: {duration:.2f}秒[/bold green]"
                         )
                     else:
-                        hint3 = (
-                            "正在回答... (ESC 合并补充 · Ctrl+C 中断)"
-                            if enable_stream_esc_merge
-                            else "正在回答... (按 Ctrl+C 中断)"
+                        panel_obj.subtitle = (
+                            f"[yellow]{current_time:.0f} | "
+                            f"({conversation_turn}/{threshold}) | "
+                            f"tokens: {used_tokens} | "
+                            f"正在回答... (按 Ctrl+C 中断)[/yellow]"
                         )
-                        panel_obj.subtitle = f"[yellow]{hint3}[/yellow]"
-
-            with _rich_live_slot(), Live(
-                panel, refresh_per_second=4, transient=True
-            ) as live:
-
-                def _update_panel_content(content: str, update_subtitle: bool = False):
-                    nonlocal response, last_subtitle_update_time, update_count, text_content, panel, display_plain
-
-                    # 仅维护尾部窗口，避免全量字符串增长导致 wrap 成本线性变大
-                    display_plain = (display_plain + content)[-max_window_chars:]
-                    new_text_obj = Text(
-                        display_plain, overflow="fold", style="bright_white"
-                    )
-                    update_count += 1
-
-                    # Scrolling Logic - 只在内容超过一定行数时才应用滚动
-                    max_text_height = console.height - 5
-                    if max_text_height <= 0:
-                        max_text_height = 1
-
-                    lines = new_text_obj.wrap(
-                        console,
-                        console.width - 4 if console.width > 4 else 1,
-                    )
-
-                    # 只在内容超过最大高度时才截取，减少不必要的操作
-                    final_text = new_text_obj
-                    if len(lines) > max_text_height:
-                        # 创建新的Text对象，避免直接修改plain属性导致内部状态不一致
-                        # 这确保了Rich内部spans列表与文本内容保持同步
-                        final_text = Text(
-                            "\n".join(
-                                [line.plain for line in lines[-max_text_height:]]
-                            ),
-                            overflow="fold",
+                except Exception:
+                    # 如果获取 token 信息失败，使用简化版本
+                    if is_completed:
+                        panel_obj.subtitle = (
+                            f"[bold green]✓ {current_time:.0f} | "
+                            f"耗时: {duration:.2f}秒[/bold green]"
                         )
-
-                    # 使用锁保护 panel 更新，避免与 Live 内部线程冲突
-                    if panel_lock:
-                        with panel_lock:
-                            text_content = final_text
-                            # 复用 Panel：只更新 renderable，减少布局重算
-                            try:
-                                panel.renderable = text_content  # type: ignore[attr-defined]
-                            except Exception:
-                                # 回退：极端情况下再重建
-                                panel = Panel(
-                                    text_content,
-                                    title=None,
-                                    subtitle=None,
-                                    border_style="cyan",
-                                    box=HORIZONTAL_RULE_BOX,
-                                    expand=True,
-                                )
-
-                            # 只在需要时更新 subtitle（减少更新频率，避免重复渲染标题）
-                            # 策略：每 10 次内容更新或每 3 秒更新一次 subtitle
-                            current_time = time.time()
-                            should_update_subtitle = (
-                                update_subtitle
-                                or update_count % 10 == 0  # 每 10 次更新一次
-                                or (current_time - last_subtitle_update_time)
-                                >= subtitle_update_interval
-                            )
-
-                            if should_update_subtitle:
-                                _update_panel_subtitle_with_token(
-                                    panel, response, is_completed=False
-                                )
-                                last_subtitle_update_time = current_time
-
-                            # 更新 panel（只更新内容，subtitle 更新频率已降低）
-                            # 添加异常处理，防止 rich 内部线程冲突导致的 IndexError
-                            try:
-                                live.update(panel)
-                            except (IndexError, RuntimeError):
-                                # 忽略 rich 内部错误，避免影响主流程
-                                # 这些错误通常是由于 Live 内部线程与主线程的时序冲突导致的
-                                pass
                     else:
-                        # 如果没有提供 panel_lock，直接更新
+                        panel_obj.subtitle = (
+                            f"[yellow]{current_time:.0f} | "
+                            f"正在回答... (按 Ctrl+C 中断)[/yellow]"
+                        )
+            except Exception:
+                # 如果更新 subtitle 失败，使用默认值
+                current_time = time.time()
+                duration = current_time - start_time
+                if is_completed:
+                    panel_obj.subtitle = (
+                        f"[bold green]✓ 耗时: {duration:.2f}秒[/bold green]"
+                    )
+                else:
+                    panel_obj.subtitle = (
+                        f"[yellow]正在回答... (按 Ctrl+C 中断)[/yellow]"
+                    )
+
+        with Live(panel, refresh_per_second=4, transient=True) as live:
+
+            def _update_panel_content(content: str, update_subtitle: bool = False):
+                nonlocal response, last_subtitle_update_time, update_count, text_content, panel, display_plain
+
+                # 仅维护尾部窗口，避免全量字符串增长导致 wrap 成本线性变大
+                display_plain = (display_plain + content)[-max_window_chars:]
+                new_text_obj = Text(display_plain, overflow="fold", style="bright_white")
+                update_count += 1
+
+                # Scrolling Logic - 只在内容超过一定行数时才应用滚动
+                max_text_height = console.height - 5
+                if max_text_height <= 0:
+                    max_text_height = 1
+
+                lines = new_text_obj.wrap(
+                    console,
+                    console.width - 4 if console.width > 4 else 1,
+                )
+
+                # 只在内容超过最大高度时才截取，减少不必要的操作
+                final_text = new_text_obj
+                if len(lines) > max_text_height:
+                    # 创建新的Text对象，避免直接修改plain属性导致内部状态不一致
+                    # 这确保了Rich内部spans列表与文本内容保持同步
+                    final_text = Text(
+                        "\n".join([line.plain for line in lines[-max_text_height:]]),
+                        overflow="fold",
+                    )
+
+                # 使用锁保护 panel 更新，避免与 Live 内部线程冲突
+                if panel_lock:
+                    with panel_lock:
                         text_content = final_text
+                        # 复用 Panel：只更新 renderable，减少布局重算
                         try:
                             panel.renderable = text_content  # type: ignore[attr-defined]
                         except Exception:
+                            # 回退：极端情况下再重建
                             panel = Panel(
                                 text_content,
                                 title=None,
@@ -1776,10 +1646,12 @@ class PrettyOutput:
                                 expand=True,
                             )
 
+                        # 只在需要时更新 subtitle（减少更新频率，避免重复渲染标题）
+                        # 策略：每 10 次内容更新或每 3 秒更新一次 subtitle
                         current_time = time.time()
                         should_update_subtitle = (
                             update_subtitle
-                            or update_count % 10 == 0
+                            or update_count % 10 == 0  # 每 10 次更新一次
                             or (current_time - last_subtitle_update_time)
                             >= subtitle_update_interval
                         )
@@ -1790,92 +1662,113 @@ class PrettyOutput:
                             )
                             last_subtitle_update_time = current_time
 
+                        # 更新 panel（只更新内容，subtitle 更新频率已降低）
+                        # 添加异常处理，防止 rich 内部线程冲突导致的 IndexError
                         try:
                             live.update(panel)
                         except (IndexError, RuntimeError):
+                            # 忽略 rich 内部错误，避免影响主流程
+                            # 这些错误通常是由于 Live 内部线程与主线程的时序冲突导致的
                             pass
-
-                # Process first chunk
-                response += first_chunk
-                if first_chunk:
-                    _update_panel_content(
-                        first_chunk, update_subtitle=True
-                    )  # 第一次更新时更新 subtitle
-
-                if enable_stream_esc_merge and esc_hit.is_set():
-                    esc_hit.clear()
-                    offer_stream_esc_merge(message, response)
-                    return response, time.time() - start_time
-
-                # 缓存机制：降低更新频率，减少界面闪烁
-                buffer = ""
-                last_update_time = time.time()
-                # A 方案：节流 Live 刷新，避免每个字符都触发 wrap + live.update
-                # 可通过环境变量微调：
-                # - JARVIS_STREAM_UPDATE_INTERVAL: 秒（默认 0.15）
-                # - JARVIS_STREAM_MIN_BUFFER_SIZE: 字符数（默认 120）
-                # 默认值：质量优先的同时减少卡顿（约 6-10 次/秒刷新，避免每字符刷新）
-                try:
-                    update_interval = float(
-                        os.environ.get("JARVIS_STREAM_UPDATE_INTERVAL", "0.16")
-                    )
-                except Exception:
-                    update_interval = 0.16
-                try:
-                    min_buffer_size = int(
-                        os.environ.get("JARVIS_STREAM_MIN_BUFFER_SIZE", "140")
-                    )
-                except Exception:
-                    min_buffer_size = 140
-                if update_interval < 0.05:
-                    update_interval = 0.05
-                if min_buffer_size < 16:
-                    min_buffer_size = 16
-
-                def _flush_buffer():
-                    nonlocal buffer, last_update_time
-                    if buffer:
-                        _update_panel_content(buffer)
-                        buffer = ""
-                        last_update_time = time.time()
-
-                # Process rest of the chunks
-                for s in chat_iterator:
-                    if enable_stream_esc_merge and esc_hit.is_set():
-                        esc_hit.clear()
-                        offer_stream_esc_merge(message, response)
-                        _flush_buffer()
-                        return response, time.time() - start_time
-
-                    if not s:
-                        continue
-                    response += s
-                    buffer += s
+                else:
+                    # 如果没有提供 panel_lock，直接更新
+                    text_content = final_text
+                    try:
+                        panel.renderable = text_content  # type: ignore[attr-defined]
+                    except Exception:
+                        panel = Panel(
+                            text_content,
+                            title=None,
+                            subtitle=None,
+                            border_style="cyan",
+                            box=HORIZONTAL_RULE_BOX,
+                            expand=True,
+                        )
 
                     current_time = time.time()
-                    should_update = (
-                        len(buffer) >= min_buffer_size
-                        or (current_time - last_update_time) >= update_interval
+                    should_update_subtitle = (
+                        update_subtitle
+                        or update_count % 10 == 0
+                        or (current_time - last_subtitle_update_time)
+                        >= subtitle_update_interval
                     )
 
-                    if should_update:
-                        _flush_buffer()
+                    if should_update_subtitle:
+                        _update_panel_subtitle_with_token(
+                            panel, response, is_completed=False
+                        )
+                        last_subtitle_update_time = current_time
 
-                    # 检查中断
                     try:
-                        if is_immediate_abort() and (
-                            check_interrupt and check_interrupt()
-                        ):
-                            _flush_buffer()
-                            append_session_history(message, response)
-                            return response, time.time() - start_time
-                    except Exception:
+                        live.update(panel)
+                    except (IndexError, RuntimeError):
                         pass
 
-                _flush_buffer()
-                # 在结束前，将面板内容替换为完整响应，确保最后一次渲染的 panel 显示全部内容
+            # Process first chunk
+            response += first_chunk
+            if first_chunk:
+                _update_panel_content(
+                    first_chunk, update_subtitle=True
+                )  # 第一次更新时更新 subtitle
 
-        finally:
-            _esc_cleanup()
+            # 缓存机制：降低更新频率，减少界面闪烁
+            buffer = ""
+            last_update_time = time.time()
+            # A 方案：节流 Live 刷新，避免每个字符都触发 wrap + live.update
+            # 可通过环境变量微调：
+            # - JARVIS_STREAM_UPDATE_INTERVAL: 秒（默认 0.15）
+            # - JARVIS_STREAM_MIN_BUFFER_SIZE: 字符数（默认 120）
+            # 默认值：质量优先的同时减少卡顿（约 6-10 次/秒刷新，避免每字符刷新）
+            try:
+                update_interval = float(
+                    os.environ.get("JARVIS_STREAM_UPDATE_INTERVAL", "0.16")
+                )
+            except Exception:
+                update_interval = 0.16
+            try:
+                min_buffer_size = int(
+                    os.environ.get("JARVIS_STREAM_MIN_BUFFER_SIZE", "140")
+                )
+            except Exception:
+                min_buffer_size = 140
+            if update_interval < 0.05:
+                update_interval = 0.05
+            if min_buffer_size < 16:
+                min_buffer_size = 16
+
+            def _flush_buffer():
+                nonlocal buffer, last_update_time
+                if buffer:
+                    _update_panel_content(buffer)
+                    buffer = ""
+                    last_update_time = time.time()
+
+            # Process rest of the chunks
+            for s in chat_iterator:
+                if not s:
+                    continue
+                response += s
+                buffer += s
+
+                current_time = time.time()
+                should_update = (
+                    len(buffer) >= min_buffer_size
+                    or (current_time - last_update_time) >= update_interval
+                )
+
+                if should_update:
+                    _flush_buffer()
+
+                # 检查中断
+                try:
+                    if is_immediate_abort() and (check_interrupt and check_interrupt()):
+                        _flush_buffer()
+                        append_session_history(message, response)
+                        return response, time.time() - start_time
+                except Exception:
+                    pass
+
+            _flush_buffer()
+            # 在结束前，将面板内容替换为完整响应，确保最后一次渲染的 panel 显示全部内容
 
         return response, time.time() - start_time

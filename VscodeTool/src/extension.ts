@@ -2,16 +2,6 @@ import * as vscode from "vscode";
 import { spawn, ChildProcessWithoutNullStreams } from "node:child_process";
 import * as path from "node:path";
 
-function getNonce(): string {
-  let text = "";
-  const possible =
-    "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
-  for (let i = 0; i < 32; i++) {
-    text += possible.charAt(Math.floor(Math.random() * possible.length));
-  }
-  return text;
-}
-
 type Backend = "jca" | "jvs";
 
 type WebviewToExtension =
@@ -49,8 +39,8 @@ class JarvisChatPanel {
     this.lastBackend = backend;
     this.post({ type: "setBackend", backend });
 
-    this.panel.webview.onDidReceiveMessage((msg: unknown) => {
-      void this.safeHandleWebviewMessage(msg);
+    this.panel.webview.onDidReceiveMessage((msg: WebviewToExtension) => {
+      void this.onMessage(msg);
     });
 
     this.panel.onDidDispose(() => {
@@ -70,41 +60,6 @@ class JarvisChatPanel {
 
   public async sendWithContext(text: string, mode: "none" | "selection" | "file" | "explorer") {
     await this.onMessage({ type: "send", text, contextMode: mode });
-  }
-
-  /** 校验 webview 消息并捕获异常，避免静默失败（用户感知为 Send 无反应）。 */
-  private async safeHandleWebviewMessage(raw: unknown) {
-    try {
-      if (!raw || typeof raw !== "object") {
-        return;
-      }
-      const msg = raw as Record<string, unknown>;
-      const t = msg.type;
-      if (t === "setBackend") {
-        const b = msg.backend === "jvs" ? "jvs" : "jca";
-        await this.onMessage({ type: "setBackend", backend: b });
-        return;
-      }
-      if (t === "stop") {
-        await this.onMessage({ type: "stop" });
-        return;
-      }
-      if (t === "send") {
-        const text = typeof msg.text === "string" ? msg.text : "";
-        const cm = msg.contextMode;
-        const contextMode =
-          cm === "selection" || cm === "file" || cm === "explorer" || cm === "none"
-            ? cm
-            : "none";
-        await this.onMessage({ type: "send", text, contextMode });
-        return;
-      }
-    } catch (e) {
-      this.post({
-        type: "appendSystem",
-        text: `插件处理消息失败：${String(e)}`,
-      });
-    }
   }
 
   private async onMessage(msg: WebviewToExtension) {
@@ -269,14 +224,13 @@ class JarvisChatPanel {
   }
 
   private renderHtml(webview: vscode.Webview) {
-    const nonce = getNonce();
-    const cspSource = webview.cspSource;
+    const nonce = String(Date.now());
     const backend = this.getBackendSetting();
     return `<!doctype html>
 <html>
 <head>
   <meta charset="utf-8" />
-  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${cspSource} 'unsafe-inline'; script-src 'nonce-${nonce}';" />
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'nonce-${nonce}';" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Jarvis Chat</title>
   <style>
@@ -320,70 +274,50 @@ class JarvisChatPanel {
   </div>
 
   <script nonce="${nonce}">
-    (function () {
-      const vscode = acquireVsCodeApi();
-      const log = document.getElementById('log');
-      const input = document.getElementById('input');
-      const btnSend = document.getElementById('btnSend');
-      const btnStop = document.getElementById('btnStop');
-      const backendSel = document.getElementById('backendSel');
-      const backendBadge = document.getElementById('backendBadge');
-      const ctxSel = document.getElementById('ctxSel');
-      if (!log || !input || !btnSend || !btnStop || !backendSel || !backendBadge || !ctxSel) {
-        document.body.innerHTML = '<p style="padding:12px">Jarvis Chat: 页面元素加载失败，请关闭面板后重试。</p>';
-        return;
+    const vscode = acquireVsCodeApi();
+    const log = document.getElementById('log');
+    const input = document.getElementById('input');
+    const btnSend = document.getElementById('btnSend');
+    const btnStop = document.getElementById('btnStop');
+    const backendSel = document.getElementById('backendSel');
+    const backendBadge = document.getElementById('backendBadge');
+    const ctxSel = document.getElementById('ctxSel');
+
+    function appendLine(cls, text) {
+      const pre = document.createElement('pre');
+      pre.className = cls;
+      pre.textContent = text;
+      log.appendChild(pre);
+      log.scrollTop = log.scrollHeight;
+    }
+
+    btnSend.addEventListener('click', () => {
+      const text = input.value || '';
+      if (!text.trim()) return;
+      appendLine('msg-user', '> ' + text);
+      input.value = '';
+      vscode.postMessage({ type: 'send', text, contextMode: ctxSel.value });
+    });
+
+    btnStop.addEventListener('click', () => vscode.postMessage({ type: 'stop' }));
+
+    backendSel.addEventListener('change', () => {
+      vscode.postMessage({ type: 'setBackend', backend: backendSel.value });
+    });
+
+    window.addEventListener('message', (ev) => {
+      const msg = ev.data;
+      if (msg.type === 'appendAssistant') appendLine('msg-assistant', msg.text);
+      if (msg.type === 'appendSystem') appendLine('msg-system', msg.text);
+      if (msg.type === 'setBackend') {
+        backendSel.value = msg.backend;
+        backendBadge.textContent = 'backend: ' + msg.backend;
       }
-
-      function appendLine(cls, text) {
-        const pre = document.createElement('pre');
-        pre.className = cls;
-        pre.textContent = text;
-        log.appendChild(pre);
-        log.scrollTop = log.scrollHeight;
+      if (msg.type === 'setRunning') {
+        btnStop.disabled = !msg.running;
+        btnSend.disabled = msg.running;
       }
-
-      function doSend() {
-        if (btnSend.disabled) return;
-        const text = input.value || '';
-        if (!text.trim()) return;
-        appendLine('msg-user', '> ' + text);
-        input.value = '';
-        const contextMode = ctxSel.value;
-        vscode.postMessage({ type: 'send', text: text, contextMode: contextMode });
-      }
-
-      btnSend.addEventListener('click', function () { doSend(); });
-
-      input.addEventListener('keydown', function (e) {
-        if (e.key === 'Enter' && !e.shiftKey) {
-          e.preventDefault();
-          doSend();
-        }
-      });
-
-      btnStop.addEventListener('click', function () {
-        vscode.postMessage({ type: 'stop' });
-      });
-
-      backendSel.addEventListener('change', function () {
-        vscode.postMessage({ type: 'setBackend', backend: backendSel.value });
-      });
-
-      window.addEventListener('message', function (ev) {
-        var msg = ev.data;
-        if (!msg || typeof msg !== 'object') return;
-        if (msg.type === 'appendAssistant') appendLine('msg-assistant', msg.text);
-        if (msg.type === 'appendSystem') appendLine('msg-system', msg.text);
-        if (msg.type === 'setBackend') {
-          backendSel.value = msg.backend;
-          backendBadge.textContent = 'backend: ' + msg.backend;
-        }
-        if (msg.type === 'setRunning') {
-          btnStop.disabled = !msg.running;
-          btnSend.disabled = msg.running;
-        }
-      });
-    })();
+    });
   </script>
 </body>
 </html>`;
