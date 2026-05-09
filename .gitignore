@@ -6,17 +6,10 @@ run.sh
 
 # .jarvis 目录配置
 !.jarvis/
-.jarvis/sessions/           # 忽略会话历史（大文件）
-.jarvis/symbol_cache/      # 忽略符号缓存
-.jarvis/task_lists/        # 忽略任务列表快照
-# 取消 .jarvis 目录下 .txt 文件的忽略（除了 sessions 和 symbol_cache）
-!.jarvis/memory/*.txt
-!.jarvis/methodologies/*.txt
-!.jarvis/rules/*.txt
-!.jarvis/spec/*.txt
-!.jarvis/evolution/*.txt
-!.jarvis/task_lists/*.txt
-!.jarvis/jsec/*.txt
+# 忽略 .jarvis 下的生成目录
+.jarvis/sessions/
+.jarvis/symbol_cache/
+.jarvis/task_lists/
 
 # .jarvis_config 目录（全局配置同步）将被跟踪
 !.jarvis_config/
