@@ -163,7 +163,12 @@ def _ensure_output_watchdog_started() -> None:
                     now = time.time()
                     silent_for = now - (_LAST_OUTPUT_TS or now)
                     # 静默超过阈值时，展示“思考中...”动态提示，直到任意输出恢复
-                    if (not live_active) and silent_for >= _WATCHDOG_SILENCE_THRESHOLD_S:
+                    if (
+                        (not live_active)
+                        and silent_for >= _WATCHDOG_SILENCE_THRESHOLD_S
+                        # 与 stream_chat_with_panel 等使用的 Rich Live 互斥：同 console 只能有一个 Live
+                        and not jarvis_globals.get_in_chat()
+                    ):
                         live_active = True
                         try:
                             from rich.live import Live
@@ -1495,6 +1500,10 @@ class PrettyOutput:
                     dots_str = "." * (thinking_dots + 1)
                     text_content = Text(f"思考中{dots_str}", style="bright_cyan")
                     live.update(text_content)
+                    try:
+                        _touch_output()
+                    except Exception:
+                        pass
                     time.sleep(0.4)
         fetch_thread.join()
 

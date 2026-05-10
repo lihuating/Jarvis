@@ -190,6 +190,7 @@ def _run_btw_isolated_chat(user_question: str) -> None:
 
     from jarvis.jarvis_utils.embedding import get_context_token_count
     from jarvis.jarvis_utils.globals import get_interrupt
+    from jarvis.jarvis_utils.globals import set_in_chat
 
     reg = PlatformRegistry.get_global_platform_registry()
     plat = reg.create_platform(platform_type="normal", silent=True)
@@ -213,21 +214,26 @@ def _run_btw_isolated_chat(user_question: str) -> None:
 
     out = ""
     try:
-        out, _dur = PrettyOutput.stream_chat_with_panel(
-            chat_iterator=plat.chat(msg),
-            title="BTW",
-            status_message="💬 BTW（独立问答，不写入主会话上下文）· 思考中...",
-            get_used_token_count=plat.get_used_token_count,
-            get_conversation_turn=plat.get_conversation_turn,
-            get_platform_max_input_token_count=plat._get_platform_max_input_token_count,
-            get_context_token_count=get_context_token_count,
-            append_session_history=_noop_append,
-            start_time=start,
-            message=msg,
-            max_output=0,
-            check_interrupt=get_interrupt,
-            panel_lock=plat._panel_lock,
-        )
+        # BTW 不经 chat_until_success，须标记 in_chat，避免全局看门狗再开 Live 与流式面板冲突
+        set_in_chat(True)
+        try:
+            out, _dur = PrettyOutput.stream_chat_with_panel(
+                chat_iterator=plat.chat(msg),
+                title="BTW",
+                status_message="💬 BTW（独立问答，不写入主会话上下文）· 思考中...",
+                get_used_token_count=plat.get_used_token_count,
+                get_conversation_turn=plat.get_conversation_turn,
+                get_platform_max_input_token_count=plat._get_platform_max_input_token_count,
+                get_context_token_count=get_context_token_count,
+                append_session_history=_noop_append,
+                start_time=start,
+                message=msg,
+                max_output=0,
+                check_interrupt=get_interrupt,
+                panel_lock=plat._panel_lock,
+            )
+        finally:
+            set_in_chat(False)
     except Exception as e:
         PrettyOutput.auto_print(f"⚠️ BTW 失败: {e}")
         return

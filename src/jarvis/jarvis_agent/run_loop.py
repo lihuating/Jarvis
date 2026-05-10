@@ -363,34 +363,13 @@ class AgentRunLoop:
 
                 # 调用模型获取响应
                 try:
-                    # 体验优化：模型首 token 可能较慢（尤其在长上下文/压缩后）。
-                    # 用“延迟显示”的 thinking 指示避免看起来像卡死。
-                    stop_event = threading.Event()
-                    result_holder = [""]
-                    exception_holder = [None]
-
-                    def _call_model_worker() -> None:
-                        try:
-                            result_holder[0] = ag._call_model(
-                                ag.session.prompt, True, run_input_handlers
-                            )
-                        except Exception as e:
-                            exception_holder[0] = e
-                        finally:
-                            stop_event.set()
-
-                    t = threading.Thread(target=_call_model_worker, daemon=True)
-                    t.start()
-                    try:
-                        PrettyOutput.show_thinking_until(stop_event)
-                    except KeyboardInterrupt:
-                        stop_event.set()
-                        raise
-                    stop_event.set()
-                    t.join(timeout=120)
-                    if exception_holder[0] is not None:
-                        raise exception_holder[0]
-                    current_response = result_holder[0]
+                    # 必须在主线程调用模型：stream_chat_with_panel 使用 Rich Live，而
+                    # show_thinking_until 也使用 Live；若在线程 A 调模型、主线程同时
+                    # show_thinking_until，会触发「Only one live display may be active at once」。
+                    # 首包/流式阶段的「思考中」已由 PrettyOutput.stream_chat_with_panel 负责。
+                    current_response = ag._call_model(
+                        ag.session.prompt, True, run_input_handlers
+                    )
                 except KeyboardInterrupt:
                     # 获取用户补充信息并继续下一轮
                     addon_info = self._handle_interrupt_with_input()
