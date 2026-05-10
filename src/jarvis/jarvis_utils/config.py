@@ -1456,6 +1456,35 @@ def is_code_agent_show_git_diff() -> bool:
     return cast(bool, GLOBAL_CONFIG_DATA.get("code_agent_show_git_diff", True))
 
 
+def get_jca_check_circuit_breaker_threshold() -> int:
+    """
+    jca 构建/静态检查自动修复熔断：同一批修改文件连续失败次数上限（见 ``jca_check_circuit_breaker_threshold``）。
+
+    默认 2：当连续失败次数 **大于** 该值时熔断，即**第 3 次**仍失败则触发。范围 1～50。
+    """
+    raw = GLOBAL_CONFIG_DATA.get("jca_check_circuit_breaker_threshold", 2)
+    try:
+        n = int(raw)
+    except (TypeError, ValueError):
+        return 2
+    return max(1, min(n, 50))
+
+
+def get_jca_circuit_breaker_same_diff_injections() -> int:
+    """
+    jca 熔断补充条件：工作区 diff 未变却仍被追加修复提示的连续次数上限。
+
+    配置键 ``jca_circuit_breaker_same_diff_injections``，默认 2。设为 0 表示仅按
+    ``get_jca_check_circuit_breaker_threshold`` 的文件维度熔断，不启用「diff 停滞」快速熔断。
+    """
+    raw = GLOBAL_CONFIG_DATA.get("jca_circuit_breaker_same_diff_injections", 2)
+    try:
+        n = int(raw)
+    except (TypeError, ValueError):
+        return 2
+    return max(0, min(n, 20))
+
+
 def get_diff_large_file_threshold() -> int:
     """
     获取大文件阈值（超过此行数只显示统计）

@@ -246,6 +246,9 @@ class CodeAgent(Agent):
         # 熔断：连续构建/静态检查失败计数，防止模型反复修复同一问题陷入死循环
         self._consecutive_check_failures: int = 0
         self._last_check_failure_hash: Optional[str] = None
+        # 补充：工作区 diff 未变却连续注入修复提示（模型未真正落盘或反复无效）
+        self._consecutive_same_diff_injections: int = 0
+        self._last_check_injection_diff_hash: Optional[str] = None
 
     def get_user_origin_input(self) -> str:
         """获取原始用户输入（CodeAgent重写）
@@ -999,7 +1002,12 @@ git reset --hard {start_commit}
             addon_after_checks = getattr(self.session, "addon_prompt", None) or ""
             check_injected_fix_prompt = addon_after_checks != addon_before_checks
             if check_injected_fix_prompt:
-                # 用 diff 文件列表的 hash 判断是否为同一组文件的同一类错误
+                from jarvis.jarvis_utils.config import (
+                    get_jca_check_circuit_breaker_threshold,
+                    get_jca_circuit_breaker_same_diff_injections,
+                )
+
+                # 文件集合维度：同一批文件反复失败
                 files_hash = hashlib.sha256(
                     ",".join(sorted(modified_files)).encode()
                 ).hexdigest()
@@ -1008,23 +1016,54 @@ git reset --hard {start_commit}
                 else:
                     self._consecutive_check_failures = 1
                     self._last_check_failure_hash = files_hash
-                # 连续失败超过阈值时，清除修复提示并发出警告，阻止死循环
-                max_consecutive = 3
-                if self._consecutive_check_failures > max_consecutive:
+
+                # diff 维度：工作区未变却仍追加修复提示（典型空转 / 工具未落盘）
+                if diff_hash == self._last_check_injection_diff_hash:
+                    self._consecutive_same_diff_injections += 1
+                else:
+                    self._consecutive_same_diff_injections = 1
+                    self._last_check_injection_diff_hash = diff_hash
+
+                max_files = get_jca_check_circuit_breaker_threshold()
+                max_same_diff = get_jca_circuit_breaker_same_diff_injections()
+                trip_by_files = self._consecutive_check_failures > max_files
+                trip_by_stagnation = (
+                    max_same_diff > 0
+                    and self._consecutive_same_diff_injections >= max_same_diff
+                )
+                if trip_by_files or trip_by_stagnation:
+                    parts: List[str] = []
+                    if trip_by_files:
+                        parts.append(
+                            f"同一批修改文件已连续失败 {self._consecutive_check_failures} 次（阈值 {max_files}）"
+                        )
+                    if trip_by_stagnation:
+                        parts.append(
+                            f"工作区 diff 连续 {self._consecutive_same_diff_injections} 次未变仍注入修复提示（阈值 {max_same_diff}）"
+                        )
                     PrettyOutput.auto_print(
-                        f"🛑 熔断：构建/静态检查已连续失败 {self._consecutive_check_failures} 次，"
-                        "停止自动修复以避免死循环。"
+                        "🛑 熔断："
+                        + "；".join(parts)
+                        + "。已停止自动追加修复提示，避免死循环。"
                     )
                     PrettyOutput.auto_print(
-                        "💡 建议：手动检查上述文件，或使用 git stash/reset 回退到安全状态。"
+                        "💡 可在 config.yaml 中调整 "
+                        "`jca_check_circuit_breaker_threshold` / "
+                        "`jca_circuit_breaker_same_diff_injections`；"
+                        "或手动检查上述文件，使用 git stash/reset 回退。"
                     )
                     # 恢复到检查前的 addon_prompt，丢弃本轮注入的修复提示
                     self.set_addon_prompt(addon_before_checks)
                     self._consecutive_check_failures = 0
+                    self._last_check_failure_hash = None
+                    self._consecutive_same_diff_injections = 0
+                    self._last_check_injection_diff_hash = None
             else:
                 # 检查通过，重置计数器
                 self._consecutive_check_failures = 0
                 self._last_check_failure_hash = None
+                self._consecutive_same_diff_injections = 0
+                self._last_check_injection_diff_hash = None
         else:
             return
         # 用户确认最终结果
