@@ -13,6 +13,8 @@ from typing import cast
 from openai import OpenAI
 
 from jarvis.jarvis_platform.base import BasePlatform
+from jarvis.jarvis_utils.config import is_immediate_abort
+from jarvis.jarvis_utils.globals import get_interrupt
 from jarvis.jarvis_utils.output import PrettyOutput
 from jarvis.jarvis_utils.tag import ot, ct
 
@@ -267,6 +269,8 @@ class OpenAIModel(BasePlatform):
 
                 full = ""
                 for chunk in response:
+                    if is_immediate_abort() and get_interrupt():
+                        break
                     from openai.types.chat import ChatCompletionChunk
 
                     chunk_typed: ChatCompletionChunk = cast(ChatCompletionChunk, chunk)
@@ -298,6 +302,8 @@ class OpenAIModel(BasePlatform):
                 stream_gen = _stream_once()
                 # 手动消费生成器以拼 full_response
                 for piece in stream_gen:  # type: ignore[assignment]
+                    if is_immediate_abort() and get_interrupt():
+                        break
                     full_response += piece
                     yield piece
             except Exception as e1:
@@ -306,6 +312,8 @@ class OpenAIModel(BasePlatform):
                 try:
                     stream_gen = _stream_once()
                     for piece in stream_gen:  # type: ignore[assignment]
+                        if is_immediate_abort() and get_interrupt():
+                            break
                         full_response += piece
                         yield piece
                 except Exception:

@@ -1464,6 +1464,16 @@ class PrettyOutput:
         from jarvis.jarvis_utils.config import is_immediate_abort
         from jarvis.jarvis_utils.rich_box import HORIZONTAL_RULE_BOX
 
+        def _abort_stream() -> bool:
+            try:
+                if not is_immediate_abort():
+                    return False
+                if not check_interrupt:
+                    return False
+                return bool(check_interrupt())
+            except Exception:
+                return False
+
         # 用于后台线程存放首个 chunk 或 StopIteration
         first_chunk_result = [None]
         stop_iteration_flag = [False]
@@ -1489,13 +1499,17 @@ class PrettyOutput:
         elapsed = 0.0
         check_interval = 0.2
         while elapsed < thinking_delay and fetch_thread.is_alive():
+            if _abort_stream():
+                break
             time.sleep(check_interval)
             elapsed += check_interval
-        if fetch_thread.is_alive():
+        if fetch_thread.is_alive() and not _abort_stream():
             thinking_dots = 0
             text_content = Text("思考中.", style="bright_cyan")
             with Live(text_content, refresh_per_second=4, transient=True) as live:
                 while fetch_thread.is_alive():
+                    if _abort_stream():
+                        break
                     thinking_dots = (thinking_dots + 1) % 4
                     dots_str = "." * (thinking_dots + 1)
                     text_content = Text(f"思考中{dots_str}", style="bright_cyan")
@@ -1505,7 +1519,21 @@ class PrettyOutput:
                     except Exception:
                         pass
                     time.sleep(0.4)
-        fetch_thread.join()
+        # 等待首包线程：正常等价于无限 join；Ctrl+C 后仅再等待短窗口，尽快退出 Rich Live
+        join_deadline: Optional[float] = None
+        while fetch_thread.is_alive():
+            if _abort_stream():
+                join_deadline = time.time() + 2.0
+            fetch_thread.join(timeout=0.12)
+            if join_deadline is not None and time.time() >= join_deadline:
+                break
+        if fetch_thread.is_alive():
+            append_session_history(message, "")
+            try:
+                PrettyOutput.auto_print("⏹️ 已中断等待模型首包（Ctrl+C）。")
+            except Exception:
+                pass
+            return "", time.time() - start_time
 
         # 首 chunk 获取失败：给出友好错误并降级（返回空响应，避免交互卡死）
         if first_chunk_error[0] is not None:
@@ -1754,6 +1782,14 @@ class PrettyOutput:
 
             # Process rest of the chunks
             for s in chat_iterator:
+                if _abort_stream():
+                    _flush_buffer()
+                    append_session_history(message, response)
+                    try:
+                        PrettyOutput.auto_print("⏹️ 已中断模型输出（Ctrl+C）。")
+                    except Exception:
+                        pass
+                    return response, time.time() - start_time
                 if not s:
                     continue
                 response += s
@@ -1768,11 +1804,15 @@ class PrettyOutput:
                 if should_update:
                     _flush_buffer()
 
-                # 检查中断
+                # 检查中断（节流刷新后再次确认）
                 try:
-                    if is_immediate_abort() and (check_interrupt and check_interrupt()):
+                    if _abort_stream():
                         _flush_buffer()
                         append_session_history(message, response)
+                        try:
+                            PrettyOutput.auto_print("⏹️ 已中断模型输出（Ctrl+C）。")
+                        except Exception:
+                            pass
                         return response, time.time() - start_time
                 except Exception:
                     pass

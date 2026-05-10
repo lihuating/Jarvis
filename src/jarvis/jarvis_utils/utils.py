@@ -33,6 +33,7 @@ from jarvis.jarvis_utils.config import (
     read_text_file,
     set_llm_group,
 )
+from jarvis.jarvis_utils.config import is_immediate_abort
 from jarvis.jarvis_utils.config import set_global_config_data
 from jarvis.jarvis_utils.embedding import get_context_token_count
 from jarvis.jarvis_utils.globals import get_in_chat
@@ -1293,6 +1294,10 @@ def while_success(func: Callable[[], Any]) -> Any:
             _reset_retry_count_success()  # 成功后重置计数器
             break
         except Exception as e:
+            # 用户 Ctrl+C：不再进入长 sleep 重试，尽快回到上层（如输入提示）
+            if get_interrupt() > 0 and is_immediate_abort():
+                _reset_retry_count_success()
+                return None
             retry_count = _increment_retry_count_success()
             if retry_count <= MAX_RETRIES:
                 # 指数退避：第1次等待1s (2^0)，第2次等待2s (2^1)，第3次等待4s (2^2)，第4次等待8s (2^3)，第6次等待32s (2^5)
@@ -1301,7 +1306,14 @@ def while_success(func: Callable[[], Any]) -> Any:
                     PrettyOutput.auto_print(
                         f"⚠️ 发生异常:\n{e}\n重试中 ({retry_count}/{MAX_RETRIES})，等待 {sleep_time}s..."
                     )
-                    time.sleep(sleep_time)
+                    remaining = float(sleep_time)
+                    while remaining > 0:
+                        if get_interrupt() > 0 and is_immediate_abort():
+                            _reset_retry_count_success()
+                            return None
+                        step = min(0.15, remaining)
+                        time.sleep(step)
+                        remaining -= step
                 else:
                     PrettyOutput.auto_print(
                         f"⚠️ 发生异常:\n{e}\n已达到最大重试次数 ({retry_count}/{MAX_RETRIES})"
@@ -1353,7 +1365,14 @@ def while_true(func: Callable[[], bool]) -> Any:
                 PrettyOutput.auto_print(
                     f"⚠️ 返回空值，重试中 ({retry_count}/{MAX_RETRIES})，等待 {sleep_time}s..."
                 )
-                time.sleep(sleep_time)
+                remaining = float(sleep_time)
+                while remaining > 0:
+                    if get_interrupt() > 0 and is_immediate_abort():
+                        _reset_retry_count_true()
+                        return False
+                    step = min(0.15, remaining)
+                    time.sleep(step)
+                    remaining -= step
             else:
                 PrettyOutput.auto_print(
                     f"⚠️ 返回空值，已达到最大重试次数 ({retry_count}/{MAX_RETRIES})"

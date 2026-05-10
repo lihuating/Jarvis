@@ -1235,22 +1235,44 @@ def builtin_input_handler(user_input: str, agent_: Any) -> Tuple[str, bool]:
                 PrettyOutput.auto_print(f"⚠️ 获取内存标签失败: {e}")
                 return "", True
 
-            tags_by_type = get_all_memory_tags() or {}
-            if not tags_by_type:
+            # None：不截断唯一标签数（与注入模型的 get_all_memory_tags() 默认 200 区分）
+            tags_by_type = get_all_memory_tags(max_tags_per_type=None) or {}
+            session_tags: List[str] = []
+            if callable(getattr(agent, "get_memory_tags", None)):
+                try:
+                    session_tags = sorted(set(agent.get_memory_tags() or []))
+                except Exception:
+                    session_tags = []
+            has_persisted = any(
+                (tags_by_type.get(k) or []) for k in ("short_term", "project_long_term", "global_long_term")
+            )
+            if not has_persisted and not session_tags:
                 PrettyOutput.auto_print("📭 未找到任何记忆标签")
                 return "", True
 
-            PrettyOutput.auto_print("🏷️ 记忆标签概览：")
-            # 稳定输出顺序
+            type_labels = {
+                "short_term": "短期记忆 (short_term)",
+                "project_long_term": "项目长期记忆 (project_long_term)",
+                "global_long_term": "全局长期记忆 (global_long_term)",
+            }
+            PrettyOutput.auto_print("🏷️ 记忆标签概览（持久化按类型全量列出；同名字母序）：")
+            tags_per_line = 28
             for m_type in ["short_term", "project_long_term", "global_long_term"]:
                 t_list = tags_by_type.get(m_type, []) or []
                 if not t_list:
                     continue
-                show_max = 60
-                preview = ", ".join(t_list[:show_max])
-                if len(t_list) > show_max:
-                    preview += f", ...（共 {len(t_list)} 个）"
-                PrettyOutput.auto_print(f"  - {m_type}: {preview}")
+                label = type_labels.get(m_type, m_type)
+                PrettyOutput.auto_print(f"  ▶ {label} — 共 {len(t_list)} 个")
+                for i in range(0, len(t_list), tags_per_line):
+                    chunk = t_list[i : i + tags_per_line]
+                    PrettyOutput.auto_print("    " + ", ".join(chunk))
+            if session_tags:
+                PrettyOutput.auto_print(
+                    f"  ▶ 当前会话已收集标签（Agent.memory_tags，含 memory 工具写入） — 共 {len(session_tags)} 个"
+                )
+                for i in range(0, len(session_tags), tags_per_line):
+                    chunk = session_tags[i : i + tags_per_line]
+                    PrettyOutput.auto_print("    " + ", ".join(chunk))
             return "", True
 
         elif tag == "MemorySave":

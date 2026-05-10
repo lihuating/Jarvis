@@ -337,19 +337,55 @@ def clear_short_term_memories() -> None:
     short_term_memories.clear()
 
 
-def get_all_memory_tags() -> Dict[str, List[str]]:
+def _sample_tags_when_over_limit(
+    all_tags_sorted: List[str],
+    memories: List[Dict[str, Any]],
+    max_n: int,
+) -> List[str]:
+    """唯一标签数超过 max_n 时，用「最近记忆 + 随机记忆」并集采样，避免提示词爆炸。"""
+    import random
+
+    if max_n <= 0 or len(all_tags_sorted) <= max_n:
+        return all_tags_sorted
+    if not memories:
+        return all_tags_sorted[:max_n]
+    sorted_memories = sorted(
+        memories, key=lambda x: x.get("created_at", ""), reverse=True
+    )
+    half_count = max_n // 2
+    recent_tags: set[str] = set()
+    mid = max(1, len(sorted_memories) // 2)
+    for memory in sorted_memories[:mid]:
+        recent_tags.update(memory.get("tags") or [])
+        if len(recent_tags) >= half_count:
+            break
+    remaining_memories = sorted_memories[mid:]
+    random_tags: set[str] = set()
+    sample_size = min(len(remaining_memories), max_n)
+    if sample_size > 0:
+        for memory in random.sample(remaining_memories, sample_size):
+            random_tags.update(memory.get("tags") or [])
+            if len(recent_tags) + len(random_tags) >= max_n:
+                break
+    mixed = sorted(recent_tags | random_tags)
+    if not mixed:
+        return all_tags_sorted[:max_n]
+    return mixed[:max_n]
+
+
+def get_all_memory_tags(max_tags_per_type: Optional[int] = 200) -> Dict[str, List[str]]:
     """
-    获取所有记忆类型中的标签集合。
-    每个类型最多返回200个标签。当标签数超过200时，采用混合策略：
-    - 约100个标签从最近的记忆中提取（按创建时间排序）
-    - 其余约100个标签从剩余记忆中随机提取
-    - 合并后取前200个标签返回
+    获取所有记忆类型中的标签集合（各类型内去重后排序）。
+
+    参数:
+        max_tags_per_type: 每种记忆类型最多返回多少个**唯一**标签。
+            默认 200：超过时采用混合采样（最近记忆 + 随机记忆），供注入模型提示词等场景。
+            传入 ``None`` 表示不截断，返回该类型下全部唯一标签（用于 ``'<MemoryTags>'`` 列举等）。
 
     返回:
         Dict[str, List[str]]: 按记忆类型分组的标签列表
     """
     import json
-    import random
     from pathlib import Path
 
     from jarvis.jarvis_utils.config import get_data_dir
@@ -360,140 +396,65 @@ def get_all_memory_tags() -> Dict[str, List[str]]:
         "global_long_term": [],
     }
 
-    MAX_TAGS_PER_TYPE = 200
+    default_cap = 200
 
-    # 获取短期记忆标签
+    # 短期记忆：从内存中的条目归集唯一 tags
     short_term_tags = set()
     for memory in short_term_memories:
-        short_term_tags.update(memory.get("tags", []))
-    short_term_tags_list = sorted(list(short_term_tags))
-    if len(short_term_tags_list) > MAX_TAGS_PER_TYPE:
-        # 混合策略：一半从最近的记忆中提取，另一半随机提取
-        # 按创建时间排序记忆（最新的在前）
-        sorted_memories = sorted(
-            short_term_memories, key=lambda x: x.get("created_at", ""), reverse=True
-        )
-        half_count = MAX_TAGS_PER_TYPE // 2
-
-        # 从前一半记忆中提取标签（最近使用的）
-        recent_tags = set()
-        for memory in sorted_memories[: len(sorted_memories) // 2]:
-            recent_tags.update(memory.get("tags", []))
-            if len(recent_tags) >= half_count:
-                break
-
-        # 从剩余记忆中提取标签（随机）
-        remaining_memories = sorted_memories[len(sorted_memories) // 2 :]
-        random_tags = set()
-        for memory in random.sample(
-            remaining_memories, min(len(remaining_memories), MAX_TAGS_PER_TYPE)
-        ):
-            random_tags.update(memory.get("tags", []))
-            if len(recent_tags) + len(random_tags) >= MAX_TAGS_PER_TYPE:
-                break
-
-        # 合并标签并返回前200个
-        mixed_tags = list(recent_tags | random_tags)
-        tags_by_type["short_term"] = sorted(mixed_tags)[:MAX_TAGS_PER_TYPE]
-    else:
+        short_term_tags.update(memory.get("tags") or [])
+    short_term_tags_list = sorted(short_term_tags)
+    if max_tags_per_type is None:
         tags_by_type["short_term"] = short_term_tags_list
+    else:
+        cap = max_tags_per_type if max_tags_per_type > 0 else default_cap
+        tags_by_type["short_term"] = _sample_tags_when_over_limit(
+            short_term_tags_list, list(short_term_memories), cap
+        )
 
-    # 获取项目长期记忆标签
+    # 项目长期记忆：.jarvis/memory/*.json
     project_memory_dir = Path(".jarvis/memory")
     if project_memory_dir.exists():
-        project_memories = []
+        project_memories: List[Dict[str, Any]] = []
         for memory_file in project_memory_dir.glob("*.json"):
             try:
                 with open(memory_file, "r", encoding="utf-8") as f:
-                    memory_data = json.load(f)
-                    project_memories.append(memory_data)
+                    project_memories.append(json.load(f))
             except Exception:
                 pass
 
-        # 收集所有标签
         project_tags = set()
         for memory in project_memories:
-            project_tags.update(memory.get("tags", []))
-        project_tags_list = sorted(list(project_tags))
-
-        if len(project_tags_list) > MAX_TAGS_PER_TYPE:
-            # 混合策略：一半从最近的记忆中提取，另一半随机提取
-            # 按创建时间排序记忆（最新的在前）
-            sorted_memories = sorted(
-                project_memories, key=lambda x: x.get("created_at", ""), reverse=True
-            )
-            half_count = MAX_TAGS_PER_TYPE // 2
-
-            # 从前一半记忆中提取标签（最近使用的）
-            recent_tags = set()
-            for memory in sorted_memories[: len(sorted_memories) // 2]:
-                recent_tags.update(memory.get("tags", []))
-                if len(recent_tags) >= half_count:
-                    break
-
-            # 从剩余记忆中提取标签（随机）
-            remaining_memories = sorted_memories[len(sorted_memories) // 2 :]
-            random_tags = set()
-            sample_size = min(len(remaining_memories), MAX_TAGS_PER_TYPE)
-            if sample_size > 0:
-                for memory in random.sample(remaining_memories, sample_size):
-                    random_tags.update(memory.get("tags", []))
-                    if len(recent_tags) + len(random_tags) >= MAX_TAGS_PER_TYPE:
-                        break
-
-            # 合并标签并返回前200个
-            mixed_tags = list(recent_tags | random_tags)
-            tags_by_type["project_long_term"] = sorted(mixed_tags)[:MAX_TAGS_PER_TYPE]
-        else:
+            project_tags.update(memory.get("tags") or [])
+        project_tags_list = sorted(project_tags)
+        if max_tags_per_type is None:
             tags_by_type["project_long_term"] = project_tags_list
+        else:
+            cap = max_tags_per_type if max_tags_per_type > 0 else default_cap
+            tags_by_type["project_long_term"] = _sample_tags_when_over_limit(
+                project_tags_list, project_memories, cap
+            )
 
-    # 获取全局长期记忆标签
+    # 全局长期记忆：数据目录下 memory/global_long_term/*.json
     global_memory_dir = Path(get_data_dir()) / "memory" / "global_long_term"
     if global_memory_dir.exists():
-        global_memories = []
+        global_memories: List[Dict[str, Any]] = []
         for memory_file in global_memory_dir.glob("*.json"):
             try:
                 with open(memory_file, "r", encoding="utf-8") as f:
-                    memory_data = json.load(f)
-                    global_memories.append(memory_data)
+                    global_memories.append(json.load(f))
             except Exception:
                 pass
 
-        # 收集所有标签
         global_tags = set()
         for memory in global_memories:
-            global_tags.update(memory.get("tags", []))
-        global_tags_list = sorted(list(global_tags))
-
-        if len(global_tags_list) > MAX_TAGS_PER_TYPE:
-            # 混合策略：一半从最近的记忆中提取，另一半随机提取
-            # 按创建时间排序记忆（最新的在前）
-            sorted_memories = sorted(
-                global_memories, key=lambda x: x.get("created_at", ""), reverse=True
-            )
-            half_count = MAX_TAGS_PER_TYPE // 2
-
-            # 从前一半记忆中提取标签（最近使用的）
-            recent_tags = set()
-            for memory in sorted_memories[: len(sorted_memories) // 2]:
-                recent_tags.update(memory.get("tags", []))
-                if len(recent_tags) >= half_count:
-                    break
-
-            # 从剩余记忆中提取标签（随机）
-            remaining_memories = sorted_memories[len(sorted_memories) // 2 :]
-            random_tags = set()
-            sample_size = min(len(remaining_memories), MAX_TAGS_PER_TYPE)
-            if sample_size > 0:
-                for memory in random.sample(remaining_memories, sample_size):
-                    random_tags.update(memory.get("tags", []))
-                    if len(recent_tags) + len(random_tags) >= MAX_TAGS_PER_TYPE:
-                        break
-
-            # 合并标签并返回前200个
-            mixed_tags = list(recent_tags | random_tags)
-            tags_by_type["global_long_term"] = sorted(mixed_tags)[:MAX_TAGS_PER_TYPE]
-        else:
+            global_tags.update(memory.get("tags") or [])
+        global_tags_list = sorted(global_tags)
+        if max_tags_per_type is None:
             tags_by_type["global_long_term"] = global_tags_list
+        else:
+            cap = max_tags_per_type if max_tags_per_type > 0 else default_cap
+            tags_by_type["global_long_term"] = _sample_tags_when_over_limit(
+                global_tags_list, global_memories, cap
+            )
 
     return tags_by_type

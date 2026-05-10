@@ -11,6 +11,8 @@ from anthropic import Anthropic
 from anthropic.types import MessageParam
 
 from jarvis.jarvis_platform.base import BasePlatform
+from jarvis.jarvis_utils.config import is_immediate_abort
+from jarvis.jarvis_utils.globals import get_interrupt
 from jarvis.jarvis_utils.output import PrettyOutput
 
 
@@ -257,6 +259,8 @@ class ClaudeModel(BasePlatform):
             with self.client.messages.stream(**stream_kwargs) as stream:  # type: ignore
                 full_response = ""
                 for text in stream.text_stream:
+                    if is_immediate_abort() and get_interrupt():
+                        break
                     full_response += text
                     accumulated_response += text
                     yield text
