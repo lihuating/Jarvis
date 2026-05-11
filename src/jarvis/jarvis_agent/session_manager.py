@@ -784,12 +784,37 @@ class SessionManager:
 
     def restore_session(self) -> bool:
         """Restores the session state from a file."""
+        # 检查是否指定了 session_name（从配置读取）
+        from jarvis.jarvis_config.config import get_config
+    
+        specified_session_name = None
+        try:
+            specified_session_name = get_config("session_name")
+        except Exception:
+            # 配置不存在或读取失败，忽略
+            pass
+    
+        # 如果指定了 session_name，直接查找对应的会话文件
+        if specified_session_name:
+            session_file = self._find_session_by_name(specified_session_name)
+            if session_file:
+                PrettyOutput.auto_print(
+                    f"📂 恢复指定会话 [{specified_session_name}]: {os.path.basename(session_file)}"
+                )
+                return self.restore_session_from_file(session_file, specified_session_name)
+            else:
+                PrettyOutput.auto_print(
+                    f"⚠️ 未找到会话 [{specified_session_name}]，将自动创建新会话"
+                )
+                # 没有找到指定会话，返回 False 让主流程创建新会话
+                return False
+    
         sessions = self._parse_session_files()
-
+    
         if not sessions:
             PrettyOutput.auto_print("❌ 未找到可恢复的会话文件。")
             return False
-
+    
         # 如果只有一个会话文件，直接恢复
         if len(sessions) == 1:
             session_file, timestamp, session_name = sessions[0]
@@ -798,30 +823,30 @@ class SessionManager:
             PrettyOutput.auto_print(
                 f"📂 恢复会话{name_str}: {os.path.basename(session_file)} ({time_str})"
             )
-
+    
             # 检查 commit 一致性
             if not self._check_commit_consistency(session_file):
                 PrettyOutput.auto_print("⏸️  已取消恢复会话。")
                 return False
-
+    
             # 重新创建平台实例（如果需要）
             self._recreate_platform_if_needed(session_file)
-
-            # 在恢复会话之前检查token兼容性
+    
+            # 在恢复会话之前检查 token 兼容性
             if not self._check_token_compatibility_before_restore(session_file):
                 PrettyOutput.auto_print(
-                    "❌ 会话恢复失败：历史消息的token数量超出当前模型的限制。"
+                    "❌ 会话恢复失败：历史消息的 token 数量超出当前模型的限制。"
                 )
                 return False
-
+    
             if self.model.restore(session_file):
                 self.last_restored_session = session_file  # 记录恢复的会话文件
                 self.current_session_name = session_name  # 记录会话名称
-                # 恢复Agent运行时状态
+                # 恢复 Agent 运行时状态
                 self._restore_agent_state()
                 # 恢复任务列表
                 self._restore_task_lists()
-                # 如果是CodeAgent，恢复start_commit信息
+                # 如果是 CodeAgent，恢复 start_commit 信息
                 self._restore_start_commit_info()
                 return True
             else:
@@ -943,29 +968,63 @@ class SessionManager:
             PrettyOutput.auto_print("⚠️ 用户取消恢复。")
             return False
 
+    def _find_session_by_name(self, session_name: str) -> Optional[str]:
+        """根据会话名称查找对应的会话文件
+        
+        Args:
+            session_name: 会话名称
+            
+        Returns:
+            Optional[str]: 会话文件路径，如果未找到则返回 None
+        """
+        import re
+        
+        session_dir = os.path.join(os.getcwd(), ".jarvis", "sessions")
+        if not os.path.exists(session_dir):
+            return None
+        
+        # 清理 session_name，移除特殊字符
+        safe_name = re.sub(r"[^\u4e00-\u9fa5a-zA-Z0-9_-]", "", session_name)
+        if not safe_name:
+            return None
+        
+        # 查找匹配的会话文件（最新的）
+        pattern = os.path.join(
+            session_dir,
+            f"{safe_name}_saved_session_{self.agent_name}_*.json"
+        )
+        session_files = glob.glob(pattern)
+        
+        if not session_files:
+            return None
+        
+        # 按修改时间排序，返回最新的
+        session_files.sort(key=lambda f: os.path.getmtime(f), reverse=True)
+        return session_files[0]
+    
     def _get_session_file_prefix(self) -> str:
         """
         生成会话文件前缀（不含后缀）。
-
+    
         Returns:
             str: 会话文件前缀，如 "saved_session_Jarvos"
         """
         import os
-
+    
         session_dir = os.path.join(os.getcwd(), ".jarvis", "sessions")
         os.makedirs(session_dir, exist_ok=True)
-
-        # 使用session_name作为前缀（如果存在）
+    
+        # 使用 session_name 作为前缀（如果存在）
         if self.current_session_name:
-            # 从session_name提取文件名（移除特殊字符）
+            # 从 session_name 提取文件名（移除特殊字符）
             import re
-
+    
             safe_name = re.sub(
                 r"[^\u4e00-\u9fa5a-zA-Z0-9_-]", "", self.current_session_name
             )
             if safe_name:
                 return f"{safe_name}_saved_session_{self.agent_name}"
-
+    
         return f"saved_session_{self.agent_name}"
 
     def _save_task_lists(self) -> bool:

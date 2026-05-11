@@ -7,13 +7,15 @@ type Backend = "jca" | "jvs";
 type WebviewToExtension =
   | { type: "send"; text: string; contextMode?: "none" | "selection" | "file" | "explorer" }
   | { type: "setBackend"; backend: Backend }
-  | { type: "stop" };
+  | { type: "stop" }
+  | { type: "newChat" };
 
 type ExtensionToWebview =
   | { type: "appendAssistant"; text: string }
   | { type: "appendSystem"; text: string }
   | { type: "setBackend"; backend: Backend }
-  | { type: "setRunning"; running: boolean };
+  | { type: "setRunning"; running: boolean }
+  | { type: "setSessionName"; sessionName: string | null };
 
 class JarvisChatPanel {
   public static current: JarvisChatPanel | undefined;
@@ -23,6 +25,7 @@ class JarvisChatPanel {
   private proc: ChildProcessWithoutNullStreams | null = null;
   private bufferedStdout = "";
   private lastBackend: Backend = "jca";
+  private sessionName: string | null = null;  // 会话名称，用于保持上下文
 
   private constructor(ctx: vscode.ExtensionContext) {
     this.ctx = ctx;
@@ -75,6 +78,11 @@ class JarvisChatPanel {
       return;
     }
 
+    if (msg.type === "newChat") {
+      this.newChat();
+      return;
+    }
+
     if (msg.type === "send") {
       const backend = this.getBackendSetting();
       this.lastBackend = backend;
@@ -99,6 +107,17 @@ class JarvisChatPanel {
 
   private shouldDisableReview(): boolean {
     return vscode.workspace.getConfiguration().get<boolean>("jarvis.disableReview", true) === true;
+  }
+
+  private getSessionMode(): "persistent" | "single-use" {
+    return vscode.workspace.getConfiguration().get<string>("jarvis.sessionMode", "persistent") as "persistent" | "single-use";
+  }
+
+  private newChat() {
+    // 重置会话名称，下次运行时会创建新会话
+    this.sessionName = null;
+    this.post({ type: "setSessionName", sessionName: null });
+    this.post({ type: "appendSystem", text: "已新建会话，上下文已清空。" });
   }
 
   private async buildPrompt(userText: string, mode: "none" | "selection" | "file" | "explorer") {
@@ -168,6 +187,19 @@ class JarvisChatPanel {
 
     // 以非交互模式执行（避免 VSCode 内等待输入）
     if (this.shouldNonInteractive()) args.push("-n");
+    
+    // 会话管理：使用持久会话模式
+    const sessionMode = this.getSessionMode();
+    if (sessionMode === "persistent") {
+      // 如果是持久会话模式，使用固定的会话名称
+      if (!this.sessionName) {
+        // 生成会话名称：vscode-<timestamp>
+        this.sessionName = `vscode-${Date.now()}`;
+        this.post({ type: "setSessionName", sessionName: this.sessionName });
+      }
+      args.push("--session-name", this.sessionName);
+    }
+    
     args.push("-T", prompt);
 
     if (backend === "jca" && this.shouldDisableReview()) {
@@ -177,7 +209,8 @@ class JarvisChatPanel {
     const cwd = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? process.cwd();
 
     this.post({ type: "setRunning", running: true });
-    this.post({ type: "appendSystem", text: `启动后端：${cmd} ${args.join(" ")}` });
+    const sessionInfo = this.sessionName ? ` (会话：${this.sessionName})` : "";
+    this.post({ type: "appendSystem", text: `启动后端${sessionInfo}: ${cmd} ${args.join(" ")}` });
 
     try {
       this.proc = spawn(cmd, args, { cwd });
@@ -237,8 +270,10 @@ class JarvisChatPanel {
     body { font-family: -apple-system,BlinkMacSystemFont,Segoe UI,Helvetica,Arial,sans-serif; padding: 0; margin: 0; }
     .topbar { display: flex; gap: 8px; align-items: center; padding: 8px 10px; border-bottom: 1px solid rgba(127,127,127,0.25); }
     .badge { padding: 2px 8px; border-radius: 999px; background: rgba(127,127,127,0.15); }
+    .session-badge { padding: 2px 8px; border-radius: 999px; background: rgba(33,150,243,0.2); color: #2196f3; font-size: 0.85em; }
     .btn { cursor: pointer; padding: 6px 10px; border: 1px solid rgba(127,127,127,0.35); border-radius: 6px; background: rgba(127,127,127,0.10); }
     .btn:disabled { opacity: 0.5; cursor: not-allowed; }
+    .btn-new { background: rgba(76,175,80,0.2); border-color: rgba(76,175,80,0.5); }
     .grow { flex: 1; }
     .log { padding: 10px; height: calc(100vh - 120px); overflow: auto; white-space: pre-wrap; }
     .msg-user { color: #0b6; }
@@ -256,6 +291,8 @@ class JarvisChatPanel {
       <option value="jca" ${backend === "jca" ? "selected" : ""}>jca (default)</option>
       <option value="jvs" ${backend === "jvs" ? "selected" : ""}>jvs</option>
     </select>
+    <span id="sessionBadge" class="session-badge" style="display: none;"></span>
+    <button class="btn btn-new" id="btnNewChat" title="新建会话（清空上下文）">New Chat</button>
     <button class="btn" id="btnStop" disabled>Stop</button>
     <div class="grow"></div>
     <select id="ctxSel" title="Context mode">
@@ -279,8 +316,10 @@ class JarvisChatPanel {
     const input = document.getElementById('input');
     const btnSend = document.getElementById('btnSend');
     const btnStop = document.getElementById('btnStop');
+    const btnNewChat = document.getElementById('btnNewChat');
     const backendSel = document.getElementById('backendSel');
     const backendBadge = document.getElementById('backendBadge');
+    const sessionBadge = document.getElementById('sessionBadge');
     const ctxSel = document.getElementById('ctxSel');
 
     function appendLine(cls, text) {
@@ -300,6 +339,8 @@ class JarvisChatPanel {
     });
 
     btnStop.addEventListener('click', () => vscode.postMessage({ type: 'stop' }));
+    
+    btnNewChat.addEventListener('click', () => vscode.postMessage({ type: 'newChat' }));
 
     backendSel.addEventListener('change', () => {
       vscode.postMessage({ type: 'setBackend', backend: backendSel.value });
@@ -317,6 +358,16 @@ class JarvisChatPanel {
         btnStop.disabled = !msg.running;
         btnSend.disabled = msg.running;
       }
+      if (msg.type === 'setSessionName') {
+        // 会话名称更新，在界面上显示
+        if (msg.sessionName) {
+          sessionBadge.textContent = '📝 ' + msg.sessionName;
+          sessionBadge.style.display = 'inline-block';
+        } else {
+          sessionBadge.textContent = '';
+          sessionBadge.style.display = 'none';
+        }
+      }
     });
   </script>
 </body>
@@ -331,6 +382,9 @@ export function activate(context: vscode.ExtensionContext) {
     vscode.commands.registerCommand("jarvis.openChat", openChat),
     vscode.commands.registerCommand("jarvis.stopBackend", () => {
       JarvisChatPanel.current?.["stop"]?.();
+    }),
+    vscode.commands.registerCommand("jarvis.newChat", () => {
+      JarvisChatPanel.current?.["newChat"]?.();
     })
   );
 

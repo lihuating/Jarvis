@@ -720,6 +720,11 @@ def run_cli(
         "--restore-session",
         help="从 .jarvis/saved_session.json 恢复会话",
     ),
+    session_name: Optional[str] = typer.Option(
+        None,
+        "--session-name",
+        help="指定会话名称，用于多轮对话上下文保持（自动启用会话恢复）",
+    ),
     edit: bool = typer.Option(False, "-e", "--edit", help="编辑配置文件"),
     share_methodology: bool = typer.Option(
         False, "--share-methodology", help="分享本地方法论到中心方法论仓库"
@@ -939,6 +944,10 @@ def run_cli(
             set_config("use_analysis", False)
         if restore_session:
             set_config("restore_session", True)
+        if session_name:
+            # 指定会话名称时，自动启用会话恢复
+            set_config("restore_session", True)
+            set_config("session_name", str(session_name))
     except Exception:
         # 静默忽略同步异常，不影响主流程
         pass

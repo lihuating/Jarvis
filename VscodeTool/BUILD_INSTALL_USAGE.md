@@ -49,11 +49,14 @@ npm run compile
 - **`Jarvis: Send Current File to Chat`**：把当前文件全文作为上下文发送
 - **`Jarvis: Send Explorer Selection to Chat`**：弹出选择器，选择路径/文件作为上下文发送
 - **`Jarvis: Stop Backend`**：停止当前后端进程
+- **`Jarvis: New Chat`**：新建会话，清空上下文（快捷键：在 Chat 界面点击 "New Chat" 按钮）
 
 在 Chat 顶部：
 
 - 可通过下拉框切换后端：`jca` / `jvs`
 - 可选择上下文模式：`no context` / `selection` / `current file` / `pick paths…`
+- **会话名称显示**：蓝色徽章显示当前会话名称（仅持久会话模式）
+- **New Chat 按钮**：绿色按钮，点击清空上下文
 
 ## 配置项（Settings）
 
@@ -63,6 +66,14 @@ npm run compile
 - **`jarvis.commandPath`**：后端命令绝对路径（例如 `/usr/local/bin/jca`），为空则从 `PATH` 查找
 - **`jarvis.nonInteractive`**：是否添加 `-n/--non-interactive`（默认 `true`，推荐保持开启）
 - **`jarvis.disableReview`**：仅对 `jca`，是否添加 `--disable-review`（默认 `true`，减少副作用与等待时间）
+- **`jarvis.sessionMode`**：`persistent` / `single-use`（默认 `persistent`，多轮对话保持上下文）
+
+### 会话模式说明
+
+- **`persistent`**（默认）：持久会话模式，多轮对话保持上下文，界面顶部显示会话名称
+- **`single-use`**：单次会话模式，每次对话独立，不保留上下文
+
+详细会话功能请查看 [会话功能说明](SESSION_FEATURE.md)。
 
 ## 运行机制说明（重要）
 
@@ -110,5 +121,14 @@ vsce package
 - **Q: 后端进程启动后立刻退出？**
   - A: 查看 Chat 中的 system 输出（stderr），常见原因是 Jarvis 配置缺失（API key / config.yaml），或 Python 版本不匹配（Jarvis 需要 Python 3.12）。
 
-- **Q: 我想让“资源管理器选中文件”自动读取文件内容，而不是只传路径。**
+- **Q: 我想让"资源管理器选中文件"自动读取文件内容，而不是只传路径。**
   - A: 目前实现传的是路径列表（更轻量、更安全）。如果你希望自动读文件内容，可以继续增强（需做大小阈值与忽略规则）。
+
+- **Q: 多轮对话没有上下文关联？**
+  - A: 检查是否使用了默认的 `persistent` 会话模式。查看界面顶部是否有会话名称显示（蓝色徽章）。如果没有，点击 "New Chat" 按钮后重新提问。
+
+- **Q: 如何开始全新的对话（不保留之前的上下文）？**
+  - A: 点击 Chat 界面顶部的 "New Chat" 按钮（绿色），系统会提示"已新建会话，上下文已清空"。
+
+- **Q: 会话文件在哪里？如何清理？**
+  - A: 会话文件位于 `~/.jarvis/sessions/` 目录。可以定期清理旧文件，或者让系统自动管理（最多保留 10 个）。
