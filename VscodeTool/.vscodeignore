@@ -4,4 +4,11 @@ tsconfig.json
 node_modules/**
 .vscode/**
 **/*.map
+.gitignore
+.vscodeignore
+**/*.md
+!README.md
+**/*.svg
+generate-icons.js
+build.sh
 

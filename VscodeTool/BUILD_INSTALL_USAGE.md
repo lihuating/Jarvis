@@ -6,10 +6,27 @@
 
 - **Node.js**: 建议 18+（本仓库环境已验证 22.x 可用）
 - **VSCode**: `^1.90.0`
-- **Jarvis 后端命令**：
+- **Jarvis 后端命令**:
   - 默认使用 `jca`（代码代理）
   - 也支持 `jvs`（通用代理）
   - 要求命令在 VSCode 启动环境的 `PATH` 中可找到，或在插件配置里指定绝对路径
+
+## 快速安装（离线）
+
+如果你已经构建了 `.vsix` 文件，可以直接安装：
+
+```bash
+# 方法 1: 使用 VSCode 命令
+code --install-extension jarvis-vscode-tool-0.2.0.vsix
+
+# 方法 2: 在 VSCode 图形界面
+# 1. 按 Ctrl+Shift+X 打开扩展面板
+# 2. 点击右上角 "..." 菜单
+# 3. 选择 "从 VSIX 安装..."
+# 4. 选择 jarvis-vscode-tool-0.2.0.vsix 文件
+```
+
+详细安装说明请查看 `INSTALL.md`。
 
 ## 构建（开发）
 
@@ -34,6 +51,7 @@ npm run compile
 - **`Jarvis: Stop Backend`**：停止当前后端进程
 
 在 Chat 顶部：
+
 - 可通过下拉框切换后端：`jca` / `jvs`
 - 可选择上下文模式：`no context` / `selection` / `current file` / `pick paths…`
 
@@ -54,6 +72,7 @@ npm run compile
 - 或 `jvs -n -T "<prompt>"`
 
 插件会将：
+
 - stdout：作为“assistant”增量输出流式显示
 - stderr：作为“system”输出显示
 
@@ -69,7 +88,7 @@ npm run compile
 npm i -g @vscode/vsce
 ```
 
-2) 打包
+1) 打包
 
 ```bash
 cd /media/vdc/code/Jarvis/VscodeTool
@@ -79,7 +98,8 @@ vsce package
 
 会生成类似 `jarvis-vscode-tool-0.1.0.vsix`。
 
-3) 安装 `.vsix`
+1) 安装 `.vsix`
+
 - VSCode：Extensions 视图 → 右上角 “...” → **Install from VSIX…**
 
 ## 常见问题
@@ -92,4 +112,3 @@ vsce package
 
 - **Q: 我想让“资源管理器选中文件”自动读取文件内容，而不是只传路径。**
   - A: 目前实现传的是路径列表（更轻量、更安全）。如果你希望自动读文件内容，可以继续增强（需做大小阈值与忽略规则）。
-
