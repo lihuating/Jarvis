@@ -23,7 +23,7 @@ else:
 
 class VirtualTTYTool:
     name = "virtual_tty"
-    description = "控制虚拟终端执行交互式操作（如ssh、sftp、gdb等）。与execute_script不同，此工具创建持久会话，保持终端状态。Windows平台功能有限。"
+    description = "控制虚拟终端执行交互式操作（如 ssh、sftp、gdb 等）。与 execute_script 不同，此工具创建持久会话，保持终端状态。Windows 平台功能有限。"
     parameters = {
         "type": "object",
         "properties": {
@@ -41,15 +41,23 @@ class VirtualTTYTool:
             },
             "keys": {
                 "type": "string",
-                "description": "要发送的按键序列（仅当action为send_keys时有效）",
+                "description": "要发送的按键序列（仅当 action 为 send_keys 时有效）",
             },
             "add_enter": {
                 "type": "boolean",
-                "description": "是否在命令末尾自动添加回车符（仅当action为send_keys时有效，默认true）",
+                "description": "是否在命令末尾自动添加回车符（仅当 action 为 send_keys 时有效，默认 true）",
             },
             "timeout": {
                 "type": "number",
-                "description": "等待输出的超时时间（秒，仅当action为send_keys或output时有效，默认5.0）",
+                "description": "等待输出的超时时间（秒，仅当 action 为 send_keys 或 output 时有效，默认 5.0）",
+            },
+            "auto_command": {
+                "type": "string",
+                "description": "启动终端后自动执行的命令（仅当 action 为 launch 时有效，可选）。例如：'ssh user@host'，会自动发送该命令并等待输出",
+            },
+            "auto_output_timeout": {
+                "type": "number",
+                "description": "auto_command 执行后等待输出的超时时间（秒，默认 3.0）",
             },
             "tty_id": {
                 "type": "string",
@@ -121,10 +129,14 @@ class VirtualTTYTool:
                     return {
                         "success": False,
                         "stdout": "",
-                        "stderr": "启动虚拟终端时，不能同时指定keys参数",
+                        "stderr": "启动虚拟终端时，不能同时指定 keys 参数",
                     }
-
-                result = self._launch_tty(agent, tty_id)
+        
+                # 获取 auto_command 参数
+                auto_command = args.get("auto_command", "")
+                auto_output_timeout = args.get("auto_output_timeout", 3.0)
+        
+                result = self._launch_tty(agent, tty_id, auto_command, auto_output_timeout)
                 if not result["success"]:
                     PrettyOutput.auto_print(f"❌ 启动虚拟终端 [{tty_id}] 失败")
                 return result
@@ -168,30 +180,47 @@ class VirtualTTYTool:
                 "stderr": f"执行终端操作出错: {str(e)}",
             }
 
-    def _launch_tty(self, agent: Any, tty_id: str) -> Dict[str, Any]:
-        """启动虚拟终端"""
+    def _launch_tty(self, agent: Any, tty_id: str, auto_command: str = "", auto_output_timeout: float = 3.0) -> Dict[str, Any]:
+        """启动虚拟终端
+        
+        参数:
+            agent: Agent 对象
+            tty_id: 终端 ID
+            auto_command: 启动后自动执行的命令（可选）
+            auto_output_timeout: 等待 auto_command 输出的超时时间（秒，默认 3.0）
+        
+        返回:
+            Dict[str, Any]: 执行结果
+        """
         if sys.platform == "win32":
-            return self._launch_tty_windows(agent, tty_id)
+            return self._launch_tty_windows(agent, tty_id, auto_command, auto_output_timeout)
         else:
-            return self._launch_tty_unix(agent, tty_id)
+            return self._launch_tty_unix(agent, tty_id, auto_command, auto_output_timeout)
 
-    def _launch_tty_unix(self, agent: Any, tty_id: str) -> Dict[str, Any]:
-        """Unix/Linux平台启动虚拟终端"""
+    def _launch_tty_unix(self, agent: Any, tty_id: str, auto_command: str = "", auto_output_timeout: float = 3.0) -> Dict[str, Any]:
+        """Unix/Linux 平台启动虚拟终端
+        
+        参数:
+            agent: Agent 对象
+            tty_id: 终端 ID
+            auto_command: 启动后自动执行的命令（可选）
+            auto_output_timeout: 等待 auto_command 输出的超时时间（秒，默认 3.0）
+        """
         try:
-            # 如果该ID的终端已经启动，先关闭它
+            # 如果该 ID 的终端已经启动，先关闭它
             if agent.tty_sessions[tty_id]["master_fd"] is not None:
                 self._close_tty(agent, tty_id)
-
-            # 在Unix平台上导入需要的模块
+    
+            # 在 Unix 平台上导入需要的模块
             import fcntl as _fcntl  # pylint: disable=import-outside-toplevel
             import pty as _pty  # pylint: disable=import-outside-toplevel
             import select as _select  # pylint: disable=import-outside-toplevel
-
+    
             # 创建伪终端
             pid, master_fd = _pty.fork()
-
+    
             if pid == 0:  # 子进程
-                # 执行shell
+                # 执行 shell
                 os.execvp(
                     agent.tty_sessions[tty_id]["shell"],
                     [agent.tty_sessions[tty_id]["shell"]],
@@ -199,15 +228,15 @@ class VirtualTTYTool:
             else:  # 父进程
                 # 设置非阻塞模式
                 _fcntl.fcntl(master_fd, _fcntl.F_SETFL, os.O_NONBLOCK)
-
+    
                 # 保存终端状态
                 agent.tty_sessions[tty_id]["master_fd"] = master_fd
                 agent.tty_sessions[tty_id]["pid"] = pid
-
+    
                 # 读取初始输出
                 output = ""
                 start_time = time.time()
-                while time.time() - start_time < 2.0:  # 最多等待2秒
+                while time.time() - start_time < 2.0:  # 最多等待 2 秒
                     try:
                         r, _, _ = _select.select([master_fd], [], [], 0.1)
                         if r:
@@ -216,13 +245,44 @@ class VirtualTTYTool:
                                 output += decode_output(data)
                     except BlockingIOError:
                         continue
-
-                if output:
+    
+                # 如果提供了 auto_command，自动发送该命令
+                if auto_command and auto_command.strip():
+                    PrettyOutput.auto_print(f"🚀 启动终端后自动执行命令：{auto_command}")
+                    
+                    # 发送命令（添加回车）
+                    os.write(master_fd, (auto_command + "\n").encode())
+                    
+                    # 等待命令输出
+                    command_output = ""
+                    cmd_start_time = time.time()
+                    while time.time() - cmd_start_time < auto_output_timeout:
+                        try:
+                            r, _, _ = _select.select([master_fd], [], [], 0.1)
+                            if r:
+                                data = os.read(master_fd, 1024)
+                                if data:
+                                    command_output += decode_output(data)
+                        except BlockingIOError:
+                            continue
+                    
+                    # 合并输出
+                    if command_output:
+                        if output:
+                            output += command_output
+                        else:
+                            output = command_output
+                    
+                    PrettyOutput.auto_print(
+                        f"📥 启动终端并执行自动命令后的输出 [{tty_id}]:\n{output}"
+                    )
+                elif output:
                     PrettyOutput.auto_print(
                         f"📥 启动终端时的初始输出 [{tty_id}]:\n{output}"
                     )
+                    
                 return {"success": True, "stdout": output, "stderr": ""}
-
+    
         except Exception as e:
             return {
                 "success": False,
@@ -230,19 +290,26 @@ class VirtualTTYTool:
                 "stderr": f"启动虚拟终端 [{tty_id}] 失败: {str(e)}",
             }
 
-    def _launch_tty_windows(self, agent: Any, tty_id: str) -> Dict[str, Any]:
-        """Windows平台启动虚拟终端"""
+    def _launch_tty_windows(self, agent: Any, tty_id: str, auto_command: str = "", auto_output_timeout: float = 3.0) -> Dict[str, Any]:
+        """Windows 平台启动虚拟终端
+        
+        参数:
+            agent: Agent 对象
+            tty_id: 终端 ID
+            auto_command: 启动后自动执行的命令（可选）
+            auto_output_timeout: 等待 auto_command 输出的超时时间（秒，默认 3.0）
+        """
         try:
-            # 如果该ID的终端已经启动，先关闭它
+            # 如果该 ID 的终端已经启动，先关闭它
             if agent.tty_sessions[tty_id]["process"] is not None:
                 self._close_tty(agent, tty_id)
-
-            # 在Windows平台上导入需要的模块
+    
+            # 在 Windows 平台上导入需要的模块
             import queue as _queue  # pylint: disable=import-outside-toplevel
             import subprocess as _subprocess  # pylint: disable=import-outside-toplevel
             import threading as _threading  # pylint: disable=import-outside-toplevel
-
-            # 创建子进程（核心功能：启动TTY会话，shell=True支持shell命令）
+    
+            # 创建子进程（核心功能：启动 TTY 会话，shell=True 支持 shell 命令）
             process = _subprocess.Popen(
                 agent.tty_sessions[tty_id]["shell"],
                 stdin=_subprocess.PIPE,
@@ -254,10 +321,10 @@ class VirtualTTYTool:
                 encoding="utf-8",
                 errors="replace",
             )
-
+    
             # 保存进程对象
             agent.tty_sessions[tty_id]["process"] = process
-
+    
             # 创建输出读取线程
             def read_output() -> None:
                 while True:
@@ -271,27 +338,57 @@ class VirtualTTYTool:
                             agent.tty_sessions[tty_id]["output_queue"].put(line)
                     except Exception:
                         break
-
+    
             output_thread = _threading.Thread(target=read_output, daemon=True)
             output_thread.start()
             agent.tty_sessions[tty_id]["output_thread"] = output_thread
-
+    
             # 读取初始输出
             output = ""
             start_time = time.time()
-            while time.time() - start_time < 2.0:  # 最多等待2秒
+            while time.time() - start_time < 2.0:  # 最多等待 2 秒
                 try:
                     line = agent.tty_sessions[tty_id]["output_queue"].get(timeout=0.1)
                     output += line
                 except _queue.Empty:
                     continue
-
-            if output:
+    
+            # 如果提供了 auto_command，自动发送该命令
+            if auto_command and auto_command.strip():
+                PrettyOutput.auto_print(f"🚀 启动终端后自动执行命令：{auto_command}")
+                
+                # 发送命令（添加回车）
+                process.stdin.write(auto_command + "\n")
+                process.stdin.flush()
+                
+                # 等待命令输出
+                command_output = ""
+                cmd_start_time = time.time()
+                while time.time() - cmd_start_time < auto_output_timeout:
+                    try:
+                        line = agent.tty_sessions[tty_id]["output_queue"].get(timeout=0.1)
+                        if line:
+                            command_output += line
+                    except _queue.Empty:
+                        continue
+                
+                # 合并输出
+                if command_output:
+                    if output:
+                        output += command_output
+                    else:
+                        output = command_output
+                
+                PrettyOutput.auto_print(
+                    f"📥 启动终端并执行自动命令后的输出 [{tty_id}]:\n{output}"
+                )
+            elif output:
                 PrettyOutput.auto_print(
                     f"📥 启动终端时的初始输出 [{tty_id}]:\n{output}"
                 )
+                
             return {"success": True, "stdout": output, "stderr": ""}
-
+    
         except Exception as e:
             return {
                 "success": False,

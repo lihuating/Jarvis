@@ -357,10 +357,12 @@ class SessionManager:
                 msg.get("role") == "user" for msg in self.model.get_messages()
             )
             if not has_user_message:
-                # 没有用户消息，不保存会话
+                # 没有用户消息，不保存会话（这是正常行为，避免保存空会话）
+                PrettyOutput.auto_print("ℹ️  当前会话没有用户消息，跳过保存")
                 return False
-        except Exception:
+        except Exception as e:
             # 如果检查失败（如 messages 不存在），为了安全起见仍然执行保存
+            PrettyOutput.auto_print(f"⚠️  检查用户消息失败：{e}，将继续尝试保存")
             pass
 
         result = self.model.save(session_file)

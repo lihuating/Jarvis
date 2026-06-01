@@ -555,10 +555,9 @@ class task_list_manager:
             verification_method: 验证方法说明，描述如何验证任务是否真正完成
 
         返回:
-            tuple[bool, str]: (是否完成, 验证结果或失败原因)
+            tuple[bool, str]: (是否完成，验证结果或失败原因)
         """
         try:
-            from jarvis.jarvis_utils.output import PrettyOutput
 
             # 创建验证 Agent
             verification_agent = self._create_verification_agent(
@@ -1599,7 +1598,7 @@ class task_list_manager:
                 iteration = 0
 
                 try:
-                    # 直接根据agent实例类型判断任务类型
+                    # 直接根据 agent 实例类型判断任务类型
                     is_code_task = self._determine_agent_type(
                         parent_agent, task, task_content, background
                     )
@@ -1614,7 +1613,6 @@ class task_list_manager:
 
                     while not verification_passed:
                         iteration += 1
-                        from jarvis.jarvis_utils.output import PrettyOutput
 
                         PrettyOutput.auto_print(
                             f"🔄 执行任务 [{task.task_name}] (第 {iteration} 次迭代)..."
@@ -2097,10 +2095,8 @@ class task_list_manager:
                     and task.agent_type.value == "main"
                     and task.status.value != "completed"
                 ):
-                    # 检查模型调用次数，如果≤15则跳过验证（15次调用通常对应2-3轮对话）
+                    # 检查模型调用次数，如果≤15 则跳过验证（15 次调用通常对应 2-3 轮对话）
                     if task.model_call_count <= 15:
-                        from jarvis.jarvis_utils.output import PrettyOutput
-
                         PrettyOutput.auto_print(
                             f"⚡ 任务 [{task.task_name}] 模型调用次数≤15 (实际{task.model_call_count}次)，跳过验证直接完成"
                         )
@@ -2111,9 +2107,6 @@ class task_list_manager:
                         should_verify = True
                         is_interactive = not getattr(agent, "non_interactive", True)
                         if is_interactive:
-                            from jarvis.jarvis_utils.input import user_confirm
-                            from jarvis.jarvis_utils.output import PrettyOutput
-
                             PrettyOutput.auto_print(
                                 f"🔍 准备验证 main 类型任务 [{task.task_name}] 的完成情况..."
                             )
@@ -2133,12 +2126,10 @@ class task_list_manager:
                                 task=task,
                                 agent_id=agent_id,
                                 is_main_agent=is_main_agent,
-                                include_completed_summary=False,  # main任务验证时不需要其他已完成任务摘要
+                                include_completed_summary=False,  # main 任务验证时不需要其他已完成任务摘要
                             )
-
-                            # 执行验证
-                            from jarvis.jarvis_utils.output import PrettyOutput
-
+                            
+                            # 执行验证（PrettyOutput 已在外部导入）
                             PrettyOutput.auto_print(
                                 f"🔍 开始验证 main 类型任务 [{task.task_name}] 的完成情况..."
                             )
@@ -2154,9 +2145,7 @@ class task_list_manager:
                                 )
                             )
                         else:
-                            # 用户选择不验证，直接标记为通过
-                            from jarvis.jarvis_utils.output import PrettyOutput
-
+                            # 用户选择不验证，直接标记为通过（PrettyOutput 已在外部导入）
                             verification_passed = True
                             verification_result = "用户选择跳过验证"
                             PrettyOutput.auto_print(
