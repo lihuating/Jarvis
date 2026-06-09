@@ -62,30 +62,39 @@ import typer
 
 from jarvis.jarvis_c2rust.constants import SOURCE_EXTS, TYPE_KINDS
 
+# tree-sitter for macro analysis
+import importlib.util
+
+TREE_SITTER_AVAILABLE = (
+    importlib.util.find_spec("tree_sitter") is not None
+    and importlib.util.find_spec("tree_sitter_c") is not None
+    and importlib.util.find_spec("tree_sitter_cpp") is not None
+)
+
 
 # ---------------------------
 # libclang loader
 # ---------------------------
 def _try_import_libclang() -> Any:
     """
-    Load clang.cindex and support libclang 16-21 (inclusive).
+    Load clang.cindex and support libclang 16-22 (inclusive).
     Resolution order:
-    1) Respect CLANG_LIBRARY_FILE (must be one of 16-21)
-    2) Respect LIBCLANG_PATH (pick libclang from that dir and verify major 16-21)
+    1) Respect CLANG_LIBRARY_FILE (must be one of 16-22)
+    2) Respect LIBCLANG_PATH (pick libclang from that dir and verify major 16-22)
     3) Respect LLVM_HOME/lib/libclang.*
-    4) Probe common locations for versions 16-21
-    If Python bindings or libclang are outside 16-21, raise with actionable hints.
+    4) Probe common locations for versions 16-22
+    If Python bindings or libclang are outside 16-22, raise with actionable hints.
     """
-    SUPPORTED_MAJORS = {16, 17, 18, 19, 20, 21}
+    SUPPORTED_MAJORS = {16, 17, 18, 19, 20, 21, 22}
 
     try:
         from clang import cindex
     except Exception as e:
         raise RuntimeError(
-            "导入 clang.cindex 失败。本工具支持 clang 16-21。\n"
+            "导入 clang.cindex 失败。本工具支持 clang 16-22。\n"
             "修复方法：\n"
-            "- pip install 'clang>=16,<22'\n"
-            "- 确保已安装 libclang (16-21) (例如，apt install llvm-21 clang-21 libclang-21-dev)\n"
+            "- pip install 'clang>=16,<23'\n"
+            "- 确保已安装 libclang (16-22) (例如，apt install llvm-22 clang-22 libclang-22-dev)\n"
             "- 设置环境变量 CLANG_LIBRARY_FILE 指向匹配的共享库，或 LIBCLANG_PATH 指向其目录。"
         ) from e
 
@@ -109,7 +118,7 @@ def _try_import_libclang() -> Any:
         raise RuntimeError(
             f"Python 'clang' 绑定的主版本必须是 {sorted(SUPPORTED_MAJORS)} 中的一个。\n"
             "修复方法：\n"
-            "- pip install --upgrade 'clang>=16,<22'"
+            "- pip install --upgrade 'clang>=16,<23'"
         )
 
     # Helper to probe libclang major version
@@ -169,8 +178,8 @@ def _try_import_libclang() -> Any:
             return cindex
         else:
             raise RuntimeError(
-                f"环境变量 CLANG_LIBRARY_FILE 指向 '{lib_file}', 但它不是 libclang 16-21 版本。\n"
-                "请将其设置为受支持的 libclang (例如 /usr/lib/llvm-21/lib/libclang.so 或匹配的版本)。"
+                f"环境变量 CLANG_LIBRARY_FILE 指向 '{lib_file}', 但它不是 libclang 16-22 版本。\n"
+                "请将其设置为受支持的 libclang (例如 /usr/lib/llvm-22/lib/libclang.so 或匹配的版本)。"
             )
 
     # 2) LIBCLANG_PATH
@@ -180,7 +189,7 @@ def _try_import_libclang() -> Any:
         candidates: List[Path] = []
 
         # Versioned shared libraries
-        for maj in (21, 20, 19, 18, 17, 16):
+        for maj in (22, 21, 20, 19, 18, 17, 16):
             candidates.append(base / f"libclang.so.{maj}")
         # Generic names
         candidates.extend(
@@ -195,8 +204,8 @@ def _try_import_libclang() -> Any:
                 return cindex
         # If a directory is given but no valid supported version found, error out explicitly
         raise RuntimeError(
-            f"环境变量 LIBCLANG_PATH={lib_dir} 不包含 libclang 16-21。\n"
-            "期望找到 libclang.so.[16-21] (Linux) 或来自 llvm@16..@21 的 libclang.dylib (macOS)。"
+            f"环境变量 LIBCLANG_PATH={lib_dir} 不包含 libclang 16-22。\n"
+            "期望找到 libclang.so.[16-22] (Linux) 或来自 llvm@16..@22 的 libclang.dylib (macOS)。"
         )
 
     # 3) LLVM_HOME
@@ -204,7 +213,7 @@ def _try_import_libclang() -> Any:
     if llvm_home:
         p = Path(llvm_home) / "lib"
         candidates_llvm: List[Path] = []
-        for maj in (21, 20, 19, 18, 17, 16):
+        for maj in (22, 21, 20, 19, 18, 17, 16):
             candidates_llvm.append(p / f"libclang.so.{maj}")
         candidates_llvm.extend(
             [
@@ -217,13 +226,13 @@ def _try_import_libclang() -> Any:
             if cand.exists() and _ensure_supported_and_set(str(cand)):
                 return cindex
 
-    # 4) Common locations for versions 16-21
+    # 4) Common locations for versions 16-22
     import platform as _platform
 
     sys_name = _platform.system()
     path_candidates: List[Path] = []
     if sys_name == "Linux":
-        for maj in (21, 20, 19, 18, 17, 16):
+        for maj in (22, 21, 20, 19, 18, 17, 16):
             path_candidates.extend(
                 [
                     Path(f"/usr/lib/llvm-{maj}/lib/libclang.so.{maj}"),
@@ -233,6 +242,7 @@ def _try_import_libclang() -> Any:
         # Generic fallbacks
         path_candidates.extend(
             [
+                Path("/usr/local/lib/libclang.so.22"),
                 Path("/usr/local/lib/libclang.so.21"),
                 Path("/usr/local/lib/libclang.so.20"),
                 Path("/usr/local/lib/libclang.so.19"),
@@ -240,6 +250,7 @@ def _try_import_libclang() -> Any:
                 Path("/usr/local/lib/libclang.so.17"),
                 Path("/usr/local/lib/libclang.so.16"),
                 Path("/usr/local/lib/libclang.so"),
+                Path("/usr/lib/libclang.so.22"),
                 Path("/usr/lib/libclang.so.21"),
                 Path("/usr/lib/libclang.so.20"),
                 Path("/usr/lib/libclang.so.19"),
@@ -373,7 +384,8 @@ def load_compile_commands(cc_path: Path) -> Dict[str, List[str]]:
 
     result: Dict[str, List[str]] = {}
     for entry in data:
-        file_path = Path(entry.get("file", "")).resolve()
+        directory = Path(entry.get("directory", ""))
+        file_path = (directory / entry.get("file", "")).resolve()
         if not file_path:
             continue
         if "arguments" in entry and isinstance(entry["arguments"], list):
@@ -458,6 +470,151 @@ def collect_calls(cursor: Any) -> List[str]:
 
     walk(cursor)
     return calls
+
+
+def collect_macro_calls(
+    file_path: Path,
+) -> tuple[Dict[str, List[str]], Dict[str, List[str]]]:
+    """
+    Use tree-sitter to analyze macro definitions and macro calls.
+
+    Returns:
+        macro_to_calls: Dict mapping macro name -> list of functions called within macro
+        func_to_macros: Dict mapping function name -> list of macros called within function
+    """
+    if not TREE_SITTER_AVAILABLE:
+        return {}, {}
+
+    import tree_sitter
+    import tree_sitter_c as tsc
+    import tree_sitter_cpp as tscpp
+
+    # Determine language based on file extension
+    ext = file_path.suffix.lower()
+    if ext in (".c", ".h"):
+        language = tree_sitter.Language(tsc.language())
+    elif ext in (".cpp", ".cc", ".cxx", ".hpp", ".hxx", ".hh"):
+        language = tree_sitter.Language(tscpp.language())
+    else:
+        return {}, {}
+
+    parser = tree_sitter.Parser(language)
+
+    try:
+        source_code = file_path.read_bytes()
+    except Exception:
+        return {}, {}
+
+    tree = parser.parse(source_code)
+
+    macro_to_calls: Dict[str, List[str]] = {}
+    func_to_macros: Dict[str, List[str]] = {}
+
+    def get_text(node: Any) -> str:
+        return source_code[node.start_byte : node.end_byte].decode(
+            "utf-8", errors="ignore"
+        )
+
+    def extract_calls_from_node(node: Any, is_preproc_arg: bool = False) -> List[str]:
+        """Extract all function calls from a node."""
+        calls = []
+
+        # If this is a preproc_arg, we need to re-parse it as code
+        if node.type == "preproc_arg":
+            arg_text = get_text(node)
+            # Use regex to find function calls in the macro definition
+            # Pattern: identifier followed by parentheses
+            import re
+
+            # This pattern matches function calls like: func_name(args)
+            # It avoids matching keywords like if, while, for, etc.
+            pattern = r"\b([a-zA-Z_][a-zA-Z0-9_]*)\s*\("
+            matches = re.findall(pattern, arg_text)
+            # Filter out C keywords that might look like function calls
+            keywords = {"if", "while", "for", "switch", "return", "sizeof", "typeof"}
+            for match in matches:
+                if match not in keywords:
+                    calls.append(match)
+            return calls
+
+        if node.type == "call_expression":
+            func_node = node.child_by_field_name("function")
+            if func_node:
+                calls.append(get_text(func_node))
+        for child in node.children:
+            calls.extend(extract_calls_from_node(child))
+        return calls
+
+    def find_function_at_line(line: int) -> Optional[str]:
+        """Find function name containing the given line."""
+
+        def search_node(node: Any) -> Optional[str]:
+            if node.type == "function_definition":
+                declarator = node.child_by_field_name("declarator")
+                if (
+                    declarator
+                    and declarator.start_point[0] <= line <= declarator.end_point[0]
+                ):
+                    # Get function name
+                    if declarator.type == "function_declarator":
+                        name_node = declarator.child_by_field_name("declarator")
+                        if name_node:
+                            return get_text(name_node)
+            for child in node.children:
+                result = search_node(child)
+                if result:
+                    return result
+            return None
+
+        return search_node(tree.root_node)
+
+    def walk_tree(node: Any, current_func: Optional[str] = None) -> None:
+        """Walk the AST to collect macro and function call information."""
+        # Check for macro definition
+        if node.type in ("preproc_function_def", "preproc_def"):
+            # Get macro name
+            name_node = None
+            for child in node.children:
+                if child.type == "identifier":
+                    name_node = child
+                    break
+            if name_node:
+                macro_name = get_text(name_node)
+                # Find calls within macro definition
+                # For preproc_function_def, the body is in preproc_arg
+                calls = []
+                for child in node.children:
+                    if child.type == "preproc_arg":
+                        calls.extend(extract_calls_from_node(child))
+                if calls:
+                    macro_to_calls[macro_name] = calls
+
+        # Check for function definition
+        if node.type == "function_definition":
+            declarator = node.child_by_field_name("declarator")
+            if declarator and declarator.type == "function_declarator":
+                name_node = declarator.child_by_field_name("declarator")
+                if name_node:
+                    current_func = get_text(name_node)
+
+        # Check for macro invocation (call_expression with macro name)
+        if node.type == "call_expression" and current_func:
+            func_node = node.child_by_field_name("function")
+            if func_node:
+                func_name = get_text(func_node)
+                # Check if this is a macro call (heuristic: all caps or known macros)
+                if func_name.isupper() or func_name in macro_to_calls:
+                    if current_func not in func_to_macros:
+                        func_to_macros[current_func] = []
+                    if func_name not in func_to_macros[current_func]:
+                        func_to_macros[current_func].append(func_name)
+
+        # Recurse to children
+        for child in node.children:
+            walk_tree(child, current_func)
+
+    walk_tree(tree.root_node)
+    return macro_to_calls, func_to_macros
 
 
 def is_function_like(cursor: Any) -> bool:
@@ -545,6 +702,30 @@ def scan_file(cindex: Any, file_path: Path, args: List[str]) -> List[FunctionInf
             visit(ch)
 
     visit(tu.cursor)
+
+    # Collect macro calls using tree-sitter
+    macro_to_calls, func_to_macros = collect_macro_calls(file_path)
+
+    # If we have macro information, enhance the call relationships
+    if macro_to_calls or func_to_macros:
+        enhanced_count = 0
+        # For each function, check if it calls any macros
+        for fi in functions:
+            if fi.name in func_to_macros:
+                macros_called = func_to_macros[fi.name]
+                for macro_name in macros_called:
+                    # If the macro calls other functions, add those to the function's calls
+                    if macro_name in macro_to_calls:
+                        for called_func in macro_to_calls[macro_name]:
+                            if called_func not in fi.calls:
+                                fi.calls.append(called_func)
+                                enhanced_count += 1
+        # 输出宏分析结果
+        if enhanced_count > 0:
+            PrettyOutput.auto_print(
+                f"🔍 [c2rust-scanner] 文件 {file_path} 通过 tree-sitter 补全 {enhanced_count} 条宏调用依赖"
+            )
+
     return functions
 
 
@@ -995,8 +1176,12 @@ def generate_dot_from_db(db_path: Path, out_path: Path) -> Path:
         # 允许直接传入 .jsonl 文件
         if p.is_file() and p.suffix.lower() == ".jsonl":
             return p
+
         # 仅支持目录下的标准路径：<dir>/.jarvis/c2rust/symbols.jsonl
         if p.is_dir():
+            # 检查是否已经是 .jarvis/c2rust 目录
+            if p.name == "c2rust" and p.parent.name == ".jarvis":
+                return p / "symbols.jsonl"
             prefer = p / ".jarvis" / "c2rust" / "symbols.jsonl"
             return prefer
         # 默认：项目 <cwd>/.jarvis/c2rust/symbols.jsonl
@@ -1100,6 +1285,9 @@ def find_root_function_ids(db_path: Path) -> List[int]:
         if p.is_file() and p.suffix.lower() == ".jsonl":
             return p
         if p.is_dir():
+            # 检查是否已经是 .jarvis/c2rust 目录
+            if p.name == "c2rust" and p.parent.name == ".jarvis":
+                return p / "symbols.jsonl"
             prefer = p / ".jarvis" / "c2rust" / "symbols.jsonl"
             return prefer
         # 默认：项目 .jarvis/c2rust/symbols.jsonl
@@ -1173,6 +1361,9 @@ def compute_translation_order_jsonl(
         if p.is_file() and p.suffix.lower() == ".jsonl":
             return p
         if p.is_dir():
+            # 检查是否已经是 .jarvis/c2rust 目录
+            if p.name == "c2rust" and p.parent.name == ".jarvis":
+                return p / "symbols.jsonl"
             prefer = p / ".jarvis" / "c2rust" / "symbols.jsonl"
             return prefer
         return Path(".") / ".jarvis" / "c2rust" / "symbols.jsonl"
@@ -1492,6 +1683,9 @@ def export_root_subgraphs_to_dir(db_path: Path, out_dir: Path) -> List[Path]:
         if p.is_file() and p.suffix.lower() == ".jsonl":
             return p
         if p.is_dir():
+            # 检查是否已经是 .jarvis/c2rust 目录
+            if p.name == "c2rust" and p.parent.name == ".jarvis":
+                return p / "symbols.jsonl"
             prefer = p / ".jarvis" / "c2rust" / "symbols.jsonl"
             return prefer
         return Path(".") / ".jarvis" / "c2rust" / "symbols.jsonl"

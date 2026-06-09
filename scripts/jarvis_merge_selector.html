@@ -1,0 +1,321 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Jarvis 合并功能选择器</title>
+  <style>
+    :root { --bg: #1e1e1e; --card: #252526; --text: #ccc; --muted: #888; --accent: #3794ff; --border: #3c3c3c; }
+    * { box-sizing: border-box; }
+    body { font-family: system-ui, sans-serif; background: var(--bg); color: var(--text); margin: 0; padding: 24px; line-height: 1.5; }
+    h1 { font-size: 1.4rem; margin: 0 0 8px; }
+    .sub { color: var(--muted); margin-bottom: 16px; }
+    section { background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 16px; margin-bottom: 16px; }
+    h2 { font-size: 1rem; margin: 0 0 12px; }
+    .row { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; padding: 10px 0; border-bottom: 1px solid var(--border); }
+    .row:last-child { border-bottom: none; }
+    .meta { flex: 1; min-width: 220px; }
+    .id { font-weight: 600; font-size: 0.9rem; }
+    .label { color: var(--muted); font-size: 0.85rem; }
+    .hint { color: #666; font-size: 0.8rem; margin-top: 2px; }
+    select { background: #1a1a1a; color: var(--text); border: 1px solid var(--border); border-radius: 6px; padding: 6px 10px; min-width: 160px; }
+    .actions { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 12px; }
+    .bulk { display: flex; gap: 6px; margin-bottom: 12px; flex-wrap: wrap; }
+    .bulk button { font-size: 0.8rem; padding: 4px 10px; }
+    button { background: var(--accent); color: #fff; border: none; padding: 8px 14px; border-radius: 6px; cursor: pointer; font-size: 0.9rem; }
+    button.secondary { background: #3c3c3c; }
+    textarea { width: 100%; min-height: 280px; background: #1a1a1a; color: var(--text); border: 1px solid var(--border); border-radius: 6px; padding: 12px; font-family: ui-monospace, monospace; font-size: 0.85rem; }
+    .info { background: #2d2d30; border-left: 3px solid var(--accent); padding: 10px 12px; margin-bottom: 16px; font-size: 0.9rem; }
+    .legend { display: flex; gap: 16px; flex-wrap: wrap; font-size: 0.85rem; color: var(--muted); margin-bottom: 16px; }
+  </style>
+</head>
+<body>
+  <h1>Jarvis 合并功能选择器</h1>
+  <p class="sub">每项三选一：使用 Jarvis_sky / 使用 Jarvis / 合并</p>
+  <div class="legend">
+    <span><b>sky</b> = 采用 sky 版本或整包引入</span>
+    <span><b>jarvis</b> = 保持 Jarvis 现状</span>
+    <span><b>merge</b> = 以 Jarvis 为基，补丁合入 sky</span>
+  </div>
+  <div class="info">Part A 选 jarvis = 不引入；Part B 选 sky = 不保留；Part C 冲突项可逐模块选择策略。</div>
+
+  <div class="actions">
+    <button type="button" class="secondary" onclick="preset('minimal')">组合1: 最小修复</button>
+    <button type="button" class="secondary" onclick="preset('agent')">组合2: Agent 增强</button>
+    <button type="button" class="secondary" onclick="preset('web')">组合3: Web 全栈</button>
+    <button type="button" onclick="generate()">生成确认文本</button>
+    <button type="button" onclick="copyText()">复制到剪贴板</button>
+  </div>
+
+  <div id="form"></div>
+
+  <section>
+    <h2>确认文本（复制后粘贴到对话）</h2>
+    <textarea id="output" placeholder="点击「生成确认文本」…"></textarea>
+  </section>
+
+  <script>
+    const STRATEGIES = [
+      { v: "sky", l: "使用 Jarvis_sky" },
+      { v: "jarvis", l: "使用 Jarvis" },
+      { v: "merge", l: "合并" },
+    ];
+
+    const DATA = {
+      A: {
+        "A1 Web 全栈": [
+          ["A1-1","Web Gateway 后端"],
+          ["A1-2","Gateway 桥接层"],
+          ["A1-3","统一服务 + Vue 前端"],
+          ["A1-4","启动脚本"],
+          ["A1-5","Web Gateway 测试"],
+          ["A1-6","VSCode 官方扩展","与 B9 可 merge"],
+          ["A1-7","VSCode 发布 CI"],
+        ],
+        "A2 规则与技能": [
+          ["A2-1","规则索引 CLI (jri)","建议 sky","sky"],
+          ["A2-2","技能发现系统"],
+          ["A2-3","自动规则选择"],
+          ["A2-4","技能源适配器"],
+          ["A2-5","Agent 提示词模块"],
+          ["A2-6","场景提示词"],
+          ["A2-7","规则动态卸载"],
+        ],
+        "A3 工具增强": [
+          ["A3-1","多模态图片"],
+          ["A3-2","定时任务"],
+          ["A3-3","Gateway 管理工具"],
+          ["A3-4","符号依赖查询"],
+          ["A3-5","SQLite 符号表"],
+        ],
+        "A4 CodeAgent": [
+          ["A4-1","独立代码审查器"],
+          ["A4-2","C2Rust 宏依赖"],
+        ],
+        "A5 内置规则": [
+          ["A5-1","Agent 系统 Prompts"],
+          ["A5-2","开源研究规则"],
+          ["A5-3","远程部署规则"],
+          ["A5-4","节点描述规则"],
+          ["A5-5","代码质量规则"],
+          ["A5-6","其他规则"],
+        ],
+        "A6 文档": [
+          ["A6-1","用户手册"],
+          ["A6-2","落地页"],
+          ["A6-3","WEB_STARTUP"],
+          ["A6-4","CLI 规范"],
+          ["A6-5","功能清单"],
+        ],
+        "A7 测试": [
+          ["A7-1","jarvis_web_gateway 测试"],
+          ["A7-2","test_multimodal"],
+          ["A7-3","test_add_images"],
+          ["A7-4","test_symbol_table_db"],
+          ["A7-5","test_macro_scanner"],
+        ],
+      },
+      B: [
+        ["B1","Rust 工具","jarvis"],
+        ["B2","rust_wrapper.py","jarvis"],
+        ["B3","code_agent_delivery","jarvis"],
+        ["B4","search_file_content","jarvis"],
+        ["B5","tool_prompt_spill","jarvis"],
+        ["B6","project_memory","jarvis"],
+        ["B7","llm_metrics","jarvis"],
+        ["B8","rich_box","jarvis"],
+        ["B9","VscodeTool/","jarvis"],
+        ["B10","sync_jarvis_config","jarvis"],
+        ["B11","jca_governance 文档","jarvis"],
+        ["B12","superpowers 文档","jarvis"],
+        ["B13","memory_data","jarvis"],
+        ["B14","AGENTS.md 等","jarvis"],
+        ["B15","Jarvis builtin","jarvis"],
+        ["B16","Jarvis 测试","jarvis"],
+      ],
+      C: [
+        ["C-jarvis_agent","jarvis_agent (23 文件)","jarvis"],
+        ["C-jarvis_code_agent","jarvis_code_agent (18 文件)","jarvis"],
+        ["C-jarvis_tools","jarvis_tools (9 文件)","jarvis"],
+        ["C-jarvis_utils","jarvis_utils (11 文件)","jarvis"],
+        ["C-jarvis_platform","jarvis_platform (3 文件)","merge"],
+        ["C-jarvis_mcp","jarvis_mcp","merge"],
+        ["C-jarvis_c2rust","jarvis_c2rust (22 文件)","jarvis"],
+        ["C-others","其余冲突模块","jarvis"],
+      ],
+      D: [
+        ["D-pyproject","pyproject.toml","merge"],
+        ["D-setup","setup.py","merge"],
+        ["D-dockerfile","Dockerfile","jarvis"],
+        ["D-manifest","MANIFEST.in","merge"],
+        ["D-mkdocs","mkdocs.yml","jarvis"],
+        ["D-releasenote","ReleaseNote.md","merge"],
+        ["D-readme","README.md","merge"],
+      ],
+    };
+
+    const form = document.getElementById("form");
+    const LS_KEY = "jarvis-merge-strategies-v2";
+
+    function selectHtml(id, def) {
+      const opts = STRATEGIES.map(s => `<option value="${s.v}">${s.l}</option>`).join("");
+      return `<select data-id="${id}">${opts}</select>`;
+    }
+
+    function renderSection(title, items, group) {
+      const sec = document.createElement("section");
+      sec.innerHTML = `<h2>${title}</h2>`;
+      const bulk = document.createElement("div");
+      bulk.className = "bulk";
+      bulk.innerHTML = `
+        <button type="button" class="secondary" data-bulk="${group}" data-strategy="sky">本组全部 sky</button>
+        <button type="button" class="secondary" data-bulk="${group}" data-strategy="jarvis">本组全部 Jarvis</button>
+        <button type="button" class="secondary" data-bulk="${group}" data-strategy="merge">本组全部合并</button>
+      `;
+      sec.appendChild(bulk);
+      items.forEach(([id, label, hint, def]) => {
+        const row = document.createElement("div");
+        row.className = "row";
+        row.innerHTML = `
+          <div class="meta">
+            <div class="id">${id}</div>
+            <div class="label">${label}</div>
+            ${hint ? `<div class="hint">${hint}</div>` : ""}
+          </div>
+          ${selectHtml(id, def || "jarvis")}
+        `;
+        sec.appendChild(row);
+        const sel = row.querySelector("select");
+        sel.dataset.group = group;
+        const saved = load()[id];
+        sel.value = saved || def || "jarvis";
+      });
+      form.appendChild(sec);
+    }
+
+    for (const [title, items] of Object.entries(DATA.A)) renderSection("Part A — " + title, items, "A");
+    renderSection("Part B — Jarvis 独有", DATA.B, "B");
+    renderSection("Part C — 冲突模块", DATA.C, "C");
+    renderSection("Part D — 配置文件", DATA.D, "D");
+
+    form.addEventListener("change", save);
+    form.addEventListener("click", (e) => {
+      const btn = e.target.closest("[data-bulk]");
+      if (!btn) return;
+      const group = btn.dataset.bulk;
+      const strategy = btn.dataset.strategy;
+      form.querySelectorAll(`select[data-group="${group}"]`).forEach(el => { el.value = strategy; });
+      save();
+    });
+
+    function save() {
+      const sel = {};
+      form.querySelectorAll("select[data-id]").forEach(el => { sel[el.dataset.id] = el.value; });
+      localStorage.setItem(LS_KEY, JSON.stringify(sel));
+    }
+
+    function load() {
+      try { return JSON.parse(localStorage.getItem(LS_KEY) || "{}"); } catch { return {}; }
+    }
+
+    function allIds(group) {
+      if (group === "A") return Object.values(DATA.A).flat().map(x => x[0]);
+      return DATA[group].map(x => x[0]);
+    }
+
+    function getSelections(group) {
+      return allIds(group).map(id => {
+        const el = form.querySelector(`select[data-id="${id}"]`);
+        return [id, el ? el.value : "jarvis"];
+      });
+    }
+
+    function formatGroup(title, pairs) {
+      const lines = [title];
+      pairs.forEach(([id, s]) => {
+        const label = STRATEGIES.find(x => x.v === s)?.l || s;
+        lines.push(`  ${id}: ${label} (${s})`);
+      });
+      const sum = { sky: 0, jarvis: 0, merge: 0 };
+      pairs.forEach(([, s]) => sum[s]++);
+      lines.push(`  汇总: sky=${sum.sky} jarvis=${sum.jarvis} merge=${sum.merge}`);
+      return lines;
+    }
+
+    function generate() {
+      const a = getSelections("A");
+      const b = getSelections("B");
+      const c = getSelections("C");
+      const d = getSelections("D");
+      const text = [
+        "Jarvis 合并选择确认（三选一策略）",
+        "================================",
+        "",
+        "策略: sky=使用 Jarvis_sky | jarvis=使用 Jarvis | merge=合并",
+        "",
+        ...formatGroup("Part A — sky 独有功能:", a),
+        "",
+        ...formatGroup("Part B — Jarvis 独有功能:", b),
+        "",
+        ...formatGroup("Part C — 冲突模块:", c),
+        "",
+        ...formatGroup("Part D — 配置文件:", d),
+        "",
+        "请按以上逐项策略执行合并。",
+      ].join("\n");
+      document.getElementById("output").value = text;
+      return text;
+    }
+
+    function copyText() {
+      const t = document.getElementById("output").value || generate();
+      navigator.clipboard.writeText(t).then(() => alert("已复制到剪贴板"));
+    }
+
+    function setStrategy(ids, strategy) {
+      ids.forEach(id => {
+        const el = form.querySelector(`select[data-id="${id}"]`);
+        if (el) el.value = strategy;
+      });
+    }
+
+    function preset(name) {
+      form.querySelectorAll("select").forEach(el => { el.value = "jarvis"; });
+      const bIds = DATA.B.map(x => x[0]);
+      const cIds = DATA.C.map(x => x[0]);
+      const dMerge = ["D-pyproject","D-setup","D-manifest"];
+      const dJarvis = ["D-dockerfile","D-mkdocs"];
+
+      if (name === "minimal") {
+        setStrategy(["A2-1"], "sky");
+        setStrategy(bIds, "jarvis");
+        setStrategy(cIds, "jarvis");
+        setStrategy(dMerge, "merge");
+        setStrategy(dJarvis, "jarvis");
+      } else if (name === "agent") {
+        setStrategy(["A2-1","A2-2","A2-3","A2-5","A2-6","A2-7","A5-2"], "sky");
+        setStrategy(["A3-1"], "merge");
+        setStrategy(bIds, "jarvis");
+        setStrategy(["C-jarvis_agent","C-jarvis_tools","C-jarvis_utils","C-jarvis_platform"], "merge");
+        setStrategy(["C-jarvis_code_agent","C-jarvis_mcp","C-jarvis_c2rust","C-others"], "jarvis");
+        setStrategy(dMerge.concat(["D-releasenote","D-readme"]), "merge");
+        setStrategy(dJarvis, "jarvis");
+      } else if (name === "web") {
+        setStrategy(["A1-1","A1-2","A1-3","A1-4","A1-5","A2-1","A3-2","A3-3","A7-1"], "sky");
+        setStrategy(["A1-6","B9"], "merge");
+        setStrategy(bIds.filter(x => x !== "B9"), "jarvis");
+        setStrategy(["C-jarvis_agent","C-jarvis_code_agent","C-jarvis_tools","C-jarvis_utils"], "merge");
+        setStrategy(["C-jarvis_platform","C-jarvis_mcp","C-jarvis_c2rust","C-others"], "jarvis");
+        setStrategy(["D-pyproject","D-setup","D-manifest"], "merge");
+      }
+      save();
+      generate();
+    }
+
+    const saved = load();
+    form.querySelectorAll("select[data-id]").forEach(el => {
+      if (saved[el.dataset.id]) el.value = saved[el.dataset.id];
+    });
+  </script>
+</body>
+</html>

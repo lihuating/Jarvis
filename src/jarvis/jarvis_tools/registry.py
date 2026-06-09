@@ -3,6 +3,7 @@ import os
 import re
 import sys
 import tempfile
+import threading
 import time
 from pathlib import Path
 from typing import Any
@@ -13,9 +14,8 @@ from typing import Optional
 from typing import Protocol
 from typing import Tuple
 from typing import Set
-from typing import cast
 
-import yaml
+import yaml  # type: ignore[import-untyped]
 
 from jarvis.jarvis_mcp import McpClient
 from jarvis.jarvis_mcp.sse_mcp_client import SSEMcpClient
@@ -29,12 +29,9 @@ from jarvis.jarvis_utils.config import get_tool_load_dirs
 
 # -*- coding: utf-8 -*-
 from jarvis.jarvis_utils.jsonnet_compat import loads as json_loads
-from jarvis.jarvis_utils import globals as jarvis_globals
-from jarvis.jarvis_utils.output import OutputType
 from jarvis.jarvis_utils.output import PrettyOutput
-from jarvis.jarvis_utils.tag import ct
-from jarvis.jarvis_utils.tag import ot
 from jarvis.jarvis_utils.utils import daily_check_git_updates
+from jarvis.jarvis_utils.utils import extract_json_from_text
 from jarvis.jarvis_utils.utils import is_context_overflow
 
 # 导入 Rust 优化模块（如果可用）
@@ -44,72 +41,45 @@ try:
         clean_extra_markers as _rust_clean_extra_markers,
         get_performance_info,
     )
-    _USE_RUST = get_performance_info()['rust_enabled']
+
+    _USE_RUST = get_performance_info()["rust_enabled"]
 except ImportError:
     _USE_RUST = False
 
-# 工具加载缓存
-_tools_cache: Dict[str, Dict[str, Tool]] = {}
-_tools_dir_hashes: Dict[str, str] = {}
 
-# 内置与 MCP/自定义工具同名覆盖时，汇总告警在进程内最多打印一次（Init/JVS_MEMORY 等会多次构造注册表）
-_duplicate_tool_override_warning_emitted: bool = False
-
-# 预编译正则表达式，提升性能
-_TOOL_CALL_OPEN_TAG = ot('TOOL_CALL')
-_TOOL_CALL_CLOSE_TAG = ct('TOOL_CALL')
-# 匹配工具调用开始标签（忽略大小写）
-_TOOL_CALL_OPEN_PATTERN = re.compile(rf"(?i){re.escape(_TOOL_CALL_OPEN_TAG)}")
-# 匹配工具调用结束标签（忽略大小写）
-_TOOL_CALL_CLOSE_PATTERN = re.compile(rf"(?i){re.escape(_TOOL_CALL_CLOSE_TAG)}")
-# 匹配工具调用结束标签（行首，忽略大小写）
-_TOOL_CALL_CLOSE_BOL_PATTERN = re.compile(rf"(?mi)^{re.escape(_TOOL_CALL_CLOSE_TAG)}")
-# 匹配工具调用块（多行，忽略大小写）
-_TOOL_CALL_BLOCK_PATTERN = re.compile(
-    rf"(?msi){re.escape(_TOOL_CALL_OPEN_TAG)}(.*?){re.escape(_TOOL_CALL_CLOSE_TAG)}"
-)
-# 匹配结束标签在行末（忽略大小写）
-_TOOL_CALL_CLOSE_EOL_PATTERN = re.compile(rf"{re.escape(_TOOL_CALL_CLOSE_TAG)}$", re.IGNORECASE)
-# 额外标记清理模式
-_EXTRA_MARKERS_PATTERN = re.compile(r"<\|.*?\|>", re.IGNORECASE)
-
-def _get_dir_hash(directory: str) -> str:
-    """计算目录的哈希值，用于检测文件变化"""
-    import hashlib
-    path = Path(directory)
-    if not path.exists():
-        return ""
-    
-    hash_obj = hashlib.md5()
-    try:
-        for file in sorted(path.glob("*.py")):
-            if file.name in ["__init__.py", "base.py"]:
-                continue
-            if file.is_file():
-                stat = file.stat()
-                hash_obj.update(f"{file.name}:{stat.st_mtime}:{stat.st_size}".encode())
-    except Exception:
-        return ""
-    
-    return hash_obj.hexdigest()
-
-
-tool_call_help = f"""
+tool_call_help = """
 ## 工具调用指南（Markdown）
 
-**工具调用格式（Jsonnet）**
-{ot("TOOL_CALL")}
-{{
+**工具调用格式（Json）**
+```json
+{
   "want": "想要从执行结果中获取到的信息",
   "name": "工具名称",
-  "arguments": {{
+  "arguments": {
     "param1": "值1",
     "param2": "值2"
-  }}
-}}
-{ct("TOOL_CALL")}
+  }
+}
+```
 
-**Jsonnet格式特性**
+**定时执行（可选）**
+在 arguments 中添加以下任一参数可创建定时任务：
+- `after`: 延时执行（秒），例如 `"after": 10` 表示10秒后执行
+- `at`: 定时执行（ISO格式时间），例如 `"at": "2024-12-31T23:59:59"`
+- `loop`: 循环执行（秒），例如 `"loop": 60` 表示每60秒执行一次
+
+```json
+// 示例：10秒后执行脚本
+{
+  "name": "execute_script",
+  "arguments": {
+    "script_content": "echo hello",
+    "after": 10
+  }
+}
+```
+
+**Json格式特性**
 - 字符串引号：可使用双引号或单引号
 - 尾随逗号：对象/数组最后一个元素后可添加逗号
 - 注释：支持 // 单行或 /* */ 多行注释
@@ -117,16 +87,16 @@ tool_call_help = f"""
 **关键规则**
 1. 每次只使用一个工具，等待结果后再进行下一步
 2. 信息不足时询问用户，不要在没有完整信息的情况下继续
+3. 定时参数（after/at/loop）会自动创建定时任务，工具不会立即执行
 
 **多个工具调用**
-- 支持一次调用多个工具，格式如下：
-  {ot("TOOL_CALL")}
-  {{"name": "tool1", "arguments": {{...}}}}
-  {ct("TOOL_CALL")}
-  
-  {ot("TOOL_CALL")}
-  {{"name": "tool2", "arguments": {{...}}}}
-  {ct("TOOL_CALL")}
+- 支持一次调用多个工具，每个工具调用是一个独立的 JSON 对象：
+  ```json
+  {"name": "tool1", "arguments": {...}}
+  ```
+  ```json
+  {"name": "tool2", "arguments": {...}}
+  ```
 - **重要限制**：多个工具调用之间必须**没有相互依赖关系**
   - 工具A的执行结果不能作为工具B的输入参数
   - 工具B不能依赖工具A产生的副作用（如文件创建、状态修改等）
@@ -136,8 +106,8 @@ tool_call_help = f"""
 **常见错误**
 - 同时调用多个有依赖关系的工具（违反无依赖要求）
 - 假设工具结果
-- Jsonnet格式错误
-- 缺少行首的开始/结束标签
+- Json格式错误
+- JSON对象缺少 name 或 arguments 字段
 """
 
 
@@ -156,9 +126,111 @@ class ToolRegistry(OutputHandlerProtocol):
         return "TOOL_CALL"
 
     def can_handle(self, response: str) -> bool:
-        # 仅当 {ot("TOOL_CALL")} 出现在行首时才认为可以处理（忽略大小写）
-        has_tool_call = _TOOL_CALL_OPEN_PATTERN.search(response) is not None
-        return has_tool_call
+        # 第一层：严格JSON解析——如果文本中包含带 name 和 arguments 字段的JSON对象，认为可以处理
+        for i, ch in enumerate(response):
+            if ch == "{":
+                json_str, _ = extract_json_from_text(response, i)
+                if json_str:
+                    try:
+                        parsed = json_loads(json_str)
+                        if (
+                            isinstance(parsed, dict)
+                            and "name" in parsed
+                            and "arguments" in parsed
+                        ):
+                            return True
+                    except Exception:
+                        continue
+
+        # 第二层：严格格式检测——必须是标准的工具调用格式
+        # 条件 2：工具名必须以 "name": "tool_name" 标准格式出现，且包含 arguments 字段
+        if self.tools:
+            for tool_name in self.tools.keys():
+                # 必须同时满足："name": "tool_name" 和 "arguments" 字段
+                if (
+                    f'"name": "{tool_name}"' in response
+                    or f'"name":"{tool_name}"' in response
+                ):
+                    if '"arguments"' in response or '"arguments":' in response:
+                        return True
+
+        # 条件 3：工具调用标记 + 完整 JSON 结构——常见标记且包含 name 和 arguments 字段
+        tool_call_markers = ["<TOOL_CALL>", "tool_call", "```json"]
+        for marker in tool_call_markers:
+            if marker in response:
+                # 必须同时包含 name 和 arguments 关键字，且格式正确
+                if '"name"' in response and '"arguments"' in response:
+                    return True
+
+        # 条件4：response 中同时包含 "name" 关键字和工具名（工具名不加引号），且其参数名以引号包裹形式出现
+        if self.tools:
+            for tool_name, tool_info in self.tools.items():
+                # "name" 和工具名分别独立出现在 response 中即可
+                if '"name"' in response and f"{tool_name}" in response:
+                    # 工具名以标准格式出现，再检查其参数名是否也以引号包裹形式出现
+                    parameters = (
+                        tool_info.parameters
+                        if hasattr(tool_info, "parameters")
+                        else tool_info.get("parameters", {})
+                    )
+                    if isinstance(parameters, dict):
+                        properties = parameters.get("properties", {})
+                        if isinstance(properties, dict):
+                            for param_name in properties:
+                                if f'"{param_name}"' in response:
+                                    return True
+
+        # 条件5：扁平格式工具调用——JSON中没有name字段，但顶层key与已注册工具的参数名匹配
+        # 例如：{"files": [...]} 匹配 read_code，{"interpreter": "bash", "script_content": "..."} 匹配 execute_script
+        if self.tools:
+            for i, ch in enumerate(response):
+                if ch == "{":
+                    json_str, _ = extract_json_from_text(response, i)
+                    if json_str:
+                        try:
+                            parsed = json_loads(json_str)
+                            if isinstance(parsed, dict) and "name" not in parsed:
+                                json_keys = set(parsed.keys())
+                                matched_tools = []
+                                for tool_name, tool_info in self.tools.items():
+                                    parameters = (
+                                        tool_info.parameters
+                                        if hasattr(tool_info, "parameters")
+                                        else tool_info.get("parameters", {})
+                                    )
+                                    if isinstance(parameters, dict):
+                                        properties = parameters.get("properties", {})
+                                        required = parameters.get("required", [])
+                                        if isinstance(properties, dict) and isinstance(
+                                            required, list
+                                        ):
+                                            param_keys = set(properties.keys())
+                                            # 所有required参数必须存在于JSON的key中，且JSON的key必须是工具参数的子集
+                                            if (
+                                                required
+                                                and all(
+                                                    r in json_keys for r in required
+                                                )
+                                                and json_keys.issubset(param_keys)
+                                            ):
+                                                matched_tools.append(tool_name)
+                                # 只有唯一匹配时才判定为工具调用，避免误判
+                                if len(matched_tools) == 1:
+                                    return True
+                        except Exception:
+                            continue
+
+        # 条件6：特征组合检测——工具调用标记 + 已注册工具名同时出现
+        # 当response中同时包含工具调用标记和具体工具名时，判定为工具调用意图
+        # 这能识别非标准格式的工具调用，如 "tool_call: read_code\npath: App.vue"
+        tool_call_markers = ["tool_call", "<TOOL_CALL>", "function_call", "action_call"]
+        has_tool_call_marker = any(marker in response for marker in tool_call_markers)
+        if has_tool_call_marker and self.tools:
+            for tool_name in self.tools.keys():
+                if tool_name in response:
+                    return True
+
+        return False
 
     def prompt(self) -> str:
         """加载工具"""
@@ -196,22 +268,22 @@ class ToolRegistry(OutputHandlerProtocol):
             return tools_prompt
         return ""
 
-    def handle(self, response: str, agent_: Any) -> Tuple[bool, Any]:
+    def handle(self, response: str, agent: Any) -> Tuple[bool, Any]:
         try:
-            # 传递agent给_extract_tool_calls，以便在解析失败时调用大模型修复
+            # 传递 agent 给_extract_tool_calls，以便在解析失败时调用大模型修复
             tool_calls, err_msg, auto_completed = self._extract_tool_calls(
-                response, agent_
+                response, agent
             )
             if err_msg:
                 # 只要工具解析错误，追加工具使用帮助信息（相当于一次 <ToolUsage>）
                 try:
                     from jarvis.jarvis_agent import Agent
 
-                    agent_obj: Agent = agent_
+                    agent_obj: Agent = agent
                     tool_usage = agent_obj.get_tool_usage_prompt()
                     return False, f"{err_msg}\n\n{tool_usage}"
                 except Exception:
-                    # 兼容处理：无法获取Agent或ToolUsage时，至少返回工具系统帮助信息
+                    # 兼容处理：无法获取 Agent 或 ToolUsage 时，至少返回工具系统帮助信息
                     return False, f"{err_msg}\n\n{tool_call_help}"
 
             # 处理多个工具调用
@@ -231,10 +303,10 @@ class ToolRegistry(OutputHandlerProtocol):
                         and "arguments" in first_value
                     ):
                         # 多个工具调用格式
-                        result = self.handle_multiple_tool_calls(tool_calls, agent_)
+                        result = self.handle_multiple_tool_calls(tool_calls, agent)
                     else:
                         # 可能是格式错误，尝试作为单个工具调用处理
-                        result = self.handle_tool_calls(tool_calls, agent_)
+                        result = self.handle_tool_calls(tool_calls, agent)
                 elif len(tool_calls) == 1:
                     # 单个键，检查值是否是工具调用信息字典
                     first_value = list(tool_calls.values())[0]
@@ -244,125 +316,48 @@ class ToolRegistry(OutputHandlerProtocol):
                         and "arguments" in first_value
                     ):
                         # 多个工具调用格式，但只有一个
-                        result = self.handle_tool_calls(first_value, agent_)
+                        result = self.handle_tool_calls(first_value, agent)
                     elif "name" in tool_calls and "arguments" in tool_calls:
                         # 单个工具调用格式（直接包含 name 和 arguments）
-                        result = self.handle_tool_calls(tool_calls, agent_)
+                        result = self.handle_tool_calls(tool_calls, agent)
                     else:
                         # 向后兼容：尝试作为单个工具调用处理
-                        result = self.handle_tool_calls(tool_calls, agent_)
+                        result = self.handle_tool_calls(tool_calls, agent)
                 elif "name" in tool_calls and "arguments" in tool_calls:
                     # 单个工具调用格式（直接包含 name 和 arguments，但 len == 0 的情况不应该发生）
-                    result = self.handle_tool_calls(tool_calls, agent_)
+                    result = self.handle_tool_calls(tool_calls, agent)
                 else:
                     # 空字典或格式错误
-                    result = self.handle_tool_calls(tool_calls, agent_)
+                    result = self.handle_tool_calls(tool_calls, agent)
             else:
                 # 非字典格式，直接调用 handle_tool_calls
-                result = self.handle_tool_calls(tool_calls, agent_)
+                result = self.handle_tool_calls(tool_calls, agent)
 
-            if auto_completed:
-                # 如果自动补全了结束标签，在结果中添加说明信息
-                result = f"检测到工具调用缺少结束标签，已自动补全{ct('TOOL_CALL')}。请确保后续工具调用包含完整的开始和结束标签。\n\n{result}"
+            # auto_completed 逻辑已移除（不再需要自动补全标签）
             return False, result
         except Exception as e:
-            PrettyOutput.auto_print(f"❌ 工具调用处理失败: {str(e)}")
+            PrettyOutput.auto_print(f"❌ 工具调用处理失败：{str(e)}")
             from jarvis.jarvis_agent import Agent
 
-            agent_final: Agent = agent_
+            agent_final: Agent = agent
             return (
                 False,
-                f"工具调用处理失败: {str(e)}\n\n{agent_final.get_tool_usage_prompt()}",
+                f"工具调用处理失败：{str(e)}\n\n{agent_final.get_tool_usage_prompt()}",
             )
 
-    def __init__(self, use_cache: bool = True) -> None:
-        """初始化工具注册表
-        
-        参数:
-            use_cache: 是否使用缓存，默认为True
-        """
+    def __init__(self) -> None:
+        """初始化工具注册表"""
         self.tools: Dict[str, Tool] = {}
         # 记录内置工具名称，用于区分内置工具和用户自定义工具
         self._builtin_tool_names: Set[str] = set()
         # 定义必选工具列表（这些工具将始终可用）
         self._required_tools: List[str] = ["execute_script"]
-        # 批量注册阶段用于汇总“覆盖已存在工具”的告警，避免启动时刷屏
-        self._bulk_registering: bool = True
-        self._overwritten_tools: Dict[str, int] = {}
-        
-        # 尝试从缓存加载
-        if use_cache and self._try_load_from_cache():
-            # 应用工具配置组过滤
-            self._apply_tool_config_filter()
-            return
-        
-        # 缓存未命中，重新加载工具
+        # 加载内置工具和外部工具
         self._load_builtin_tools()
         self._load_external_tools()
         self._load_mcp_tools()
         # 应用工具配置组过滤
         self._apply_tool_config_filter()
-        # 批量注册结束：汇总一次覆盖告警
-        self._bulk_registering = False
-        self._flush_overwritten_tool_warnings()
-        # 更新缓存
-        if use_cache:
-            self._update_cache()
-    
-    def _try_load_from_cache(self) -> bool:
-        """尝试从缓存加载工具
-        
-        返回:
-            bool: 是否成功从缓存加载
-        """
-        try:
-            # 检查工具目录是否发生变化
-            builtin_dir = str(Path(__file__).parent)
-            builtin_hash = _get_dir_hash(builtin_dir)
-            
-            cache_key = "all_tools"
-            if cache_key not in _tools_cache:
-                return False
-            
-            if builtin_hash != _tools_dir_hashes.get("builtin", ""):
-                return False
-            
-            # 检查外部工具目录
-            from jarvis.jarvis_utils.config import get_tool_load_dirs
-            tool_dirs = [str(Path(get_data_dir()) / "tools")] + get_tool_load_dirs()
-            for tool_dir in tool_dirs:
-                dir_hash = _get_dir_hash(tool_dir)
-                if dir_hash != _tools_dir_hashes.get(tool_dir, ""):
-                    return False
-            
-            # 缓存有效，直接加载
-            self.tools = _tools_cache[cache_key].copy()
-            # 恢复内置工具名称
-            self._builtin_tool_names = set(
-                name for name in self.tools.keys() 
-                if any(name in _tools_cache[cache_key])
-            )
-            return True
-        except Exception:
-            return False
-    
-    def _update_cache(self) -> None:
-        """更新工具缓存"""
-        try:
-            # 保存工具到缓存
-            cache_key = "all_tools"
-            _tools_cache[cache_key] = self.tools.copy()
-            
-            # 保存目录哈希
-            builtin_dir = str(Path(__file__).parent)
-            _tools_dir_hashes["builtin"] = _get_dir_hash(builtin_dir)
-            
-            from jarvis.jarvis_utils.config import get_tool_load_dirs
-            tool_dirs = [str(Path(get_data_dir()) / "tools")] + get_tool_load_dirs()
-            for tool_dir in tool_dirs:
-                _tools_dir_hashes[tool_dir] = _get_dir_hash(tool_dir)
-        except Exception:
-            pass
 
     def use_tools(self, name: List[str]) -> None:
         """使用指定工具
@@ -370,11 +365,6 @@ class ToolRegistry(OutputHandlerProtocol):
         参数:
             name: 要使用的工具名称列表
         """
-        missing_tools = [tool_name for tool_name in name if tool_name not in self.tools]
-        if missing_tools:
-            PrettyOutput.auto_print(
-                f"⚠️ 工具 {missing_tools} 不存在，可用的工具有: {', '.join(self.tools.keys())}"
-            )
         self.tools = {
             tool_name: self.tools[tool_name]
             for tool_name in name
@@ -527,8 +517,15 @@ class ToolRegistry(OutputHandlerProtocol):
                     except Exception as e:
                         PrettyOutput.auto_print(f"❌ 克隆中心工具仓库失败: {str(e)}")
 
-        # --- 全局每日更新检查 ---
-        daily_check_git_updates(tool_dirs, "tools")
+        # --- 全局每日更新检查（后台线程执行，避免阻塞）---
+        def check_tool_updates() -> None:
+            try:
+                daily_check_git_updates(tool_dirs, "tools")
+            except Exception:
+                # 静默失败，不影响正常使用
+                pass
+
+        threading.Thread(target=check_tool_updates, daemon=True).start()
 
         for tool_dir in tool_dirs:
             p_tool_dir = Path(tool_dir)
@@ -768,11 +765,8 @@ class ToolRegistry(OutputHandlerProtocol):
 
     @staticmethod
     def _has_tool_calls_block(content: str) -> bool:
-        """从内容中提取工具调用块（仅匹配行首标签，忽略大小写）"""
-        pattern = (
-            rf"(?msi){re.escape(ot('TOOL_CALL'))}(.*?)^{re.escape(ct('TOOL_CALL'))}"
-        )
-        return re.search(pattern, content) is not None
+        """检查内容中是否包含工具调用 JSON"""
+        return '"name"' in content and '"arguments"' in content
 
     @staticmethod
     def _get_long_response_hint(content: str) -> str:
@@ -807,14 +801,6 @@ class ToolRegistry(OutputHandlerProtocol):
                 - 第一个元素是提取的JSON字符串（如果找到），否则为None
                 - 第二个元素是JSON结束后的位置
         """
-        # 优先使用 Rust 优化版本
-        if _USE_RUST:
-            try:
-                return _rust_extract_json_from_text(text, start_pos)
-            except Exception:
-                pass  # Rust 版本失败，回退到 Python 版本
-        
-        # Python 回退实现
         # 跳过空白字符
         pos = start_pos
         while pos < len(text) and text[pos] in (" ", "\t", "\n", "\r"):
@@ -864,6 +850,37 @@ class ToolRegistry(OutputHandlerProtocol):
         return None, len(text)
 
     @staticmethod
+    def _fuzzy_extract_tool_json(content: str) -> List[str]:
+        """宽泛提取：从全文中搜索JSON对象，检查是否包含name和arguments字段
+
+        兼容不按规范输出标签的模型（如GLM输出<TOOL_CALL>前缀而非标准JSON）
+
+        参数:
+            content: 要搜索的文本内容
+
+        返回:
+            List[str]: 提取到的有效工具调用JSON字符串列表
+        """
+        results = []
+        for i, ch in enumerate(content):
+            if ch == "{":
+                json_str, end_pos = extract_json_from_text(content, i)
+                if json_str is None:
+                    continue
+                try:
+                    json_str = ToolRegistry._clean_extra_markers(json_str)
+                    parsed = json_loads(json_str)
+                    if (
+                        isinstance(parsed, dict)
+                        and "name" in parsed
+                        and "arguments" in parsed
+                    ):
+                        results.append(json_str)
+                except Exception:
+                    continue
+        return results
+
+    @staticmethod
     def _clean_extra_markers(text: str) -> str:
         """清理文本中的额外标记（如 <|tool_call_end|> 等）
 
@@ -873,16 +890,17 @@ class ToolRegistry(OutputHandlerProtocol):
         返回:
             清理后的文本
         """
-        # 优先使用 Rust 优化版本
-        if _USE_RUST:
-            try:
-                return _rust_clean_extra_markers(text).strip()
-            except Exception:
-                pass  # Rust 版本失败，回退到 Python 版本
-        
-        # Python 回退实现
-        # 使用预编译的正则表达式清理所有 <|...|> 格式的标记
-        cleaned = _EXTRA_MARKERS_PATTERN.sub("", text)
+        # 常见的额外标记模式
+        extra_markers = [
+            r"<\|tool_call_end\|>",
+            r"<\|tool_calls_section_end\|>",
+            r"<\|.*?\|>",  # 匹配所有 <|...|> 格式的标记
+        ]
+
+        cleaned = text
+        for pattern in extra_markers:
+            cleaned = re.sub(pattern, "", cleaned, flags=re.IGNORECASE)
+
         return cleaned.strip()
 
     @staticmethod
@@ -926,6 +944,183 @@ class ToolRegistry(OutputHandlerProtocol):
         return None, False
 
     @staticmethod
+    def _parse_tool_call_format(content: str) -> list:
+        """解析 <tool_call>工具名称 参数JSON 格式"""
+        ret: list = []
+        tool_call_pattern = r"<tool_call>\s*(\w+)\s+"
+        matches = re.finditer(tool_call_pattern, content)
+
+        for match in matches:
+            tool_name = match.group(1)
+            json_start = match.end()
+            while json_start < len(content) and content[json_start].isspace():
+                json_start += 1
+
+            if json_start < len(content) and content[json_start] == "{":
+                json_str, end_pos = extract_json_from_text(content, json_start)
+                if json_str:
+                    try:
+                        arguments = json_loads(json_str)
+                        tool_call = {"name": tool_name, "arguments": arguments}
+                        ret.append(tool_call)
+                    except Exception:
+                        continue
+        return ret
+
+    @staticmethod
+    def _parse_xml_tag_format(content: str, existing: list) -> list:
+        """解析 XML 标签格式: <name>...</name><arguments>...</arguments>"""
+        ret: list = []
+        xml_name_pattern = r"<name>\s*(\w+)\s*</name>"
+        xml_name_matches = list(re.finditer(xml_name_pattern, content))
+
+        for name_match in xml_name_matches:
+            xml_tool_name = name_match.group(1)
+            search_start = name_match.end()
+            xml_args_pattern = r"<arguments>\s*"
+            args_match = re.search(xml_args_pattern, content[search_start:])
+            if args_match:
+                args_content_start = search_start + args_match.end()
+                close_tag_pos = content.find("</arguments>", args_content_start)
+                if close_tag_pos != -1:
+                    args_content = content[args_content_start:close_tag_pos].strip()
+                    try:
+                        arguments = json_loads(args_content)
+                        tool_call = {"name": xml_tool_name, "arguments": arguments}
+                        already_found = False
+                        for ex in existing:
+                            if isinstance(ex, dict) and ex.get("name") == xml_tool_name:
+                                already_found = True
+                                break
+                        if not already_found:
+                            ret.append(tool_call)
+                    except Exception:
+                        pass
+        return ret
+
+    @staticmethod
+    def _parse_arg_key_value_format(content: str, existing: list) -> list:
+        """解析 [TOOL_CALL] 标记 + arg_key/arg_value 标签格式
+
+        格式示例:
+        [TOOL_CALL]
+        read_code
+        <arg_key>files</arg_key><arg_value>[{"path": "src/file.py"}]</arg_value>
+        """
+        ret: list = []
+
+        # 匹配 [TOOL_CALL] 标记
+        tool_call_marker_pattern = r"\[TOOL_CALL\]\s*\n(\w+)"
+        marker_matches = list(re.finditer(tool_call_marker_pattern, content))
+
+        for match in marker_matches:
+            tool_name = match.group(1)
+            search_start = match.end()
+
+            # 检查是否已经找到过该工具
+            already_found = False
+            for ex in existing:
+                if isinstance(ex, dict) and ex.get("name") == tool_name:
+                    already_found = True
+                    break
+            if already_found:
+                continue
+
+            # 提取所有 arg_key 和 arg_value 对
+            arg_pattern = r"<arg_key>(\w+)</arg_key>\s*<arg_value>(.*?)</arg_value>"
+            arg_matches = list(
+                re.finditer(arg_pattern, content[search_start:], re.DOTALL)
+            )
+
+            if arg_matches:
+                arguments = {}
+                for arg_match in arg_matches:
+                    key = arg_match.group(1)
+                    value_str = arg_match.group(2).strip()
+
+                    # 尝试解析值为JSON
+                    try:
+                        value = json_loads(value_str)
+                    except Exception:
+                        # 如果不是有效的JSON，保持为字符串
+                        value = value_str
+
+                    arguments[key] = value
+
+                tool_call = {"name": tool_name, "arguments": arguments}
+                ret.append(tool_call)
+
+        return ret
+
+    @staticmethod
+    def _parse_code_block_format(content: str, existing: list) -> Tuple[list, bool]:
+        """解析 工具名 + markdown代码块 格式"""
+        ret: list = []
+        auto_completed = False
+        code_block_pattern = r"(?:^|\n)(\w+)\s*\n```[a-zA-Z]*\n(.*?)\n```"
+        code_block_matches = re.finditer(code_block_pattern, content, re.DOTALL)
+
+        for match in code_block_matches:
+            tool_name = match.group(1)
+            code_content = match.group(2).strip()
+
+            already_found = False
+            for ex in existing:
+                if isinstance(ex, dict) and ex.get("name") == tool_name:
+                    already_found = True
+                    break
+            if already_found:
+                continue
+
+            try:
+                parsed_content = json_loads(code_content)
+                if isinstance(parsed_content, dict):
+                    if "name" in parsed_content and "arguments" in parsed_content:
+                        ret.append(parsed_content)
+                    else:
+                        tool_call = {"name": tool_name, "arguments": parsed_content}
+                        ret.append(tool_call)
+                    auto_completed = True
+                    continue
+            except Exception:
+                pass
+
+            tool_call = {"name": tool_name, "arguments": {"content": code_content}}
+            ret.append(tool_call)
+            auto_completed = True
+        return ret, auto_completed
+
+    @staticmethod
+    def _parse_embedded_json_format(content: str) -> list:
+        """从全文扫描JSON对象，提取含name+arguments的标准格式"""
+        ret: list = []
+        used_ranges: list = []
+        for i, ch in enumerate(content):
+            if ch == "{":
+                in_used = False
+                for start, end in used_ranges:
+                    if start <= i <= end:
+                        in_used = True
+                        break
+                if in_used:
+                    continue
+
+                json_str, end_pos = extract_json_from_text(content, i)
+                if json_str:
+                    try:
+                        parsed = json_loads(json_str)
+                        if (
+                            isinstance(parsed, dict)
+                            and "name" in parsed
+                            and "arguments" in parsed
+                        ):
+                            ret.append(parsed)
+                            used_ranges.append((i, end_pos))
+                    except Exception:
+                        continue
+        return ret
+
+    @staticmethod
     def _extract_tool_calls(
         content: str,
         agent: Optional[Any] = None,
@@ -939,228 +1134,69 @@ class ToolRegistry(OutputHandlerProtocol):
         返回:
             Tuple[Dict[str, Dict[str, Any]], str, bool]:
                 - 第一个元素是提取的工具调用字典
-                - 第二个元素是错误消息字符串(成功时为"")
-                - 第三个元素是是否自动补全了结束标签
+                - 第二个元素是错误消息字符串（成功时为""）
+                - 第三个元素保留为False（不再需要自动补全标签）
 
         异常:
             Exception: 如果工具调用缺少必要字段
         """
-        # 如果</TOOL_CALL>出现在响应的末尾，但是前面没有换行符，自动插入一个换行符进行修复（忽略大小写）
-        match = _TOOL_CALL_CLOSE_EOL_PATTERN.search(content.rstrip())
-        if match:
-            pos = match.start()
-            if pos > 0 and content[pos - 1] not in ("\n", "\r"):
-                content = content[:pos] + "\n" + content[pos:]
-
-        # 首先尝试标准的提取方式（使用预编译的正则表达式）
-        data = _TOOL_CALL_BLOCK_PATTERN.findall(content)
         auto_completed = False
+        ret: list = []
 
-        # 如果检测到多个工具调用块，先检查是否是多个独立的工具调用
-        if len(data) > 1:
-            (
-                error_msg,
-                has_multiple,
-            ) = ToolRegistry._check_and_handle_multiple_tool_calls(content, data)
-            if has_multiple:
-                return (
-                    cast(Dict[str, Dict[str, Any]], {}),
-                    error_msg if error_msg else "",
-                    False,
-                )
-            # 如果解析失败，可能是多个工具调用被当作一个 JSON 来解析了
-            # 继续执行后续的宽松提取逻辑
+        # 1. 解析 <tool_call>工具名称 参数JSON 格式
+        ret.extend(ToolRegistry._parse_tool_call_format(content))
 
-        # 如果标准提取失败，尝试更宽松的提取方式
-        if not data:
-            # can_handle 确保 ot("TOOL_CALL") 在内容中（行首）。
-            # 如果数据为空，则表示行首的 ct("TOOL_CALL") 可能丢失。
-            has_open_at_bol = _TOOL_CALL_OPEN_PATTERN.search(content) is not None
-            has_close_at_bol = _TOOL_CALL_CLOSE_BOL_PATTERN.search(content) is not None
+        # 2.5. 解析 [TOOL_CALL]标记+<arg_key>/<arg_value>标签格式
+        ret.extend(ToolRegistry._parse_arg_key_value_format(content, ret))
+        # 2. 解析 XML 标签格式: <name>...</name><arguments>...</arguments>
+        ret.extend(ToolRegistry._parse_xml_tag_format(content, ret))
 
-            if has_open_at_bol and not has_close_at_bol:
-                # 尝试通过附加结束标签来修复它（确保结束标签位于行首）
-                fixed_content = content.strip() + f"\n{_TOOL_CALL_CLOSE_TAG}"
+        # 3. 解析 "工具名 + markdown代码块" 格式
+        code_block_results, auto_completed = ToolRegistry._parse_code_block_format(
+            content, ret
+        )
+        ret.extend(code_block_results)
 
-                # 再次提取，并检查JSON是否有效
-                temp_data = _TOOL_CALL_BLOCK_PATTERN.findall(fixed_content)
+        # 4. 从全文扫描JSON对象，提取含name+arguments的标准格式
+        ret.extend(ToolRegistry._parse_embedded_json_format(content))
 
-                if temp_data:
+        # 5. 宽泛提取作为兜底
+        if not ret:
+            fuzzy_results = ToolRegistry._fuzzy_extract_tool_json(content)
+            if fuzzy_results:
+                for fuzzy_item in fuzzy_results:
                     try:
-                        json_loads(temp_data[0])  # Check if valid JSON
-                        data = temp_data
-                        auto_completed = True
-                    except (Exception, EOFError, KeyboardInterrupt):
-                        # Even after fixing, it's not valid JSON, or user cancelled.
-                        # Fall through to try more lenient extraction.
+                        fuzzy_msg = json_loads(fuzzy_item)
+                        if (
+                            isinstance(fuzzy_msg, dict)
+                            and "name" in fuzzy_msg
+                            and "arguments" in fuzzy_msg
+                        ):
+                            ret.append(fuzzy_msg)
+                            auto_completed = True
+                    except Exception:
                         pass
 
-            # 如果仍然没有数据，尝试更宽松的提取：直接从开始标签后提取JSON
-            if not data:
-                # 先检查是否有多个工具调用块（可能被当作一个 JSON 来解析导致失败）
-                multiple_blocks = _TOOL_CALL_BLOCK_PATTERN.findall(content)
-                (
-                    error_msg,
-                    has_multiple,
-                ) = ToolRegistry._check_and_handle_multiple_tool_calls(
-                    content, multiple_blocks
+        # 如果仍然没有数据，尝试使用大模型修复
+        if not ret:
+            long_hint = ToolRegistry._get_long_response_hint(content)
+            error_msg = f"工具调用格式错误：无法解析工具调用内容。请检查是否输出了包含name和arguments字段的JSON对象。\n{tool_call_help}{long_hint}"
+
+            # 如果提供了agent且long_hint为空，尝试使用大模型修复
+            if agent is not None and not long_hint:
+                llm_fixed_content: Optional[str] = ToolRegistry._try_llm_fix(
+                    content, agent, error_msg
                 )
-                if has_multiple:
-                    return (
-                        cast(Dict[str, Dict[str, Any]], {}),
-                        error_msg if error_msg else "",
-                        False,
-                    )
+                if llm_fixed_content is not None:
+                    return ToolRegistry._extract_tool_calls(llm_fixed_content, None)
 
-                # 找到开始标签的位置
-                open_tag_match = _TOOL_CALL_OPEN_PATTERN.search(content)
-                if open_tag_match:
-                    # 从开始标签后提取JSON
-                    start_pos = open_tag_match.end()
-                    json_str, end_pos = ToolRegistry._extract_json_from_text(
-                        content, start_pos
-                    )
+            return (
+                {},
+                error_msg,
+                False,
+            )
 
-                    if json_str:
-                        # 清理JSON字符串中的额外标记
-                        json_str = ToolRegistry._clean_extra_markers(json_str)
-
-                        # 尝试解析JSON
-                        try:
-                            parsed = json_loads(json_str)
-                            # 验证是否包含必要字段
-                            if "name" in parsed and "arguments" in parsed:
-                                data = [json_str]
-                                auto_completed = True
-                            else:
-                                # 记录缺少必要字段的错误
-                                missing_fields = []
-                                if "name" not in parsed:
-                                    missing_fields.append("name")
-                                if "arguments" not in parsed:
-                                    missing_fields.append("arguments")
-                                # 不立即返回错误，继续尝试其他方法，但记录信息用于后续错误提示
-                                pass
-                        except Exception:
-                            # JSON解析失败，记录错误信息用于后续错误提示
-                            # 不立即返回错误，继续尝试其他方法（如大模型修复）
-                            pass
-                    else:
-                        # JSON提取失败：没有找到有效的JSON对象
-                        # 不立即返回错误，继续尝试其他方法（如大模型修复）
-                        pass
-
-            # 如果仍然没有数据，尝试使用大模型修复
-            if not data:
-                long_hint = ToolRegistry._get_long_response_hint(content)
-                # 检查是否有开始和结束标签，生成更准确的错误消息
-                has_open = _TOOL_CALL_OPEN_PATTERN.search(content) is not None
-                has_close = _TOOL_CALL_CLOSE_PATTERN.search(content) is not None
-
-                if has_open and has_close:
-                    # 有开始和结束标签，但JSON解析失败
-                    error_msg = f"工具调用格式错误：检测到{ot('TOOL_CALL')}和{ct('TOOL_CALL')}标签，但JSON解析失败。请检查JSON格式是否正确，确保包含name和arguments字段。\n{tool_call_help}{long_hint}"
-                elif has_open and not has_close:
-                    # 只有开始标签，没有结束标签
-                    error_msg = f"工具调用格式错误：检测到{ot('TOOL_CALL')}标签，但未找到{ct('TOOL_CALL')}标签。请确保工具调用包含完整的开始和结束标签。\n{tool_call_help}{long_hint}"
-                else:
-                    # 其他情况
-                    error_msg = f"工具调用格式错误：无法解析工具调用内容。请检查工具调用格式。\n{tool_call_help}{long_hint}"
-
-                # 如果提供了agent且long_hint为空，尝试使用大模型修复
-                if agent is not None and not long_hint:
-                    llm_fixed_content: Optional[str] = ToolRegistry._try_llm_fix(
-                        content, agent, error_msg
-                    )
-                    if llm_fixed_content is not None:
-                        # 递归调用自身，尝试解析修复后的内容
-                        return ToolRegistry._extract_tool_calls(fixed_content, None)
-
-                # 如果大模型修复失败或未提供agent或long_hint不为空，返回错误
-                return (
-                    {},
-                    error_msg,
-                    False,
-                )
-
-        ret = []
-        for item in data:
-            try:
-                # 清理可能存在的额外标记
-                cleaned_item = ToolRegistry._clean_extra_markers(item)
-                msg = json_loads(cleaned_item)
-            except Exception as e:
-                # 如果解析失败，先检查是否是因为有多个工具调用
-                # 检查错误信息中是否包含 "expected a comma" 或类似的多对象错误
-                error_str = str(e).lower()
-                if "expected a comma" in error_str or "multiple" in error_str:
-                    # 尝试检测是否有多个工具调用块
-                    multiple_blocks = re.findall(
-                        rf"(?msi){re.escape(ot('TOOL_CALL'))}(.*?){re.escape(ct('TOOL_CALL'))}",
-                        content,
-                    )
-                    (
-                        error_msg,
-                        has_multiple,
-                    ) = ToolRegistry._check_and_handle_multiple_tool_calls(
-                        content, multiple_blocks
-                    )
-                    if has_multiple:
-                        return (
-                            cast(Dict[str, Dict[str, Any]], {}),
-                            error_msg if error_msg else "",
-                            False,
-                        )
-
-                long_hint = ToolRegistry._get_long_response_hint(content)
-                error_msg = f"""Jsonnet 解析失败：{e}
-
-提示：Jsonnet支持双引号/单引号、尾随逗号、注释。多行字符串直接换行即可，无需转义。
-
-{tool_call_help}{long_hint}"""
-
-                # 如果提供了agent且long_hint为空，尝试使用大模型修复
-                if agent is not None and not long_hint:
-                    retry_fixed_content: Optional[str] = ToolRegistry._try_llm_fix(
-                        content, agent, error_msg
-                    )
-                    if retry_fixed_content is not None:
-                        # 递归调用自身，尝试解析修复后的内容
-                        return ToolRegistry._extract_tool_calls(
-                            retry_fixed_content, None
-                        )
-
-                # 如果大模型修复失败或未提供agent或long_hint不为空，返回错误
-                return (
-                    {},
-                    error_msg,
-                    False,
-                )
-
-            if "name" in msg and "arguments" in msg:
-                ret.append(msg)
-            else:
-                long_hint = ToolRegistry._get_long_response_hint(content)
-                error_msg = f"""工具调用格式错误，请检查工具调用格式（缺少name、arguments字段）。
-
-                {tool_call_help}{long_hint}"""
-
-                # 如果提供了agent且long_hint为空，尝试使用大模型修复
-                if agent is not None and not long_hint:
-                    fixed_content_3: Optional[str] = ToolRegistry._try_llm_fix(
-                        content, agent, error_msg
-                    )
-                    if fixed_content_3 is not None:
-                        # 递归调用自身，尝试解析修复后的内容
-                        return ToolRegistry._extract_tool_calls(fixed_content_3, None)
-
-                # 如果大模型修复失败或未提供agent或long_hint不为空，返回错误
-                return (
-                    {},
-                    error_msg,
-                    False,
-                )
-        # 支持多个工具调用：返回所有工具调用的字典
+        # 处理解析结果
         if len(ret) == 0:
             return {}, "", auto_completed
         elif len(ret) == 1:
@@ -1197,45 +1233,12 @@ class ToolRegistry(OutputHandlerProtocol):
             func: 工具执行函数
         """
         if name in self.tools:
-            if getattr(self, "_bulk_registering", False):
-                # 启动/批量加载阶段：汇总，避免刷屏
-                overwritten = getattr(self, "_overwritten_tools", None)
-                if isinstance(overwritten, dict):
-                    overwritten[name] = int(overwritten.get(name, 0)) + 1
-            else:
-                # 非批量阶段：保留即时告警
-                PrettyOutput.auto_print(f"⚠️ 警告: 工具 '{name}' 已存在，将被覆盖")
+            PrettyOutput.auto_print(f"⚠️ 警告: 工具 '{name}' 已存在，将被覆盖")
         tool = Tool(name, description, parameters, func, protocol_version)
         self.tools[name] = tool
         # 同时更新 _all_tools，确保新注册的工具可以被调用
         if hasattr(self, "_all_tools"):
             self._all_tools[name] = tool
-
-    def _flush_overwritten_tool_warnings(self) -> None:
-        """汇总输出工具覆盖告警（仅用于批量加载阶段）。"""
-        overwritten = getattr(self, "_overwritten_tools", None)
-        if not isinstance(overwritten, dict) or not overwritten:
-            return
-
-        global _duplicate_tool_override_warning_emitted
-        # 完全关闭：export JARVIS_SILENCE_TOOL_DUPLICATE_WARNING=1
-        silent = os.environ.get("JARVIS_SILENCE_TOOL_DUPLICATE_WARNING", "").strip().lower()
-        if silent in ("1", "true", "yes", "on"):
-            overwritten.clear()
-            return
-        # 进程内只提示一次（避免 Init、临时 ToolRegistry、统计等重复加载时刷屏）
-        if _duplicate_tool_override_warning_emitted:
-            overwritten.clear()
-            return
-
-        # 只输出一次汇总，展示工具名即可（用户已选择 3C：汇总输出）
-        names = sorted(overwritten.keys())
-        PrettyOutput.auto_print(
-            "⚠️ 警告: 检测到工具重名并发生覆盖（已汇总）: "
-            + ", ".join(f"'{n}'" for n in names)
-        )
-        _duplicate_tool_override_warning_emitted = True
-        overwritten.clear()
 
     def get_tool(self, name: str) -> Optional[Tool]:
         """获取工具
@@ -1293,33 +1296,27 @@ class ToolRegistry(OutputHandlerProtocol):
         try:
             result = None
             if getattr(tool, "protocol_version", "1.0") == "2.0":
-                # v2.0: agent与参数分离传递，不需要拷贝参数
+                # v2.0: agent与参数分离传递
                 # 尝试使用agent作为第二个参数，如果不兼容则回退到旧方式
                 try:
-                    result = tool.func(arguments, agent)  # type: ignore[call-arg]
-                except TypeError:
+                    # v2.0协议：传递arguments和agent两个参数
+                    # 使用type: ignore来抑制类型检查器的警告
+                    result = tool.func(arguments, agent)  # type: ignore
+                except Exception:
                     # 兼容旧版v2.0工具，只传arguments
                     result = tool.func(arguments)
             else:
                 # v1.0: 兼容旧实现，将agent注入到arguments（如果提供）
-                # 只在需要注入agent时才拷贝参数
-                if agent is not None and isinstance(arguments, dict):
-                    # 需要注入agent，创建参数副本
-                    args_to_call = arguments.copy()
+                args_to_call = arguments.copy() if isinstance(arguments, dict) else {}
+                if agent is not None:
                     args_to_call["agent"] = agent
-                    result = tool.execute(args_to_call)
-                else:
-                    # 不需要注入agent，直接传递原始参数
-                    result = tool.execute(arguments)
+                result = tool.execute(args_to_call)
         except TypeError:
             # 兼容处理：如果函数签名不匹配，回退到旧方式
-            # 只在需要注入agent时才拷贝参数
-            if agent is not None and isinstance(arguments, dict):
-                args_to_call = arguments.copy()
+            args_to_call = arguments.copy() if isinstance(arguments, dict) else {}
+            if agent is not None:
                 args_to_call["agent"] = agent
-                result = tool.execute(args_to_call)
-            else:
-                result = tool.execute(arguments)
+            result = tool.execute(args_to_call)
 
         return result
 
@@ -1401,6 +1398,7 @@ class ToolRegistry(OutputHandlerProtocol):
         """
         if len(output.splitlines()) > 60:
             lines = output.splitlines()
+            PrettyOutput.auto_print("⚠️ 输出太长，截取前后30行")
             return "\n".join(
                 lines[:30] + ["\n...内容太长，已截取前后30行...\n"] + lines[-30:]
             )
@@ -1428,6 +1426,50 @@ class ToolRegistry(OutputHandlerProtocol):
                         usage_prompt = tool_call_help
                     PrettyOutput.auto_print("❌ 工具参数格式无效")
                     return f"工具参数格式无效: {name}。arguments 应为可解析的 Jsonnet 或对象，请按工具调用格式提供。\n\n{usage_prompt}"
+
+            # 检查是否包含定时参数（after/at/loop）
+            if isinstance(args, dict):
+                timer_params = {}
+                if "after" in args:
+                    timer_params["time_type"] = "relative"
+                    timer_params["time_value"] = args.pop("after")
+                elif "at" in args:
+                    timer_params["time_type"] = "absolute"
+                    timer_params["time_value"] = args.pop("at")
+                elif "loop" in args:
+                    timer_params["time_type"] = "interval"
+                    timer_params["time_value"] = args.pop("loop")
+                    timer_params["interval_seconds"] = timer_params["time_value"]
+
+                # 如果包含定时参数，创建定时任务而不是立即执行
+                if timer_params:
+                    from jarvis.jarvis_tools.timer import get_timer_manager
+
+                    timer_manager = get_timer_manager()
+                    try:
+                        task = timer_manager.add_task(
+                            task_type="tool_call",
+                            time_type=timer_params["time_type"],
+                            time_value=timer_params["time_value"],
+                            tool_name=name,
+                            tool_args=args,
+                            interval_seconds=timer_params.get("interval_seconds"),
+                        )
+                        time_desc = ""
+                        if timer_params["time_type"] == "relative":
+                            time_desc = f"{timer_params['time_value']}秒后"
+                        elif timer_params["time_type"] == "absolute":
+                            time_desc = f"在 {timer_params['time_value']}"
+                        elif timer_params["time_type"] == "interval":
+                            time_desc = f"每 {timer_params['time_value']}秒"
+
+                        msg = f"✅ 已创建定时任务 #{task.task_id}：{time_desc}执行工具 {name}"
+                        PrettyOutput.auto_print(msg)
+                        return msg
+                    except Exception as e:
+                        error_msg = f"❌ 创建定时任务失败: {e}"
+                        PrettyOutput.auto_print(error_msg)
+                        return error_msg
 
             # 生成参数摘要，过滤敏感信息
             param_summary = ""
@@ -1540,70 +1582,6 @@ class ToolRegistry(OutputHandlerProtocol):
             # 使用当前模型组（不再从 agent 继承）
             platform = agent_instance.model if agent_instance.model else None
             is_large_content = is_context_overflow(output, platform)
-            output_line_count = len(output.splitlines())
-            output_len = len(output)
-
-            # 通用字符数阈值：超过 2000 字符时折叠显示（避免刷屏）
-            if output_len > 2000 and not is_large_content and output_line_count <= 30:
-                PrettyOutput.push_truncated_to_history(
-                    output,
-                    name,
-                    trigger_context="工具调用结果",
-                    purpose=f"工具「{name}」的返回结果，供模型参考",
-                )
-                jarvis_globals.last_truncated_full_content = output
-                jarvis_globals.last_truncated_title = name
-                history = getattr(jarvis_globals, "truncated_history", [])
-                index = len(history)
-                head_chars, tail_chars = 500, 300
-                if output_len > head_chars + tail_chars + 80:
-                    truncated_display = (
-                        output[:head_chars]
-                        + "\n\n... (输出已折叠，共 {} 字符，按 Ctrl+R 查看全部，对应索引为：{})\n\n".format(
-                            output_len, index
-                        )
-                        + output[-tail_chars:]
-                    )
-                else:
-                    truncated_display = output
-                PrettyOutput._print(
-                    text=truncated_display,
-                    output_type=OutputType.RESULT,
-                    timestamp=True,
-                    lang=None,
-                )
-                return output
-
-            # 少行但很长（如单行 JSON/API 返回），按字符折叠，避免刷屏
-            if output_line_count <= 5 and output_len > 3000:
-                PrettyOutput.push_truncated_to_history(
-                    output,
-                    name,
-                    trigger_context="工具调用结果",
-                    purpose=f"工具「{name}」的返回结果，供模型参考",
-                )
-                jarvis_globals.last_truncated_full_content = output
-                jarvis_globals.last_truncated_title = name
-                history = getattr(jarvis_globals, "truncated_history", [])
-                index = len(history)
-                head_chars, tail_chars = 500, 300
-                if output_len > head_chars + tail_chars + 80:
-                    truncated_display = (
-                        output[:head_chars]
-                        + "\n\n... (输出已折叠，共 {} 字符，按 Ctrl+R 查看全部，对应索引为：{})\n\n".format(
-                            output_len, index
-                        )
-                        + output[-tail_chars:]
-                    )
-                else:
-                    truncated_display = output
-                PrettyOutput._print(
-                    text=truncated_display,
-                    output_type=OutputType.RESULT,
-                    timestamp=True,
-                    lang=None,
-                )
-                return output
 
             if is_large_content:
                 # 创建临时文件
@@ -1615,18 +1593,7 @@ class ToolRegistry(OutputHandlerProtocol):
                     tmp_file.flush()
 
                 try:
-                    # 对用户做部分显示，完整内容可通过 Ctrl+R 查看
-                    PrettyOutput.print_truncated_with_expand_hint(
-                        output,
-                        title=name,
-                        visible_before=12,
-                        visible_after=30,
-                        max_lines=60,
-                        expand_hint="按 Ctrl+R 查看全部",
-                        trigger_context="工具调用结果",
-                        purpose=f"工具「{name}」的返回结果，供模型参考",
-                    )
-                    # 返回截断内容供 LLM/会话使用
+                    # 使用上传的文件生成摘要
                     return self._truncate_output(output)
                 finally:
                     # 清理临时文件
@@ -1635,30 +1602,15 @@ class ToolRegistry(OutputHandlerProtocol):
                     except Exception:
                         pass
 
-            # 步骤执行过程：超过一定行数时仅显示重要信息（前/后若干行），支持 Ctrl+R 查看全部
-            if output_line_count > 30:
-                PrettyOutput.print_truncated_with_expand_hint(
-                    output,
-                    title=name,
-                    visible_before=10,
-                    visible_after=20,
-                    max_lines=30,
-                    expand_hint="按 Ctrl+R 查看全部",
-                    trigger_context="工具调用结果",
-                    purpose=f"工具「{name}」的返回结果，供模型参考",
-                )
-                return output
-
             return output
 
         except Exception as e:
             # 尝试获取工具名称（如果已定义）
-            tool_name = ""
-            try:
-                if "name" in locals():
-                    tool_name = name
-            except Exception:
-                pass
+            tool_name = (
+                tool_call.get("name", "unknown")
+                if "tool_call" in locals()
+                else "unknown"
+            )
             if tool_name:
                 PrettyOutput.auto_print(f"❌ 执行工具调用 {tool_name} 失败：{str(e)}")
             else:
@@ -1691,7 +1643,7 @@ class ToolRegistry(OutputHandlerProtocol):
 
         for idx, (tool_key, tool_call) in enumerate(tool_calls.items(), 1):
             name = tool_call.get("name", tool_key)
-            PrettyOutput.auto_print(f"\n[{idx}/{total_count}] 执行工具: {name}")
+            PrettyOutput.auto_print(f"[{idx}/{total_count}] 执行工具: {name}")
 
             try:
                 result = self.handle_tool_calls(tool_call, agent)
@@ -1709,6 +1661,6 @@ class ToolRegistry(OutputHandlerProtocol):
         separator = "\n\n" + "=" * 80 + "\n\n"
         combined_result = separator.join(results)
 
-        PrettyOutput.auto_print(f"\n✅ 完成 {total_count} 个工具调用")
+        PrettyOutput.auto_print(f"✅ 完成 {total_count} 个工具调用")
 
         return combined_result

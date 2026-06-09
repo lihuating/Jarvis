@@ -14,7 +14,6 @@ import threading
 from jarvis.jarvis_utils.output import PrettyOutput
 
 # -*- coding: utf-8 -*-
-from jarvis.jarvis_utils.globals import console
 from typing import Any
 from typing import Dict
 from typing import List
@@ -180,7 +179,7 @@ def _load_all_methodologies() -> List[Tuple[str, str]]:
                     if problem_type and content:
                         all_methodologies.append((problem_type, content))
             except Exception as e:
-                filename = os.path.basename(filepath)
+                filename = os.path.basename(str(filepath))
                 error_lines.append(f"加载方法论文件 {filename} 失败: {str(e)}")
 
     # 统一打印目录警告与文件加载失败信息
@@ -210,26 +209,21 @@ def load_methodology(
 
     try:
         # 加载所有方法论
+        PrettyOutput.auto_print("📁 加载方法论文件...")
         methodologies = _load_all_methodologies()
         if not methodologies:
+            PrettyOutput.auto_print("⚠️ 没有找到方法论文件")
             return ""
-        PrettyOutput.auto_print(
-            f"✅ 加载方法论文件完成 (共 {len(methodologies)} 个)"
-        )
+        PrettyOutput.auto_print(f"✅ 加载方法论文件完成 (共 {len(methodologies)} 个)")
 
-        # 方法论条目选择只需短输出，优先 cheap 降低延迟；失败再回退 normal
-        registry = PlatformRegistry.get_global_platform_registry()
-        platform = None
-        try:
-            platform = registry.get_cheap_platform()
-        except Exception:
-            platform = registry.get_normal_platform()
+        # 方法论推荐使用normal模型以确保质量
+        platform = PlatformRegistry().get_normal_platform()
 
         if not platform:
             PrettyOutput.auto_print("❌ 无法创建平台实例")
             return ""
 
-        platform.set_suppress_output(True)
+        platform.set_suppress_output(False)
 
         # 步骤1：获取所有方法论的标题
         methodology_titles = [title for title, _ in methodologies]
@@ -265,31 +259,41 @@ def load_methodology(
 注意：只返回<NUM>标签内的内容，不要有其他任何输出。
 """
 
-        # 获取大模型选择的方法论序号（限制输出最大50字）
-        with console.status(
-            "[bold blue]🔍 正在分析需求并推荐方法论...", spinner="dots"
-        ):
-            response = platform.chat_until_success(
-                selection_prompt, max_output=50
-            ).strip()
+        response = platform.chat_until_success(selection_prompt).strip()
 
         # 重置平台，恢复输出
         platform.reset()
         platform.set_suppress_output(False)
 
-        # 从响应中提取<NUM>标签内的内容
+        # 从响应中提取序号 - 支持多种格式，包括<NUM>标签和直接数字
         import re
 
-        num_match = re.search(r"<NUM>(.*?)</NUM>", response, re.DOTALL)
+        selected_indices_str = ""
 
-        if not num_match:
-            # 如果没有找到<NUM>标签，尝试直接解析响应
-            selected_indices_str = response
-        else:
+        # 首先尝试提取<NUM>标签内的内容
+        num_match = re.search(r"<NUM>(.*?)</NUM>", response, re.DOTALL)
+        if num_match:
             selected_indices_str = num_match.group(1).strip()
 
+        # 如果没有找到<NUM>标签，或者内容为空，尝试从整个响应中提取数字
+        if not selected_indices_str:
+            # 查找所有数字（支持逗号或空格分隔，如 "1,2,3" 或 "1 2 3"）
+            # 先尝试匹配 "1,2,3" 或 "1, 2, 3" 格式
+            number_pattern = r"(?:^|\s|,)(\d+)(?:\s*,\s*|\s+|\s*$)"
+            numbers = re.findall(number_pattern, response)
+            if numbers:
+                selected_indices_str = ",".join(numbers)
+            else:
+                # 如果上面的模式没找到，尝试更宽松的匹配：直接找所有数字
+                all_numbers = re.findall(r"\d+", response)
+                # 过滤掉可能是年份等的大数字（假设方法论数量不会超过1000）
+                valid_numbers = [n for n in all_numbers if int(n) <= len(methodologies)]
+                if valid_numbers:
+                    selected_indices_str = ",".join(valid_numbers)
+
         if selected_indices_str.lower() == "none":
-            return "没有历史方法论可参考"
+            PrettyOutput.auto_print("没有历史方法论可参考")
+            return "⚠️ 没有历史方法论可参考"
 
         # 解析选择的序号
         selected_methodologies = []
@@ -315,8 +319,8 @@ def load_methodology(
         try:
             # 直接获取模型的最大输入token数（上下文窗口）
             max_input_tokens = platform._get_platform_max_input_token_count()
-            # 使用上下文窗口的0.75作为方法论限制，保留0.25作为安全余量
-            methodology_token_limit = int(max_input_tokens * 0.75)
+            # 使用上下文窗口的0.80作为方法论限制，保留0.20作为安全余量
+            methodology_token_limit = int(max_input_tokens * 0.80)
             if methodology_token_limit <= 0:
                 methodology_token_limit = None
         except Exception:
@@ -325,7 +329,7 @@ def load_methodology(
         # 回退方案：使用cheap模型的输入窗口限制
         if methodology_token_limit is None:
             max_input_tokens = get_cheap_max_input_token_count()
-            methodology_token_limit = int(max_input_tokens * 0.75)
+            methodology_token_limit = int(max_input_tokens * 0.80)
 
         # 步骤3：将选择出来的方法论内容提供给大模型生成步骤
         # 首先构建基础提示词部分
@@ -395,7 +399,12 @@ def load_methodology(
         )
 
         # 如果内容不大，直接使用chat_until_success
-        return platform.chat_until_success(final_prompt)
+        result = platform.chat_until_success(final_prompt)
+
+        # 打印大模型返回的方法论执行步骤
+        PrettyOutput.print_markdown(result, title="📋 从方法论总结的执行步骤")
+
+        return result
 
     except Exception as e:
         PrettyOutput.auto_print(f"❌ 加载方法论失败: {str(e)}")

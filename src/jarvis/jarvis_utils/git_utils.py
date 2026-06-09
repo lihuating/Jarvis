@@ -79,15 +79,81 @@ def find_git_root_and_cd(start_dir: str = ".", allow_init: bool = False) -> str:
     return git_root
 
 
-def has_uncommitted_changes() -> bool:
-    """检查Git仓库中是否有未提交的更改
+def find_git_root(start_dir: str = ".", allow_init: bool = False) -> str:
+    """
+    查找给定路径的Git根目录（不切换工作目录）。
+
+    参数:
+        start_dir (str): 起始查找目录，默认为当前目录。
+        allow_init (bool): 如果不是Git仓库，是否允许初始化新的Git仓库。默认为False。
 
     返回:
-        bool: 如果有未提交的更改返回True，否则返回False
+        str: Git仓库根目录路径。
+
+    异常:
+        subprocess.CalledProcessError: 如果不是Git仓库且不允许初始化。
     """
+    abs_start_dir = os.path.abspath(start_dir)
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "--show-toplevel"],
+            cwd=abs_start_dir,
+            capture_output=True,
+            text=False,
+            check=True,
+        )
+        git_root = decode_output(result.stdout).strip()
+        if not git_root:
+            if allow_init:
+                subprocess.run(
+                    ["git", "init"], cwd=abs_start_dir, check=True, capture_output=True
+                )
+                git_root = abs_start_dir
+            else:
+                raise subprocess.CalledProcessError(
+                    1, ["git", "rev-parse", "--show-toplevel"]
+                )
+    except subprocess.CalledProcessError:
+        # 如果不是Git仓库
+        if allow_init:
+            subprocess.run(
+                ["git", "init"], cwd=abs_start_dir, check=True, capture_output=True
+            )
+            git_root = abs_start_dir
+        else:
+            raise
+    return git_root
+
+
+def has_uncommitted_changes(cwd: Optional[str] = None) -> bool:
+    """检查 Git 仓库中是否有未提交的更改
+
+    参数:
+        cwd: 工作目录路径，如果为 None 则使用当前目录
+
+    返回:
+        bool: 如果有未提交的更改返回 True，否则返回 False
+    """
+    # 兼容空仓库：使用 git status --porcelain 检测所有未提交的更改
+    # git diff 在空仓库中无法工作（没有 HEAD commit 作为基准），会错误地返回无差异
+    try:
+        status_result = subprocess.run(
+            ["git", "status", "--porcelain"],
+            cwd=cwd,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        # 如果 status 输出非空，说明有未提交的更改（包括未跟踪文件、修改文件、暂存文件等）
+        if status_result.stdout.strip():
+            return True
+    except Exception:
+        pass
+
     # 在执行git add .之前，记录当前暂存区的文件（可能有用户手动添加的被gitignore的文件）
     process = subprocess.Popen(
         ["git", "diff", "--cached", "--name-only"],
+        cwd=cwd,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=False,
@@ -480,16 +546,6 @@ def handle_commit_workflow(start_commit: Optional[str] = None) -> bool:
     Returns:
         bool: 提交是否成功
     """
-    # 自动提交被全局硬禁用：避免任何“检查/补丁后自动 git commit”动作发生
-    try:
-        from jarvis.jarvis_utils.config import is_enable_auto_commit
-
-        if not is_enable_auto_commit():
-            return False
-    except Exception:
-        # 保守策略：配置读取失败时也不执行提交
-        return False
-
     if is_confirm_before_apply_patch() and not user_confirm(
         "是否要提交代码？", default=True
     ):
@@ -659,21 +715,27 @@ def check_and_update_git_repo_background(repo_path: str) -> None:
         if last_check_date == today_str:
             return
 
-    curr_dir = os.path.abspath(os.getcwd())
     try:
-        git_root = find_git_root_and_cd(repo_path)
+        git_root = find_git_root(repo_path)
     except Exception:
         return
 
     try:
         # 检查是否有未提交的修改
-        if has_uncommitted_changes():
+        if has_uncommitted_changes(cwd=git_root):
             return
 
-        # 获取远程tag更新
-        subprocess.run(
-            ["git", "fetch", "--tags"], cwd=git_root, check=True, capture_output=True
-        )
+        # 获取远程 tag 更新
+        try:
+            subprocess.run(
+                ["git", "fetch", "--tags"],
+                cwd=git_root,
+                check=True,
+                capture_output=True,
+            )
+        except subprocess.CalledProcessError:
+            # fetch 失败时静默处理，避免每次打开都提示错误
+            return
         # 获取最新本地tag
         local_tag_result = subprocess.run(
             ["git", "describe", "--tags", "--abbrev=0"],
@@ -728,7 +790,6 @@ def check_and_update_git_repo_background(repo_path: str) -> None:
 
                     _set_major_update_pending(remote_tag)
                     # 更新检查日期，避免重复提示
-                    os.chdir(curr_dir)
                     with open(last_check_file, "w") as f:
                         f.write(today_str)
                     return
@@ -832,9 +893,9 @@ def check_and_update_git_repo_background(repo_path: str) -> None:
         with open(last_check_file, "w") as f:
             f.write(today_str)
     except Exception as e:
-        PrettyOutput.auto_print(f"⚠️ Git仓库更新检查失败: {e}")
+        PrettyOutput.auto_print(f"⚠️ 更新检查失败: {str(e)}")
     finally:
-        os.chdir(curr_dir)
+        pass
 
 
 def check_and_update_git_repo(repo_path: str) -> bool:
@@ -855,15 +916,14 @@ def check_and_update_git_repo(repo_path: str) -> bool:
         if last_check_date == today_str:
             return False
 
-    curr_dir = os.path.abspath(os.getcwd())
     try:
-        git_root = find_git_root_and_cd(repo_path)
+        git_root = find_git_root(repo_path)
     except Exception:
         return False
 
     try:
         # 检查是否有未提交的修改
-        if has_uncommitted_changes():
+        if has_uncommitted_changes(cwd=git_root):
             return False
 
         # 获取远程tag更新
@@ -928,7 +988,6 @@ def check_and_update_git_repo(repo_path: str) -> bool:
 
                     _set_major_update_pending(remote_tag)
                     # 更新检查日期,避免重复提示
-                    os.chdir(curr_dir)
                     with open(last_check_file, "w") as f:
                         f.write(today_str)
                     return False
@@ -1035,7 +1094,7 @@ def check_and_update_git_repo(repo_path: str) -> bool:
         PrettyOutput.auto_print(f"⚠️ Git仓库更新检查失败: {e}")
         return False
     finally:
-        os.chdir(curr_dir)
+        pass
 
 
 def get_diff_file_list() -> List[str]:
@@ -1242,28 +1301,11 @@ def confirm_add_new_files() -> None:
     """确认新增文件、代码行数和二进制文件"""
     global _confirm_add_new_files_called
 
-    # 默认关闭：仅在配置项启用时才进行检查与询问
-    try:
-        from jarvis.jarvis_utils.config import is_enable_new_files_check
-
-        if not is_enable_new_files_check():
-            return
-    except Exception:
-        return
-
     # 如果已经确认过，直接返回，避免重复询问
     if _confirm_add_new_files_called:
         return
 
     _confirm_add_new_files_called = True
-    # 非交互模式下（A 策略）：只展示清单/提示，不进行任何交互与副作用操作（不修改 .gitignore）。
-    # 否则 user_confirm 可能自动返回默认值，导致误忽略或误继续。
-    try:
-        from jarvis.jarvis_utils.input import _is_non_interactive_for_current_agent
-
-        is_non_interactive = bool(_is_non_interactive_for_current_agent())
-    except Exception:
-        is_non_interactive = False
 
     def _get_added_lines() -> int:
         """获取新增代码行数"""
@@ -1335,12 +1377,6 @@ def confirm_add_new_files() -> None:
         if not _check_conditions(new_files, added_lines, binary_files):
             break
 
-        if is_non_interactive:
-            PrettyOutput.auto_print(
-                "ℹ️ 当前处于非交互模式：已仅展示新增/二进制/大规模变更清单，不会自动清理、忽略或提交文件。"
-            )
-            break
-
         if not user_confirm(
             "是否要添加这些变更（如果不需要请修改.gitignore文件以忽略不需要的文件）？",
             True,
@@ -1401,15 +1437,6 @@ def confirm_add_new_files() -> None:
 
             # 仅对未跟踪的新文件进行忽略（已跟踪文件无法通过 .gitignore 忽略）
             files_to_ignore = sorted(set(new_files))
-
-            if not user_confirm(
-                "是否将以上未跟踪文件写入 .gitignore 以忽略？（建议先确认确实不需要这些文件）",
-                False,
-            ):
-                PrettyOutput.auto_print(
-                    "ℹ️ 已跳过自动更新 .gitignore。请手动清理不需要的文件或维护 .gitignore 后再继续。"
-                )
-                break
 
             # 读取已存在的 .gitignore 以避免重复添加
             existing_lines: Set[str] = set()

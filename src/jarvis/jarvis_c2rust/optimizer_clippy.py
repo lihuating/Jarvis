@@ -359,6 +359,7 @@ class ClippyOptimizer:
                     non_interactive=self.options.non_interactive,
                     enable_task_list_manager=False,
                     disable_review=True,
+                    quick_mode=self.options.quick_mode,
                 )
                 # 订阅 BEFORE_TOOL_CALL 和 AFTER_TOOL_CALL 事件，用于细粒度检测测试代码删除
                 agent.event_bus.subscribe(
@@ -666,7 +667,7 @@ class ClippyOptimizer:
 
         # 有告警，需要修复
         PrettyOutput.auto_print(
-            "\n[c2rust-optimizer] 第 0 步：消除 Clippy 告警（必须完成此步骤才能继续其他优化）",
+            "[c2rust-optimizer] 第 0 步：消除 Clippy 告警（必须完成此步骤才能继续其他优化）",
         )
         self.progress_manager.snapshot_commit()
 

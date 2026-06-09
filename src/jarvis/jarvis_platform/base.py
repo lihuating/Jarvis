@@ -1,7 +1,7 @@
-# -*- coding: utf-8 -*-
 import os
+
+# -*- coding: utf-8 -*-
 import re
-import random
 import threading
 from abc import ABC
 from abc import abstractmethod
@@ -14,6 +14,7 @@ from typing import List
 from typing import Optional
 from typing import Tuple
 from typing import Type
+from typing import Union
 
 from typing_extensions import Self
 
@@ -25,15 +26,6 @@ from jarvis.jarvis_utils.config import get_max_input_token_count
 from jarvis.jarvis_utils.config import get_pretty_output
 from jarvis.jarvis_utils.config import get_smart_max_input_token_count
 from jarvis.jarvis_utils.config import get_llm_config
-from jarvis.jarvis_utils.config import (
-    get_llm_auto_model_small_task_token_threshold,
-    get_llm_first_chunk_retry_backoff_ms_max,
-    get_llm_first_chunk_retry_backoff_ms_min,
-    get_llm_first_chunk_timeout_seconds,
-    is_enable_llm_auto_model_selection,
-    is_enable_llm_first_chunk_quick_retry,
-    is_enable_llm_stream_fallback_to_non_stream,
-)
 from jarvis.jarvis_utils.config import get_normal_model_name
 from jarvis.jarvis_utils.config import get_cheap_model_name
 from jarvis.jarvis_utils.config import get_smart_model_name
@@ -49,6 +41,7 @@ from jarvis.jarvis_utils.tag import ct
 from jarvis.jarvis_utils.tag import ot
 from jarvis.jarvis_utils.utils import while_success
 from jarvis.jarvis_utils.utils import while_true
+from jarvis.jarvis_platform.content_types import ContentBlock
 
 
 class BasePlatform(ABC):
@@ -65,7 +58,7 @@ class BasePlatform(ABC):
             platform_type: 平台类型，可选值为 'normal'、'cheap' 或 'smart'
             agent: Agent实例，用于回调触发总结等功能
         """
-        self.suppress_output = True  # 添加输出控制标志
+        self.suppress_output = False  # 添加输出控制标志
         self._saved = False
         self._panel_lock = threading.RLock()  # 用于保护 panel 更新的线程锁
 
@@ -83,6 +76,13 @@ class BasePlatform(ABC):
 
         # 获取 llm_config 供子类使用
         self._llm_config = get_llm_config(platform_type)
+
+        # 检查是否支持多模态
+        self._supports_multimodal = self._llm_config.get("supports_multimodal", False)
+
+    def supports_multimodal(self) -> bool:
+        """检查是否支持多模态输入"""
+        return self._supports_multimodal
 
     def get_conversation_turn(self) -> int:
         """获取当前对话轮次数"""
@@ -103,12 +103,12 @@ class BasePlatform(ABC):
             self.delete_chat()
 
     @abstractmethod
-    def set_messages(self, messages: List[Dict[str, str]]) -> None:
+    def set_messages(self, messages: List[Dict[str, Any]]) -> None:
         """设置对话历史"""
         raise NotImplementedError("set_messages is not implemented")
 
     @abstractmethod
-    def get_messages(self) -> List[Dict[str, str]]:
+    def get_messages(self) -> List[Dict[str, Any]]:
         """获取对话历史"""
         raise NotImplementedError("get_messages is not implemented")
 
@@ -123,23 +123,28 @@ class BasePlatform(ABC):
         self._session_history_file = None
 
     @abstractmethod
-    def chat(self, message: str) -> Generator[str, None, None]:
-        """执行对话"""
+    def chat(
+        self, message: Union[str, List[ContentBlock]]
+    ) -> Generator[Tuple[str, str], None, None]:
+        """执行对话
+
+        参数:
+            message: 用户输入的消息，支持纯文本(str)或多模态内容(List[ContentBlock])
+
+        返回:
+            Generator[Tuple[str, str], None, None]: 生成器，逐块返回 (类型, 内容) 元组
+            类型: "reason" 表示推理过程，"content" 表示正文内容
+        """
         raise NotImplementedError("chat is not implemented")
 
-    # 可选能力：非流式对话（用于流式失败降级）
-    # 子类可实现该方法；不作为抽象方法以兼容旧自定义平台。
-    def chat_non_stream(self, message: str) -> str:  # pragma: no cover
-        raise NotImplementedError
-
-    def complete(self, prompt: str, **kwargs: Any) -> str:
+    def complete(self, prompt: Union[str, List[ContentBlock]], **kwargs: Any) -> str:
         """无状态补全方法
 
         每次调用前自动重置对话状态，确保多次调用之间不会累积上下文。
         适用于：情绪分析、歧义检测、代码分析等一次性推理任务。
 
         参数:
-            prompt: 提示词
+            prompt: 提示词，支持纯文本(str)或多模态内容(List[ContentBlock])
             **kwargs: 额外参数（预留）
 
         返回:
@@ -153,125 +158,12 @@ class BasePlatform(ABC):
         # 先重置对话状态，确保无状态
         self.delete_chat()
 
-        # 调用 chat 方法并收集所有响应
+        # 调用 chat 方法并收集所有响应（只收集 content 类型）
         response = ""
-        for chunk in self.chat(prompt):
-            response += chunk
+        for chunk_type, chunk_content in self.chat(prompt):
+            if chunk_type == "content":
+                response += chunk_content
 
-        return response
-
-    @staticmethod
-    def _wrap_iterator_with_first_chunk_timeout(
-        it: Generator[str, None, None],
-        *,
-        timeout_seconds: float,
-    ) -> Generator[str, None, None]:
-        """为流式迭代器增加“首 chunk 超时”控制。
-
-        说明：
-        - 只影响第一次 next()；后续 chunk 仍沿用底层迭代器行为
-        - 由于底层 SDK/网络调用通常不可取消，超时后底层请求可能仍在后台执行；
-          这里用 daemon 线程避免阻塞主流程。
-        """
-
-        class _FirstChunkTimeoutWrapper:
-            def __init__(self, inner):
-                self._inner = inner
-                self._first_done = False
-
-            def __iter__(self):
-                return self
-
-            def __next__(self):
-                if self._first_done:
-                    return next(self._inner)
-
-                self._first_done = True
-                result_holder: list[Any] = [None]
-                error_holder: list[BaseException | None] = [None]
-                done = threading.Event()
-
-                def _run():
-                    try:
-                        result_holder[0] = next(self._inner)
-                    except BaseException as e:
-                        error_holder[0] = e
-                    finally:
-                        done.set()
-
-                t = threading.Thread(target=_run, daemon=True)
-                t.start()
-                if not done.wait(timeout=max(0.0, float(timeout_seconds))):
-                    raise TimeoutError(
-                        f"首个chunk超时（>{timeout_seconds}s），可能是网络抖动/服务端排队"
-                    )
-                if error_holder[0] is not None:
-                    raise error_holder[0]
-                return result_holder[0]
-
-        return _FirstChunkTimeoutWrapper(it)  # type: ignore[return-value]
-
-    def _should_auto_select_model_type(self) -> bool:
-        """是否在「近似无状态」场景下按体量委托 cheap/normal（可选 smart）。
-
-        需 ``enable_llm_auto_model_selection``；且仅当消息中尚无用户/助手轮次（仅 system）
-        时启用，避免长对话中途隐式换档。
-        """
-        if not is_enable_llm_auto_model_selection():
-            return False
-        try:
-            msgs = self.get_messages()
-            non_system = [m for m in msgs if m.get("role") != "system"]
-            return len(non_system) == 0
-        except Exception:
-            return False
-
-    def _pick_model_type_for_message(self, message: str) -> str:
-        """基于输入规模在 cheap 与 normal 间启发式选择（smart 仅由用户快捷键切换，不参与自动路由）。"""
-        try:
-            tokens = get_context_token_count(message)
-        except Exception:
-            tokens = len(message) // 4
-        small_th = get_llm_auto_model_small_task_token_threshold()
-        if small_th > 0 and tokens <= small_th:
-            return "cheap"
-        return "normal"
-
-    def _maybe_delegate_to_auto_selected_platform(self, message: str, max_output: int) -> Optional[str]:
-        """在“无状态”场景下，将请求委托给 cheap/normal/smart 平台实例。"""
-        if not self._should_auto_select_model_type():
-            return None
-        # 已经是 cheap/smart 的实例不再切换
-        if self.platform_type in {"cheap", "smart"}:
-            return None
-        target_type = self._pick_model_type_for_message(message)
-        if target_type == self.platform_type:
-            return None
-        try:
-            delegated = type(self)(platform_type=target_type, agent=self.agent)
-            delegated.set_suppress_output(self.suppress_output)
-            # 仅复制 system 消息（若有）
-            try:
-                delegated.set_messages(self.get_messages())
-            except Exception:
-                pass
-            if target_type == "cheap":
-                msg = f"💰 自动选择模型：{self.platform_type} → {target_type}"
-            elif target_type == "smart":
-                msg = f"🧠 自动选择模型：{self.platform_type} → {target_type}"
-            else:
-                msg = f"🤖 自动选择模型：{self.platform_type} → {target_type}"
-            PrettyOutput.auto_print(msg)
-            return delegated.chat_until_success(message, max_output=max_output)
-        except Exception:
-            return None
-
-    def _chat_non_stream_once(self, message: str, max_output: int = 0) -> str:
-        """非流式兜底：一次性拿全量文本。"""
-        # 尽量不影响旧平台：没有实现就直接抛出
-        response = self.chat_non_stream(message)
-        if max_output > 0 and len(response) > max_output:
-            return response[:max_output]
         return response
 
     def _format_progress_bar(self, percent: float, width: int = 20) -> str:
@@ -327,21 +219,15 @@ class BasePlatform(ABC):
         except Exception:
             return 0.0, "green", ""
 
-    def _response_complete_log_tier_suffix(self) -> str:
-        """「模型响应完成」统计行追加片段：当前 platform_type + 三档解析后的模型名。"""
-        try:
-            pt = getattr(self, "platform_type", None) or "normal"
-            c = get_cheap_model_name()
-            n = get_normal_model_name()
-            s = get_smart_model_name()
-            return f" | 档:{pt} | cheap={c} · normal={n} · smart={s}"
-        except Exception:
-            return ""
-
     def _chat_with_pretty_output(
-        self, message: str, start_time: float, max_output: int = 0
-    ) -> Tuple[str, float]:
+        self,
+        message: Union[str, List[ContentBlock]],
+        start_time: float,
+        max_output: int = 0,
+    ) -> Tuple[str, str, float]:
         """使用 pretty output 模式进行聊天（封装到 PrettyOutput）"""
+        # 对于多模态消息，只传递提示字符串给PrettyOutput
+        display_message = message if isinstance(message, str) else "[多模态消息]"
         return PrettyOutput.stream_chat_with_panel(
             chat_iterator=self.chat(message),
             title=self.name(),
@@ -352,29 +238,36 @@ class BasePlatform(ABC):
             get_context_token_count=get_context_token_count,
             append_session_history=self._append_session_history,
             start_time=start_time,
-            message=message,
+            message=display_message,
             max_output=max_output,
-            check_interrupt=get_interrupt,
+            check_interrupt=lambda: bool(get_interrupt()),
             panel_lock=self._panel_lock,
         )
 
     def _chat_with_simple_output(
-        self, message: str, start_time: float, max_output: int = 0
-    ) -> str:
+        self,
+        message: Union[str, List[ContentBlock]],
+        start_time: float,
+        max_output: int = 0,
+    ) -> Tuple[str, str, float]:
         """使用简单输出模式进行聊天（封装到 PrettyOutput）"""
-        response, _ = PrettyOutput.stream_chat_simple(
+        # 对于多模态消息，只传递提示字符串给PrettyOutput
+        display_message = message if isinstance(message, str) else "[多模态消息]"
+        response, reasoning_content, first_token_time = PrettyOutput.stream_chat_simple(
             chat_iterator=self.chat(message),
             prefix=f"🤖 模型输出 - {(G.get_current_agent_name() + ' · ') if G.get_current_agent_name() else ''}{self.name()}  (按 Ctrl+C 中断)",
             start_time=start_time,
-            message=message,
+            message=display_message,
             max_output=max_output,
-            check_interrupt=lambda: is_immediate_abort() and get_interrupt(),
+            check_interrupt=lambda: bool(is_immediate_abort() and get_interrupt()),
             append_session_history=self._append_session_history,
             get_context_token_count=get_context_token_count,
         )
-        return response
+        return response, reasoning_content, first_token_time
 
-    def _chat_with_suppressed_output(self, message: str, max_output: int = 0) -> str:
+    def _chat_with_suppressed_output(
+        self, message: Union[str, List[ContentBlock]], max_output: int = 0
+    ) -> Tuple[str, str]:
         """使用无人值守模式进行聊天
 
         参数:
@@ -382,19 +275,31 @@ class BasePlatform(ABC):
             max_output: 最大输出长度，0表示无限制
 
         返回:
-            str: 模型响应
+            Tuple[str, str]: (模型响应, 推理内容)
         """
         response = ""
-        for s in self.chat(message):
-            response += s
-            # 检查是否达到最大输出长度
-            if max_output > 0 and len(response) >= max_output:
-                self._append_session_history(message, response)
-                return response
-            if is_immediate_abort() and get_interrupt():
-                self._append_session_history(message, response)
-                return response
-        return response
+        reasoning_content = ""
+        try:
+            for chunk_type, chunk_content in self.chat(message):
+                # 拼接 content 类型
+                if chunk_type == "content":
+                    response += chunk_content
+                # 拼接 reason 类型
+                elif chunk_type == "reason":
+                    reasoning_content += chunk_content
+                # 检查是否达到最大输出长度
+                if max_output > 0 and len(response) >= max_output:
+                    self._append_session_history(message, response)
+                    return response, reasoning_content
+                if is_immediate_abort() and get_interrupt():
+                    self._append_session_history(message, response)
+                    return response, reasoning_content
+        except Exception as e:
+            # 发生异常时，打印错误信息并返回已收集的内容
+            PrettyOutput.auto_print(f"⚠️ 流式输出异常: {e}")
+            self._append_session_history(message, response)
+            return response, reasoning_content
+        return response, reasoning_content
 
     def _process_response(self, response: str) -> str:
         """处理响应，移除 think 标签
@@ -411,57 +316,55 @@ class BasePlatform(ABC):
         response = re.sub(
             ot("thinking") + r".*?" + ct("thinking"), "", response, flags=re.DOTALL
         )
-        # 部分模型（如 GLM）使用 redacted_thinking / reasoning 包裹推理过程，去掉后保留对用户可见正文
-        response = re.sub(
-            r"<redacted_thinking>.*?</redacted_thinking>",
-            "",
-            response,
-            flags=re.DOTALL | re.IGNORECASE,
-        )
         return response
 
-    def _chat(self, message: str, max_output: int = 0):
+    def _chat(self, message: Union[str, List[ContentBlock]], max_output: int = 0):
         import time
 
         start_time = time.time()
 
-        # 无状态场景：按输入规模自动选择 cheap/normal/smart
-        delegated = self._maybe_delegate_to_auto_selected_platform(message, max_output)
-        if delegated is not None:
-            return delegated
-
         # 当输入为空白字符串时，打印警告并直接返回空字符串
-        if message.strip() == "":
-            PrettyOutput.auto_print("⚠️ 输入为空白字符串，已忽略本次请求")
+        if isinstance(message, str) and message.strip() == "":
+            PrettyOutput.auto_print("⚠️ 输入消息为空白字符串，已忽略")
             return ""
 
         # 检查并截断消息以避免超出剩余token限制
-        message = self._truncate_message_if_needed(message)
+        # 注意：多模态消息暂不支持截断，只处理纯文本
+        if isinstance(message, str):
+            message = self._truncate_message_if_needed(message)
 
         # 根据输出模式选择不同的处理方式
         first_token_time = 0.0
+        reasoning_content = ""
         if not self.suppress_output:
             if get_pretty_output():
-                response, first_token_time = self._chat_with_pretty_output(
-                    message, start_time, max_output
+                response, reasoning_content, first_token_time = (
+                    self._chat_with_pretty_output(message, start_time, max_output)
                 )
             else:
-                response = self._chat_with_simple_output(message, start_time, max_output)
+                response, reasoning_content, first_token_time = (
+                    self._chat_with_simple_output(message, start_time, max_output)
+                )
 
             # 计算响应时间并打印总结
             end_time = time.time()
             duration = end_time - start_time
 
             # 计算性能指标
-            response_tokens = get_context_token_count(response)
-            generation_time = (
-                duration - first_token_time if duration > first_token_time else duration
+            response_tokens = get_context_token_count(
+                response
+            ) + get_context_token_count(reasoning_content)
+            generation_time = max(
+                0.0,
+                duration - first_token_time
+                if duration > first_token_time
+                else duration,
             )
             tokens_per_second = (
-                response_tokens / generation_time if generation_time > 0 else 0
+                response_tokens / generation_time if generation_time > 0 else 0.0
             )
 
-            # 轻量观测：仅记录慢调用（默认），并带按大小滚动，避免磁盘耗尽
+            # 轻量观测：记录慢调用指标（Jarvis 独有）
             try:
                 from jarvis.jarvis_utils.llm_metrics import (
                     LlmCallMetrics,
@@ -489,8 +392,12 @@ class BasePlatform(ABC):
                     duration_s=float(duration),
                     first_token_s=float(first_token_time or 0.0),
                     tokens_per_second=float(tokens_per_second),
-                    remaining_tokens=remaining_tokens if isinstance(remaining_tokens, int) else None,
-                    max_input_tokens=max_input_tokens if isinstance(max_input_tokens, int) else None,
+                    remaining_tokens=remaining_tokens
+                    if isinstance(remaining_tokens, int)
+                    else None,
+                    max_input_tokens=max_input_tokens
+                    if isinstance(max_input_tokens, int)
+                    else None,
                 )
                 log_llm_call_metrics(m, slow_only=True)
             except Exception:
@@ -502,25 +409,32 @@ class BasePlatform(ABC):
                     response
                 )
                 threshold = get_conversation_turn_threshold()
-                tier = self._response_complete_log_tier_suffix()
                 PrettyOutput.auto_print(
                     f"✅ {self.name()}模型响应完成: {duration:.2f}秒 | 轮次: {self.get_conversation_turn()}/{threshold} | "
                     f"首token: {first_token_time:.2f}秒 | 速度: {tokens_per_second:.1f} tokens/s | Token: {usage_percent:.1f}%"
-                    f"{tier}"
                 )
             except Exception:
                 threshold = get_conversation_turn_threshold()
-                tier = self._response_complete_log_tier_suffix()
                 PrettyOutput.auto_print(
                     f"✅ {self.name()}模型响应完成: {duration:.2f}秒 | 轮次: {self.get_conversation_turn()}/{threshold} | "
                     f"首token: {first_token_time:.2f}秒 | 速度: {tokens_per_second:.1f} tokens/s"
-                    f"{tier}"
                 )
+                pass
         else:
-            response = self._chat_with_suppressed_output(message, max_output)
+            response, reasoning_content = self._chat_with_suppressed_output(
+                message, max_output
+            )
 
         # 处理响应并保存会话历史
         response = self._process_response(response)
+
+        # 如果发生中断且响应为空，设置提示消息
+        if not response and get_interrupt():
+            response = "<输出被用户中断>"
+        # 如果 content 为空但 reasoning_content 不为空且非用户中断，返回 reasoning_content
+        elif not response and reasoning_content and not get_interrupt():
+            response = reasoning_content
+
         self._append_session_history(message, response)
 
         # 确保消息被正确添加到 messages 中（特别是中断的情况下）
@@ -542,14 +456,22 @@ class BasePlatform(ABC):
                             messages.append({"role": "assistant", "content": response})
                         else:
                             # 最后一条不是用户消息，需要添加用户消息和助手响应
-                            messages.append({"role": "user", "content": message})
+                            # 将多模态消息转换为字符串表示形式
+                            user_content = (
+                                message if isinstance(message, str) else "[多模态消息]"
+                            )
+                            messages.append({"role": "user", "content": user_content})
                             messages.append({"role": "assistant", "content": response})
                         # 更新消息列表
                         self.set_messages(messages)
                 else:
                     # messages 为空，直接添加用户消息和助手响应
+                    # 将多模态消息转换为字符串表示形式
+                    user_content = (
+                        message if isinstance(message, str) else "[多模态消息]"
+                    )
                     messages = [
-                        {"role": "user", "content": message},
+                        {"role": "user", "content": user_content},
                         {"role": "assistant", "content": response},
                     ]
                     self.set_messages(messages)
@@ -559,11 +481,13 @@ class BasePlatform(ABC):
 
         return response
 
-    def chat_until_success(self, message: str, max_output: int = 0) -> str:
+    def chat_until_success(
+        self, message: Union[str, List[ContentBlock]], max_output: int = 0
+    ) -> str:
         """与模型对话直到成功响应。
 
         参数:
-            message: 用户消息
+            message: 用户消息，支持纯文本(str)或多模态内容(List[ContentBlock])
             max_output: 最大输出长度，0表示无限制
 
         返回:
@@ -576,12 +500,20 @@ class BasePlatform(ABC):
             set_interrupt(False)
             set_in_chat(True)
             if not self.suppress_output and is_print_prompt():
-                PrettyOutput.auto_print(f"👤 {message}")  # 保留用于语法高亮
+                # 只打印纯文本消息，多模态消息只打印提示
+                if isinstance(message, str):
+                    PrettyOutput.auto_print(f"👤 {message}")  # 保留用于语法高亮
+                else:
+                    PrettyOutput.auto_print("👤 [多模态消息]")
 
             # 记录用户输入（模型输入）
             from jarvis.jarvis_utils.dialogue_recorder import record_user_message
 
-            record_user_message(message)
+            # 只记录纯文本消息，多模态消息记录提示
+            if isinstance(message, str):
+                record_user_message(message)
+            else:
+                record_user_message("[多模态消息]")
 
             result: str = ""
             result = while_true(
@@ -714,17 +646,12 @@ class BasePlatform(ABC):
         self.suppress_output = suppress
 
     def set_platform_type(self, platform_type: str):
-        """设置平台类型，并同步 model_name 与 llm_config（供快捷键 normal↔smart 等切换）。"""
-        if platform_type not in ("cheap", "normal", "smart"):
-            platform_type = "normal"
+        """设置平台类型
+
+        参数:
+            platform_type: 平台类型，可选值为 'normal'、'cheap' 或 'smart'
+        """
         self.platform_type = platform_type
-        if platform_type == "cheap":
-            self.model_name = get_cheap_model_name()
-        elif platform_type == "smart":
-            self.model_name = get_smart_model_name()
-        else:
-            self.model_name = get_normal_model_name()
-        self._llm_config = get_llm_config(platform_type)
 
     def _get_platform_max_input_token_count(self) -> int:
         """根据平台类型获取对应的最大输入token数量
@@ -739,7 +666,9 @@ class BasePlatform(ABC):
         else:
             return get_max_input_token_count()
 
-    def _append_session_history(self, user_input: str, model_output: str) -> None:
+    def _append_session_history(
+        self, user_input: Union[str, List[ContentBlock]], model_output: str
+    ) -> None:
         """
         Append the user input and model output to a session history file if enabled.
         The file name is generated on first save and reused until reset.
@@ -781,7 +710,11 @@ class BasePlatform(ABC):
                 ts_line = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                 f.write(f"===== {ts_line} =====\n")
                 f.write("USER:\n")
-                f.write(f"{user_input}\n")
+                # 将多模态消息转换为字符串表示形式
+                user_content = (
+                    user_input if isinstance(user_input, str) else "[多模态消息]"
+                )
+                f.write(f"{user_content}\n")
                 f.write("\nASSISTANT:\n")
                 f.write(f"{model_output}\n\n")
         except Exception:
@@ -794,6 +727,8 @@ class BasePlatform(ABC):
         返回:
             int: 当前对话历史使用的token数量
         """
+        from jarvis.jarvis_utils.embedding import get_multimodal_token_count
+
         history = self.get_messages()
         if not history:
             return 0
@@ -802,7 +737,7 @@ class BasePlatform(ABC):
         for message in history:
             content = message.get("content", "")
             if content:
-                total_tokens += get_context_token_count(content)
+                total_tokens += get_multimodal_token_count(content)
 
         return total_tokens
 

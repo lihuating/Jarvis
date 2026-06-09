@@ -1,9 +1,23 @@
 # -*- coding: utf-8 -*-
-from typing import Any
-from typing import Dict
+import os
+import subprocess
+import sys
+from datetime import datetime
+from typing import Any, Dict, Optional, Callable
+from typing import TYPE_CHECKING
 
-from playwright.sync_api import sync_playwright
+from bs4 import BeautifulSoup
 from markdownify import markdownify as md
+
+if TYPE_CHECKING:
+    pass
+
+try:
+    from playwright.sync_api import sync_playwright as _sync_playwright
+
+    sync_playwright: Optional[Callable[[], Any]] = _sync_playwright
+except ImportError:
+    sync_playwright = None
 
 # 降级方案依赖
 try:
@@ -13,9 +27,9 @@ try:
 except ImportError:
     REQUESTS_AVAILABLE = False
 
-from jarvis.jarvis_utils.config import calculate_content_token_limit
+from jarvis.jarvis_utils.config import calculate_content_token_limit, get_data_dir
 from jarvis.jarvis_utils.embedding import get_context_token_count
-from jarvis.jarvis_utils.output import OutputType
+from jarvis.jarvis_utils.input import user_confirm
 from jarvis.jarvis_utils.output import PrettyOutput
 
 
@@ -26,9 +40,140 @@ class WebpageTool:
         "type": "object",
         "properties": {
             "url": {"type": "string", "description": "要读取的网页URL"},
+            "mode": {
+                "type": "string",
+                "description": "读取模式：text=只提取文本（移除链接URL，保留文字），complete=完整内容（保留链接）",
+                "default": "text",
+            },
         },
         "required": ["url"],
     }
+
+    def __init__(self) -> None:
+        self._ensure_playwright_ready(prompt_user=True)
+
+    @staticmethod
+    def _install_playwright_package() -> bool:
+        PrettyOutput.auto_print("🔧 检测到 Playwright Python 包未安装，正在自动安装...")
+        try:
+            subprocess.run(
+                [sys.executable, "-m", "pip", "install", "playwright"],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            PrettyOutput.auto_print("✅ Playwright Python 包安装成功！")
+            return True
+        except subprocess.CalledProcessError as e:
+            PrettyOutput.auto_print(f"❌ Playwright Python 包安装失败: {e.stderr or e}")
+            return False
+        except Exception as e:
+            PrettyOutput.auto_print(f"❌ 安装 Playwright Python 包时发生错误: {e}")
+            return False
+
+    @staticmethod
+    def _ensure_playwright_ready(prompt_user: bool = False) -> bool:
+        global sync_playwright
+
+        # 检查用户是否之前拒绝过安装
+        declined_flag = os.path.join(get_data_dir(), "playwright_install_declined.flag")
+        if os.path.exists(declined_flag):
+            return False
+
+        if sync_playwright is None:
+            PrettyOutput.auto_print("⚠️ Playwright Python包未安装")
+            if prompt_user and not user_confirm(
+                "是否现在自动安装 playwright 和 chromium？", default=True
+            ):
+                # 创建标记文件，记录用户拒绝安装
+                try:
+                    # 使用已导入的get_data_dir
+                    declined_flag = os.path.join(
+                        get_data_dir(), "playwright_install_declined.flag"
+                    )
+                    os.makedirs(os.path.dirname(declined_flag), exist_ok=True)
+                    with open(declined_flag, "w") as f:
+                        f.write(
+                            f"User declined playwright installation at {datetime.now().isoformat()}\n"
+                        )
+                except Exception:
+                    pass  # 忽略创建标记文件的错误
+                return False
+            if not WebpageTool._install_playwright_package():
+                return False
+            try:
+                from playwright.sync_api import (
+                    sync_playwright as imported_sync_playwright,
+                )
+
+                sync_playwright = imported_sync_playwright
+            except ImportError:
+                return False
+
+        try:
+            with sync_playwright() as p:
+                browser = p.chromium.launch()
+                browser.close()
+            return True
+        except Exception as e:
+            error_msg = str(e)
+            if "executable doesn't exist" in error_msg or "driver" in error_msg.lower():
+                PrettyOutput.auto_print("⚠️ 检测到浏览器驱动未安装")
+                if prompt_user and not user_confirm(
+                    "是否现在自动安装 Chromium 浏览器驱动？", default=True
+                ):
+                    return False
+                try:
+                    from jarvis.scripts.install_playwright import install_chromium
+
+                    install_chromium()
+                    return WebpageTool._ensure_playwright_ready(prompt_user=False)
+                except SystemExit:
+                    return False
+                except Exception as install_error:
+                    PrettyOutput.auto_print(f"❌ 自动安装失败: {install_error}")
+                    return False
+            return False
+
+    @staticmethod
+    def _process_html_for_text_mode(html: str) -> str:
+        """使用BeautifulSoup处理HTML，移除非文本内容，只保留纯文本结构。
+
+        Args:
+            html: 原始HTML内容
+
+        Returns:
+            处理后的HTML，移除了CSS、JavaScript等非文本内容
+        """
+        soup = BeautifulSoup(html, "lxml")
+
+        # 移除所有非文本内容标签
+        non_text_tags = ["style", "script", "noscript", "link", "meta", "head"]
+        for tag_name in non_text_tags:
+            for tag in soup.find_all(tag_name):
+                tag.decompose()
+
+        # 移除所有元素的样式相关属性
+        for tag in soup.find_all(True):  # 查找所有标签
+            # 移除style属性（内联CSS）
+            if tag.has_attr("style"):
+                del tag["style"]
+            # 移除class属性（CSS类名）
+            if tag.has_attr("class"):
+                del tag["class"]
+            # 移除id属性（CSS ID选择器）
+            if tag.has_attr("id"):
+                del tag["id"]
+            # 移除data-*属性（数据属性）
+            attrs_to_remove = [attr for attr in tag.attrs if attr.startswith("data-")]
+            for attr in attrs_to_remove:
+                del tag[attr]
+
+        # 解包所有 <a> 标签，保留文字内容
+        for a_tag in soup.find_all("a"):
+            a_tag.unwrap()
+
+        return str(soup)
 
     def execute(self, args: Dict[str, Any]) -> Dict[str, Any]:
         """
@@ -41,8 +186,20 @@ class WebpageTool:
             if not url:
                 return {"success": False, "stdout": "", "stderr": "缺少必需参数：url"}
 
+            # 解析读取模式参数
+            mode = str(args.get("mode", "text")).strip().lower()
+            if mode not in ["text", "complete"]:
+                PrettyOutput.auto_print(f"⚠️ 无效的 mode 值 '{mode}'，使用默认值 'text'")
+                mode = "text"
+
             # 使用 Playwright 无头浏览器抓取网页内容
             try:
+                if not self._ensure_playwright_ready(prompt_user=True):
+                    raise ImportError("Playwright not available")
+
+                assert sync_playwright is not None, (
+                    "sync_playwright should not be None after _ensure_playwright_ready"
+                )
                 with sync_playwright() as p:
                     # 启动无头浏览器
                     browser = p.chromium.launch(headless=True)
@@ -61,6 +218,10 @@ class WebpageTool:
 
                     # 关闭浏览器
                     browser.close()
+
+                # 根据模式处理HTML
+                if mode == "text":
+                    html_content = self._process_html_for_text_mode(html_content)
 
                 # 将HTML转换为Markdown
                 content_md = md(html_content, strip=["script", "style"])
@@ -92,8 +253,15 @@ class WebpageTool:
                     )
                     response.raise_for_status()
 
-                    # 直接使用 markdownify 转换，strip 参数会移除 script 和 style
-                    content_md = md(response.text, strip=["script", "style"])
+                    # 根据模式处理HTML
+                    html_to_convert = response.text
+                    if mode == "text":
+                        html_to_convert = self._process_html_for_text_mode(
+                            html_to_convert
+                        )
+
+                    # 使用 markdownify 转换，strip 参数会移除 script 和 style
+                    content_md = md(html_to_convert, strip=["script", "style"])
 
                 except Exception as req_error:
                     return {
@@ -130,8 +298,15 @@ class WebpageTool:
                     )
                     response.raise_for_status()
 
-                    # 直接使用 markdownify 转换，strip 参数会移除 script 和 style
-                    content_md = md(response.text, strip=["script", "style"])
+                    # 根据模式处理HTML
+                    html_to_convert = response.text
+                    if mode == "text":
+                        html_to_convert = self._process_html_for_text_mode(
+                            html_to_convert
+                        )
+
+                    # 使用 markdownify 转换，strip 参数会移除 script 和 style
+                    content_md = md(html_to_convert, strip=["script", "style"])
 
                 except Exception as req_error:
                     return {
@@ -177,28 +352,13 @@ class WebpageTool:
             else:
                 content_md_truncated = content_md
 
-            # 网页内容过长时仅显示重要信息，支持 Ctrl+R 查看全部
-            title = f"📄 网页内容: {url}"
-            lines = content_md_truncated.splitlines()
-            if len(lines) > 30:
-                PrettyOutput.print_truncated_with_expand_hint(
-                    content_md_truncated,
-                    title=title,
-                    visible_before=10,
-                    visible_after=20,
-                    max_lines=30,
-                    output_type=OutputType.RESULT,
-                    expand_hint="按 Ctrl+R 查看全部",
-                    trigger_context="网页内容",
-                    purpose="网页正文（Markdown），供模型阅读",
-                )
-            else:
-                PrettyOutput.print_markdown(
-                    content_md_truncated,
-                    title=title,
-                    border_style="bright_blue",
-                    theme="monokai",
-                )
+            # 使用print_markdown打印网页内容
+            PrettyOutput.print_markdown(
+                content_md_truncated,
+                title=f"📄 网页内容: {url}",
+                border_style="bright_blue",
+                theme="monokai",
+            )
 
             # 直接返回Markdown格式的网页内容
             return {"success": True, "stdout": content_md_truncated, "stderr": ""}
@@ -213,50 +373,18 @@ class WebpageTool:
 
     @staticmethod
     def check() -> bool:
-        """工具可用性检查：检查Playwright或requests降级方案是否可用。
-
-        优先检查Playwright，如果不可用则检查requests降级方案。
-        如果浏览器驱动未安装，会自动尝试安装。
-
-        Returns:
-            bool: 工具是否可用（Playwright或requests至少一个可用）
-        """
-        # 首先尝试 Playwright
-        try:
-            from playwright.sync_api import sync_playwright
-
-            with sync_playwright() as p:
-                browser = p.chromium.launch()
-                browser.close()
+        """工具可用性检查：检查Playwright或requests降级方案是否可用。"""
+        if WebpageTool._ensure_playwright_ready(prompt_user=False):
             return True
-        except ImportError:
-            PrettyOutput.auto_print("⚠️ Playwright Python包未安装")
-        except Exception as e:
-            error_msg = str(e)
-            # 检测是否是浏览器驱动未安装
-            if "executable doesn't exist" in error_msg or "driver" in error_msg.lower():
-                PrettyOutput.auto_print("🔧 检测到浏览器驱动未安装，正在自动安装...")
-                try:
-                    from jarvis.scripts.install_playwright import install_chromium
 
-                    install_chromium()
-                    PrettyOutput.auto_print("✅ 浏览器驱动安装成功，正在重试...")
-                    # 重试检查
-                    return WebpageTool.check()
-                except Exception as install_error:
-                    PrettyOutput.auto_print(f"❌ 自动安装失败: {install_error}")
-            else:
-                PrettyOutput.auto_print(f"⚠️ Playwright 运行时错误: {e}")
-
-        # Playwright 不可用，检查降级方案
         if REQUESTS_AVAILABLE:
             PrettyOutput.auto_print(
                 "✅ requests 降级方案可用（不支持JavaScript动态渲染）"
             )
             return True
-        else:
-            PrettyOutput.auto_print("❌ Playwright 和 requests 均不可用")
-            PrettyOutput.auto_print("💡 请安装至少一个方案：")
-            PrettyOutput.auto_print("   - pip install playwright")
-            PrettyOutput.auto_print("   - pip install requests beautifulsoup4")
-            return False
+
+        PrettyOutput.auto_print("❌ Playwright 和 requests 均不可用")
+        PrettyOutput.auto_print("💡 请安装至少一个方案：")
+        PrettyOutput.auto_print("   - pip install playwright")
+        PrettyOutput.auto_print("   - pip install requests beautifulsoup4")
+        return False

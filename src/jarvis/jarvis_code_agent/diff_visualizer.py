@@ -9,13 +9,14 @@ from typing import List
 from typing import Optional
 from typing import Union
 
+from rich import box
 from rich.console import Console
 from rich.panel import Panel
 from rich.syntax import Syntax
 from rich.table import Table
 from rich.text import Text
 
-from jarvis.jarvis_utils.rich_box import HORIZONTAL_RULE_BOX
+from jarvis.jarvis_utils.output import emit_output, OutputType
 
 LANGUAGE_EXTENSION_MAPPING = {
     "py": "python",
@@ -305,11 +306,30 @@ class DiffVisualizer:
                 table,
                 title=title,
                 border_style="cyan",
-                box=HORIZONTAL_RULE_BOX,
+                box=box.HORIZONTALS,
                 padding=(0, 1),
-                title_align="left",
             )
             self.console.print(panel)
+
+            # 发送到前端
+            try:
+                from jarvis.jarvis_utils.output import OutputEvent
+
+                emit_output(
+                    OutputEvent(
+                        text=diff_text,
+                        output_type=OutputType.CODE,
+                        lang="diff",
+                        timestamp=True,
+                        context={
+                            "file_path": file_path,
+                            "_gateway_skip": True,  # 不在终端打印 Gateway 专用数据
+                        },
+                    )
+                )
+            except Exception:
+                # 忽略输出错误，不影响控制台显示
+                pass
 
     def visualize_statistics(
         self, file_path: str, additions: int, deletions: int, total_changes: int = 0
@@ -340,10 +360,7 @@ class DiffVisualizer:
             stats_text.append(f"{total_changes} 行", style="bold cyan")
 
         panel = Panel(
-            stats_text,
-            border_style="cyan",
-            box=HORIZONTAL_RULE_BOX,
-            padding=(1, 2),
+            stats_text, border_style="cyan", box=box.HORIZONTALS, padding=(1, 2)
         )
         self.console.print(panel)
 
@@ -375,13 +392,32 @@ class DiffVisualizer:
                 syntax,
                 title=f"📝 {file_path}",
                 border_style="cyan",
-                box=HORIZONTAL_RULE_BOX,
+                box=box.HORIZONTALS,
                 padding=(0, 1),
-                title_align="left",
             )
             self.console.print(panel)
         else:
             self.console.print(syntax)
+
+        # 发送到前端
+        try:
+            from jarvis.jarvis_utils.output import OutputEvent
+
+            emit_output(
+                OutputEvent(
+                    text=diff_text,
+                    output_type=OutputType.CODE,
+                    lang="diff",
+                    timestamp=True,
+                    context={
+                        "file_path": file_path,
+                        "_gateway_skip": True,  # 不在终端打印 Gateway 专用数据
+                    },
+                )
+            )
+        except Exception:
+            # 忽略输出错误，不影响控制台显示
+            pass
 
     def visualize_compact(
         self,
@@ -439,11 +475,30 @@ class DiffVisualizer:
             syntax,
             title=title,
             border_style="cyan",
-            box=HORIZONTAL_RULE_BOX,
+            box=box.HORIZONTALS,
             padding=(0, 1),
-            title_align="left",
         )
         self.console.print(panel)
+
+        # 发送到前端
+        try:
+            from jarvis.jarvis_utils.output import OutputEvent
+
+            emit_output(
+                OutputEvent(
+                    text=diff_text,
+                    output_type=OutputType.CODE,
+                    lang="diff",
+                    timestamp=True,
+                    context={
+                        "file_path": file_path,
+                        "_gateway_skip": True,  # 不在终端打印 Gateway 专用数据
+                    },
+                )
+            )
+        except Exception:
+            # 忽略输出错误，不影响控制台显示
+            pass
 
     def visualize_side_by_side_summary(
         self,
@@ -502,6 +557,9 @@ class DiffVisualizer:
         deletions = 0
         has_changes = False
 
+        # 收集用于前端显示的数据
+        diff_rows = []
+
         for idx, (tag, i1, i2, j1, j2) in enumerate(opcodes):
             if tag == "equal":
                 # 显示未更改的行（灰色/dim样式），但只显示上下文行数
@@ -544,6 +602,16 @@ class DiffVisualizer:
                                 f"[bright_cyan]{new_line_num}[/bright_cyan]",
                                 new_syntax,
                             )
+                            # 收集数据到前端
+                            diff_rows.append(
+                                {
+                                    "type": "equal",
+                                    "old_line_num": old_line_num,
+                                    "old_line": equal_chunk[k],
+                                    "new_line_num": new_line_num,
+                                    "new_line": equal_chunk[k],
+                                }
+                            )
                         # 如果有省略，显示省略标记
                         if equal_len > context_lines * 2:
                             table.add_row(
@@ -551,6 +619,15 @@ class DiffVisualizer:
                                 "[bright_yellow]... ({0} lines omitted) ...[/bright_yellow]".format(
                                     equal_len - context_lines * 2
                                 ),
+                                "",
+                                "",
+                            )
+                            # 添加分界线（动态适配终端宽度）
+                            # 减去一些边距以适应表格边框和内边距
+                            separator_width = max(20, self.console.width - 20)
+                            table.add_row(
+                                "",
+                                f"[dim]{'─' * separator_width}[/dim]",
                                 "",
                                 "",
                             )
@@ -586,6 +663,16 @@ class DiffVisualizer:
                                 f"[bright_cyan]{new_line_num}[/bright_cyan]",
                                 new_syntax,
                             )
+                            # 收集数据到前端
+                            diff_rows.append(
+                                {
+                                    "type": "equal",
+                                    "old_line_num": old_line_num,
+                                    "old_line": equal_chunk[k],
+                                    "new_line_num": new_line_num,
+                                    "new_line": equal_chunk[k],
+                                }
+                            )
                     else:
                         # 第一个块，只显示结尾的上下文
                         start_idx = max(0, equal_len - context_lines)
@@ -620,6 +707,16 @@ class DiffVisualizer:
                                 f"[bright_cyan]{new_line_num}[/bright_cyan]",
                                 new_syntax,
                             )
+                            # 收集数据到前端
+                            diff_rows.append(
+                                {
+                                    "type": "equal",
+                                    "old_line_num": old_line_num,
+                                    "old_line": equal_chunk[k],
+                                    "new_line_num": new_line_num,
+                                    "new_line": equal_chunk[k],
+                                }
+                            )
                 else:
                     # 如果 equal 块不长，显示所有行
                     for k, line in enumerate(equal_chunk):
@@ -652,6 +749,16 @@ class DiffVisualizer:
                             old_syntax,
                             f"[bright_cyan]{new_line_num}[/bright_cyan]",
                             new_syntax,
+                        )
+                        # 收集数据到前端
+                        diff_rows.append(
+                            {
+                                "type": "equal",
+                                "old_line_num": old_line_num,
+                                "old_line": line,
+                                "new_line_num": new_line_num,
+                                "new_line": line,
+                            }
                         )
                 continue
             elif tag == "replace":
@@ -706,6 +813,20 @@ class DiffVisualizer:
                         str(new_line_num_actual),
                         new_replace_syntax,
                     )
+                    # 收集数据到前端
+                    diff_rows.append(
+                        {
+                            "type": "replace",
+                            "old_line_num": old_line_num_actual
+                            if old_line_num_actual
+                            else None,
+                            "old_line": old_chunk[k] if k < len(old_chunk) else None,
+                            "new_line_num": new_line_num_actual
+                            if new_line_num_actual
+                            else None,
+                            "new_line": new_chunk[k] if k < len(new_chunk) else None,
+                        }
+                    )
             elif tag == "delete":
                 # 仅删除
                 old_chunk = old_lines[i1:i2]
@@ -730,6 +851,16 @@ class DiffVisualizer:
                         old_delete_syntax,
                         "",
                         "",
+                    )
+                    # 收集数据到前端
+                    diff_rows.append(
+                        {
+                            "type": "delete",
+                            "old_line_num": old_line_num,
+                            "old_line": line,
+                            "new_line_num": None,
+                            "new_line": None,
+                        }
                     )
             elif tag == "insert":
                 # 仅新增
@@ -756,6 +887,16 @@ class DiffVisualizer:
                         str(new_line_num),
                         new_insert_syntax,
                     )
+                    # 收集数据到前端
+                    diff_rows.append(
+                        {
+                            "type": "insert",
+                            "old_line_num": None,
+                            "old_line": None,
+                            "new_line_num": new_line_num,
+                            "new_line": line,
+                        }
+                    )
 
         # 如果没有变更，显示提示
         if not has_changes:
@@ -771,11 +912,46 @@ class DiffVisualizer:
             table,
             title=title,
             border_style="bright_cyan",
-            box=HORIZONTAL_RULE_BOX,
+            box=box.HORIZONTALS,
             padding=(0, 0),
-            title_align="left",
         )
         self.console.print(panel)
+
+        # 发送到前端（发送 side by side 结构化数据）
+        try:
+            import json
+            from jarvis.jarvis_utils.output import OutputEvent
+            from jarvis.jarvis_utils.output import OutputType
+
+            # 构造 side by side 数据结构
+            side_by_side_data = {
+                "file_path": file_path,
+                "additions": additions,
+                "deletions": deletions,
+                "diff_type": "side_by_side",
+                "rows": diff_rows,
+            }
+
+            # 作为 JSON 字符串发送
+            diff_text = json.dumps(side_by_side_data, ensure_ascii=False, indent=2)
+
+            emit_output(
+                OutputEvent(
+                    text=diff_text,
+                    output_type=OutputType.DIFF,  # 使用专门的 DIFF 类型
+                    timestamp=True,
+                    context={
+                        "file_path": file_path,
+                        "additions": additions,
+                        "deletions": deletions,
+                        "diff_type": "side_by_side",
+                        "_gateway_skip": True,  # 不在终端打印 Gateway 专用数据
+                    },
+                )
+            )
+        except Exception:
+            # 忽略输出错误，不影响控制台显示
+            pass
 
 
 def _split_diff_by_files(diff_text: str) -> List[tuple]:
@@ -922,13 +1098,165 @@ def _parse_diff_to_lines(diff_text: str) -> tuple:
             old_line_num += 1
             new_line_num += 1
         else:
-            # 其他行（如空行）
-            old_lines.append(line)
-            new_lines.append(line)
-            old_line_map.append(old_line_num if old_line_num > 0 else 0)
-            new_line_map.append(new_line_num if new_line_num > 0 else 0)
+            # 跳过无法识别的行（如 '\ No newline at end of file'、空行等）
+            # 这些行不属于 diff 内容，应该被忽略
+            pass
 
     return old_lines, new_lines, old_line_map, new_line_map
+
+
+def parse_diff_to_structured_data(
+    diff_text: str,
+    file_path: str = "",
+) -> List[dict]:
+    """将 git diff 文本解析为结构化数据（公共函数）
+
+    参数:
+        diff_text: git diff 输出的文本
+        file_path: 文件路径（用于显示）
+
+    返回:
+        List[dict]: 结构化数据列表，每个元素包含:
+            - file_path: 文件路径
+            - additions: 新增行数
+            - deletions: 删除行数
+            - rows: 行数据列表，每行包含:
+                - type: 行类型 (equal/insert/delete/replace)
+                - old_line_num: 旧文件行号
+                - old_line: 旧文件行内容
+                - new_line_num: 新文件行号
+                - new_line: 新文件行内容
+    """
+    import difflib
+
+    # 分割多个文件的 diff
+    file_diffs = _split_diff_by_files(diff_text)
+    result = []
+
+    for single_file_path, single_file_diff in file_diffs:
+        # 解析 diff 为行列表
+        old_lines, new_lines, old_line_map, new_line_map = _parse_diff_to_lines(
+            single_file_diff
+        )
+
+        # 使用 SequenceMatcher 进行匹配
+        matcher = difflib.SequenceMatcher(None, old_lines, new_lines)
+        opcodes = matcher.get_opcodes()
+
+        # 生成行数据
+        diff_rows = []
+        additions = 0
+        deletions = 0
+
+        for tag, i1, i2, j1, j2 in opcodes:
+            if tag == "equal":
+                for k in range(i2 - i1):
+                    old_idx = i1 + k
+                    new_idx = j1 + k
+                    diff_rows.append(
+                        {
+                            "type": "equal",
+                            "old_line_num": old_line_map[old_idx]
+                            if old_idx < len(old_line_map)
+                            else None,
+                            "old_line": old_lines[old_idx]
+                            if old_idx < len(old_lines)
+                            else None,
+                            "new_line_num": new_line_map[new_idx]
+                            if new_idx < len(new_line_map)
+                            else None,
+                            "new_line": new_lines[new_idx]
+                            if new_idx < len(new_lines)
+                            else None,
+                        }
+                    )
+            elif tag == "delete":
+                deletions += i2 - i1
+                for k in range(i2 - i1):
+                    old_idx = i1 + k
+                    diff_rows.append(
+                        {
+                            "type": "delete",
+                            "old_line_num": old_line_map[old_idx]
+                            if old_idx < len(old_line_map)
+                            else None,
+                            "old_line": old_lines[old_idx]
+                            if old_idx < len(old_lines)
+                            else None,
+                            "new_line_num": None,
+                            "new_line": None,
+                        }
+                    )
+            elif tag == "insert":
+                additions += j2 - j1
+                for k in range(j2 - j1):
+                    new_idx = j1 + k
+                    diff_rows.append(
+                        {
+                            "type": "insert",
+                            "old_line_num": None,
+                            "old_line": None,
+                            "new_line_num": new_line_map[new_idx]
+                            if new_idx < len(new_line_map)
+                            else None,
+                            "new_line": new_lines[new_idx]
+                            if new_idx < len(new_lines)
+                            else None,
+                        }
+                    )
+            elif tag == "replace":
+                old_len = i2 - i1
+                new_len = j2 - j1
+                deletions += old_len
+                additions += new_len
+                max_len = max(old_len, new_len)
+                for k in range(max_len):
+                    old_idx = i1 + k if k < old_len else None
+                    new_idx = j1 + k if k < new_len else None
+                    diff_rows.append(
+                        {
+                            "type": "replace",
+                            "old_line_num": old_line_map[old_idx]
+                            if old_idx is not None and old_idx < len(old_line_map)
+                            else None,
+                            "old_line": old_lines[old_idx]
+                            if old_idx is not None and old_idx < len(old_lines)
+                            else None,
+                            "new_line_num": new_line_map[new_idx]
+                            if new_idx is not None and new_idx < len(new_line_map)
+                            else None,
+                            "new_line": new_lines[new_idx]
+                            if new_idx is not None and new_idx < len(new_lines)
+                            else None,
+                        }
+                    )
+
+        # 验证并规范化 rows 数据
+        validated_rows = []
+        for row in diff_rows:
+            # 确保每行都有必要的字段
+            validated_row = {
+                "type": row.get("type", "equal"),
+                "old_line_num": row.get("old_line_num"),
+                "old_line": row.get("old_line"),
+                "new_line_num": row.get("new_line_num"),
+                "new_line": row.get("new_line"),
+            }
+            # 验证 type 字段
+            if validated_row["type"] not in ("equal", "insert", "delete", "replace"):
+                validated_row["type"] = "equal"
+            validated_rows.append(validated_row)
+
+        result.append(
+            {
+                "file_path": single_file_path if single_file_path else file_path,
+                "additions": additions,
+                "deletions": deletions,
+                "rows": validated_rows,
+            }
+        )
+
+    return result
 
 
 def visualize_diff_enhanced(
@@ -964,8 +1292,8 @@ def visualize_diff_enhanced(
         # 检查是否有多个文件
         file_diffs = _split_diff_by_files(diff_text)
 
-        if len(file_diffs) > 1:
-            # 多个文件，为每个文件显示独立的 table
+        if len(file_diffs) >= 1:
+            # 处理所有文件（包括单个文件的情况）
             for single_file_path, single_file_diff in file_diffs:
                 old_lines, new_lines, old_line_map, new_line_map = _parse_diff_to_lines(
                     single_file_diff
@@ -979,7 +1307,7 @@ def visualize_diff_enhanced(
                     new_line_map=new_line_map,
                 )
         else:
-            # 单个文件，使用原有逻辑
+            # 没有解析出文件，使用原有逻辑
             old_lines, new_lines, old_line_map, new_line_map = _parse_diff_to_lines(
                 diff_text
             )

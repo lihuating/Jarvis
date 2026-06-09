@@ -5,24 +5,19 @@ import errno
 import hashlib
 import json
 import os
+import platform
 import signal
 import subprocess
 import sys
 import threading
 import time
-from datetime import date
-from datetime import datetime
+from datetime import date, datetime
 from pathlib import Path
-from typing import Any
-from typing import Callable
-from typing import Dict
-from typing import List
-from typing import Optional
-from typing import Tuple
-from typing import Union
+from pathlib import PurePath
+from pathlib import PureWindowsPath
+from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 
-import yaml
-
+import yaml  # type: ignore[import-untyped]
 
 from jarvis import __version__
 from jarvis.jarvis_utils.config import (
@@ -31,22 +26,119 @@ from jarvis.jarvis_utils.config import (
     get_default_encoding,
     get_max_input_token_count,
     read_text_file,
+    set_global_config_data,
     set_llm_group,
 )
-from jarvis.jarvis_utils.config import is_immediate_abort
-from jarvis.jarvis_utils.config import set_global_config_data
 from jarvis.jarvis_utils.embedding import get_context_token_count
-from jarvis.jarvis_utils.globals import get_in_chat
-from jarvis.jarvis_utils.globals import get_interrupt
-from jarvis.jarvis_utils.globals import set_interrupt
+from jarvis.jarvis_utils.globals import get_in_chat, get_interrupt, set_interrupt
 from jarvis.jarvis_utils.output import PrettyOutput
 
 
-# 向后兼容：导出 get_yes_no 供外部模块引用（延迟导入以避免循环依赖）
-def get_yes_no(*args, **kwargs):
-    from jarvis.jarvis_utils.input import user_confirm
+# 防止 init_env 重复调用的全局标志
+_init_env_called = False
 
-    return user_confirm(*args, **kwargs)
+
+def _get_bundled_deps_platform_key() -> Optional[str]:
+    """返回当前平台对应的 bundled deps 目录名。
+
+    参数:
+        无
+
+    返回:
+        当前平台目录名，例如 `x86_64_linux`；若当前平台或架构无法识别，则返回 None
+
+    示例:
+        >>> key = _get_bundled_deps_platform_key()
+        >>> key in {None, "x86_64_linux", "x86_64_windows", "aarch64_macos"}
+        True
+    """
+    system_name = platform.system().lower()
+    machine = platform.machine().lower()
+
+    arch_aliases = {
+        "x86_64": "x86_64",
+        "amd64": "x86_64",
+        "arm64": "aarch64",
+        "aarch64": "aarch64",
+    }
+    system_aliases = {
+        "linux": "linux",
+        "windows": "windows",
+        "darwin": "macos",
+    }
+
+    normalized_arch = arch_aliases.get(machine)
+    normalized_system = system_aliases.get(system_name)
+    if not normalized_arch or not normalized_system:
+        return None
+    return f"{normalized_arch}_{normalized_system}"
+
+
+def _get_editable_project_root() -> Optional[Path]:
+    """推断可编辑安装场景下的项目根目录。"""
+    current_file = Path(__file__).resolve()
+    for candidate in current_file.parents:
+        if (candidate / "pyproject.toml").exists() and (
+            candidate / "src" / "jarvis"
+        ).exists():
+            return candidate
+    return None
+
+
+def ensure_bundled_deps_in_path() -> Optional[Path]:
+    """将当前平台对应的仓库内置依赖目录加入 PATH。
+
+    为什么这样做：Jarvis 已将部分运行时工具内置到源码仓库中。
+    在可编辑安装或源码运行场景下，尽早把该目录加入 PATH，能避免用户
+    额外安装 `uv`、`rg`、`fd`、`tmux` 等工具，也能让 CLI 子进程继承同样环境。
+
+    参数:
+        无
+
+    返回:
+        成功加入 PATH 的目录；如果当前不是可识别/可用的源码场景，则返回 None
+
+    示例:
+        >>> result = ensure_bundled_deps_in_path()
+        >>> result is None or isinstance(result, Path)
+        True
+    """
+    platform_key = _get_bundled_deps_platform_key()
+    if not platform_key:
+        return None
+
+    project_root = _get_editable_project_root()
+    if not project_root:
+        return None
+
+    deps_dir = project_root / "src" / "jarvis" / "jarvis_data" / "deps" / platform_key
+    if not deps_dir.is_dir():
+        return None
+
+    deps_dir_str = str(deps_dir)
+    current_path = os.environ.get("PATH", "")
+    path_entries: List[str]
+    if current_path:
+        path_entries = current_path.split(os.pathsep)
+    else:
+        path_entries = []
+
+    if os.name == "nt":
+        normalized_target = str(PureWindowsPath(deps_dir_str)).lower()
+        normalized_entries = {
+            str(PureWindowsPath(entry)).lower() for entry in path_entries if entry
+        }
+    else:
+        normalized_target = str(PurePath(deps_dir_str))
+        normalized_entries = {str(PurePath(entry)) for entry in path_entries if entry}
+
+    if normalized_target in normalized_entries:
+        return deps_dir
+
+    os.environ["PATH"] = (
+        deps_dir_str if not current_path else current_path + os.pathsep + deps_dir_str
+    )
+    return deps_dir
 
 
 def decode_output(data: bytes) -> str:
@@ -88,8 +180,6 @@ COMMAND_MAPPING = {
     "jpm": "jarvis-platform-manager",
     # Git提交
     "jgc": "jarvis-git-commit",
-    # 代码审查
-    "jcr": "jarvis-code-review",
     # Git压缩
     "jgs": "jarvis-git-squash",
     # 代理
@@ -267,6 +357,21 @@ def _read_lock_owner_pid(lock_path: Path) -> Optional[int]:
 def _is_process_alive(pid: int) -> bool:
     if pid is None or pid <= 0:
         return False
+    if sys.platform == "win32":
+        # Windows: os.kill(pid, 0) 不可用，使用 ctypes 调用 OpenProcess
+        import ctypes
+
+        try:
+            PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+            handle = ctypes.windll.kernel32.OpenProcess(  # type: ignore[attr-defined]
+                PROCESS_QUERY_LIMITED_INFORMATION, False, pid
+            )
+            if handle:
+                ctypes.windll.kernel32.CloseHandle(handle)  # type: ignore[attr-defined]
+                return True
+            return False
+        except OSError:
+            return False
     try:
         os.kill(pid, 0)
     except ProcessLookupError:
@@ -533,7 +638,6 @@ def _check_pip_updates() -> bool:
                     timeout=600,
                 )
                 if result.returncode == 0:
-                    PrettyOutput.auto_print("✅ 更新成功，正在重启以应用新版本...")
                     # 更新检查日期，避免重复触发
                     last_check_file.write_text(today_str)
                     return True
@@ -562,12 +666,139 @@ def _check_pip_updates() -> bool:
     return False
 
 
+# 大版本更新标记文件管理
+_major_update_lock = threading.Lock()
+_update_reboot_flag_path = None  # 延迟初始化
+
+
+def _get_update_reboot_flag_path() -> Path:
+    """获取更新重启标记文件路径
+
+    返回:
+        Path: 标记文件路径
+    """
+    global _update_reboot_flag_path
+    if _update_reboot_flag_path is None:
+        data_dir = Path(str(get_data_dir()))
+        _update_reboot_flag_path = data_dir / "update_reboot_flag.txt"
+    return _update_reboot_flag_path
+
+
+def _has_update_reboot_flag() -> bool:
+    """检查是否有等待重启的更新标记
+
+    返回:
+        bool: 如果有待重启的更新标记，返回True，否则返回False
+    """
+    flag_path = _get_update_reboot_flag_path()
+    return flag_path.exists()
+
+
+def _set_update_reboot_flag() -> None:
+    """设置更新重启标记"""
+    flag_path = _get_update_reboot_flag_path()
+    try:
+        flag_path.write_text("1")
+    except IOError as e:
+        PrettyOutput.auto_print(f"⚠️ 无法写入更新重启标记: {e}")
+
+
+def _clear_update_reboot_flag() -> None:
+    """清除更新重启标记"""
+    flag_path = _get_update_reboot_flag_path()
+    try:
+        if flag_path.exists():
+            flag_path.unlink()
+    except (IOError, OSError) as e:
+        PrettyOutput.auto_print(f"⚠️ 无法清除更新重启标记: {e}")
+
+
+def _get_major_update_flag_path() -> Path:
+    """获取大版本更新标记文件路径
+
+    返回:
+        Path: 标记文件路径
+    """
+    data_dir = Path(str(get_data_dir()))
+    return data_dir / "major_update_pending.json"
+
+
+def _has_major_update_pending() -> Optional[str]:
+    """检查是否有待处理的大版本更新
+
+    返回:
+        Optional[str]: 如果有待处理的更新，返回远程版本号，否则返回None
+    """
+    flag_path = _get_major_update_flag_path()
+    if not flag_path.exists():
+        return None
+
+    try:
+        with _major_update_lock:
+            with open(flag_path, "r") as f:
+                data: Dict[str, Any] = json.load(f)
+            remote_version = data.get("remote_version")
+            if isinstance(remote_version, str):
+                return remote_version
+            return None
+    except (json.JSONDecodeError, IOError, KeyError):
+        # 标记文件损坏，删除它
+        try:
+            with _major_update_lock:
+                flag_path.unlink()
+        except (IOError, OSError):
+            pass
+        return None
+
+
+def _set_major_update_pending(remote_version: str) -> None:
+    """设置大版本更新标记
+
+    参数:
+        remote_version: 检测到的新版本号（如 v2.1.0）
+    """
+    flag_path = _get_major_update_flag_path()
+    data = {
+        "remote_version": remote_version,
+        "detected_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+    }
+    try:
+        with _major_update_lock:
+            with open(flag_path, "w") as f:
+                json.dump(data, f, indent=2, ensure_ascii=False)
+    except IOError as e:
+        PrettyOutput.auto_print(f"⚠️ 无法写入大版本更新标记: {e}")
+
+
+def _clear_major_update_flag() -> None:
+    """清除大版本更新标记"""
+    flag_path = _get_major_update_flag_path()
+    try:
+        with _major_update_lock:
+            if flag_path.exists():
+                flag_path.unlink()
+    except (IOError, OSError) as e:
+        PrettyOutput.auto_print(f"⚠️ 无法清除大版本更新标记: {e}")
+
+
 def _check_jarvis_updates() -> bool:
     """检查并更新Jarvis本身（git仓库或pip包）
 
     返回:
         bool: 是否需要重启进程
     """
+    # 非交互模式下跳过自动更新检查
+    from jarvis.jarvis_utils.input import _is_non_interactive_for_current_agent
+
+    if _is_non_interactive_for_current_agent():
+        return False
+
+    # 检查是否有等待重启的更新标记（小版本更新已完成）
+    if _has_update_reboot_flag():
+        # 自动重启应用更新
+        _clear_update_reboot_flag()
+        return True
+
     # 从当前文件目录向上查找包含 .git 的仓库根目录，修复原先只检查 src/jarvis 的问题
     try:
         script_path = Path(__file__).resolve()
@@ -583,7 +814,20 @@ def _check_jarvis_updates() -> bool:
     if repo_root and (repo_root / ".git").exists():
         from jarvis.jarvis_utils.git_utils import check_and_update_git_repo
 
-        return check_and_update_git_repo(str(repo_root))
+        # 执行后台更新检查（小版本会自动更新，大版本只写标记）
+        updated = check_and_update_git_repo(str(repo_root))
+
+        # 检查是否有待处理的大版本更新
+        pending_version = _has_major_update_pending()
+        if pending_version:
+            PrettyOutput.auto_print(f"🎉 检测到等待的主版本升级: {pending_version}")
+
+            PrettyOutput.auto_print("ℹ️ 正在执行主版本升级...")
+            # 清除标记，执行实际更新
+            _clear_major_update_flag()
+            updated = check_and_update_git_repo(str(repo_root))
+
+        return updated
 
     # 检查是否是pip/uv pip安装的版本
     return _check_pip_updates()
@@ -596,25 +840,22 @@ def _show_usage_stats(welcome_str: str) -> None:
         welcome_str: 欢迎信息字符串
     """
     try:
-        from rich.console import Console
-        from rich.console import Group
-        from rich.panel import Panel
-        from rich.text import Text
         from rich.align import Align
+        from rich.console import Group
+        from rich.text import Text
 
-        console = Console()
+        import os
 
         from jarvis.jarvis_utils.config import (
             get_cheap_model_name,
             get_cheap_platform_name,
+            get_jarvis_gitee_url,
+            get_jarvis_github_url,
             get_normal_model_name,
             get_normal_platform_name,
             get_smart_model_name,
             get_smart_platform_name,
-            get_jarvis_github_url,
-            get_jarvis_gitee_url,
         )
-        import os
 
         # 欢迎信息 Panel
         if welcome_str:
@@ -668,21 +909,7 @@ def _show_usage_stats(welcome_str: str) -> None:
                 ),
             )
 
-            # 计算panel宽度：max(2/3终端宽度，文字最大宽度)
-            terminal_width = console.width
-            # 渲染内容获取实际宽度（考虑多行情况）
-            content_width = max(
-                len(str(line)) for line in str(welcome_panel_content).split("\\n")
-            )
-            panel_width = max(terminal_width * 2 // 3, content_width)
-
-            welcome_panel = Panel(
-                welcome_panel_content,
-                border_style="cyan",
-                expand=False,
-                width=panel_width,
-            )
-            console.print(Align.center(welcome_panel))
+            PrettyOutput.print_welcome_panel(welcome_panel_content)
     except Exception:
         # 静默失败，不影响正常使用
         pass
@@ -702,6 +929,17 @@ def init_env(
         llm_group: 模型组覆盖参数，用于显示用户指定的模型组
         auto_upgrade: 是否自动检查并升级Jarvis，默认为True
     """
+    global _init_env_called
+
+    # 防止重复调用
+    if _init_env_called:
+        return
+
+    try:
+        _init_env_called = True
+    except Exception:
+        # 如果设置失败（理论上不可能），继续执行
+        pass
     # 0. 检查是否处于Jarvis打开的终端环境，避免嵌套
     try:
         if os.environ.get("terminal") == "1":
@@ -722,7 +960,13 @@ def init_env(
     except Exception:
         pass
 
-    # 2. 设置配置文件
+    # 2. 注入仓库内置依赖目录，确保后续命令和子进程可直接找到 bundled tools
+    try:
+        ensure_bundled_deps_in_path()
+    except Exception:
+        pass
+
+    # 3. 设置配置文件
     global g_config_file
     g_config_file = config_file
     try:
@@ -764,25 +1008,96 @@ def init_env(
             # 静默失败，不影响正常使用
             pass
 
-    # 5. 检查Jarvis更新（放入后台线程执行，避免阻塞首次输入提示）
+    # 5. 检查Jarvis更新（在后台线程中执行检查）
     if auto_upgrade:
         try:
-            import threading
 
-            def _run_update_check_then_maybe_restart() -> None:
+            def check_updates_background() -> None:
+                """在后台线程中检查更新，只负责标记，不涉及用户交互"""
                 try:
-                    if _check_jarvis_updates():
-                        PrettyOutput.auto_print(
-                            "ℹ️ Jarvis 已有新版本，请退出后重新运行以使用新版本。"
+                    # 从当前文件目录向上查找包含 .git 的仓库根目录
+                    script_path = Path(__file__).resolve()
+                    repo_root: Optional[Path] = None
+                    for d in [script_path.parent] + list(script_path.parents):
+                        if (d / ".git").exists():
+                            repo_root = d
+                            break
+
+                    # 先检查是否是git源码安装
+                    if repo_root and (repo_root / ".git").exists():
+                        from jarvis.jarvis_utils.git_utils import (
+                            check_and_update_git_repo_background,
                         )
+
+                        check_and_update_git_repo_background(str(repo_root))
                 except Exception:
+                    # 静默失败，不影响正常使用
                     pass
 
-            _update_thread = threading.Thread(
-                target=_run_update_check_then_maybe_restart, daemon=True
+            update_thread = threading.Thread(
+                target=check_updates_background, daemon=True
             )
-            _update_thread.start()
+            update_thread.start()
         except Exception:
+            # 静默失败，不影响正常使用
+            pass
+
+    # 5.1 检查更新标记（在主线程中执行，涉及用户交互）
+    if auto_upgrade:
+        try:
+            should_restart = False
+
+            # 检查是否有等待重启的更新标记（小版本更新已完成）
+            if _has_update_reboot_flag():
+                PrettyOutput.auto_print(
+                    "✅ 检测到Jarvis已完成更新，正在重启以应用新版本..."
+                )
+                _clear_update_reboot_flag()
+                should_restart = True
+            # 检查是否有待处理的大版本更新
+            pending_version = _has_major_update_pending()
+            if pending_version:
+                PrettyOutput.auto_print(f"🎉 检测到等待的主版本升级: {pending_version}")
+                from jarvis.jarvis_utils.input import user_confirm
+
+                PrettyOutput.auto_print("ℹ️ 正在执行主版本升级...")
+                # 清除标记，执行实际更新
+                _clear_major_update_flag()
+                should_restart = _check_jarvis_updates()
+
+            if should_restart:
+                os.execv(sys.executable, [sys.executable] + sys.argv)
+                sys.exit(0)
+        except Exception:
+            # 静默失败，不影响正常使用
+            pass
+
+    # 5.1 检查更新标记（在主线程中执行，涉及用户交互）
+    if auto_upgrade:
+        try:
+            should_restart = False
+
+            # 检查是否有等待重启的更新标记（小版本更新已完成）
+            if _has_update_reboot_flag():
+                PrettyOutput.auto_print(
+                    "✅ 检测到Jarvis已完成更新，正在重启以应用新版本..."
+                )
+                _clear_update_reboot_flag()
+                should_restart = True
+            # 检查是否有待处理的大版本更新
+            pending_version = _has_major_update_pending()
+            if pending_version:
+                PrettyOutput.auto_print(f"🎉 检测到等待的主版本升级: {pending_version}")
+                PrettyOutput.auto_print("ℹ️ 正在执行主版本升级...")
+                # 清除标记，执行实际更新
+                _clear_major_update_flag()
+                should_restart = _check_jarvis_updates()
+
+            if should_restart:
+                os.execv(sys.executable, [sys.executable] + sys.argv)
+                sys.exit(0)
+        except Exception:
+            # 静默失败，不影响正常使用
             pass
 
     # 6. 设置tmux窗口平铺布局（统一管理）
@@ -803,20 +1118,30 @@ def _interactive_config_setup(config_file_path: Path) -> None:
     """交互式配置引导
 
     直接调用 quick_config 模块进行快速配置。
+    如果设置了环境变量 JARVIS_SKIP_INTERACTIVE_CONFIG，则跳过交互式配置。
     """
+    import os
+
+    # 检查是否跳过交互式配置（用于 CI/测试环境）
+    if os.environ.get("JARVIS_SKIP_INTERACTIVE_CONFIG"):
+        PrettyOutput.auto_print(
+            "ℹ️ 已跳过交互式配置（JARVIS_SKIP_INTERACTIVE_CONFIG 已设置）"
+        )
+        return
+
     PrettyOutput.auto_print("ℹ️ 欢迎使用 Jarvis！正在启动快速配置程序...")
 
     try:
         # 导入 quick_config 模块
-        from jarvis.jarvis_utils import quick_config
-
-        # 调用 quick_config 的主函数，传入输出文件参数
-        # 注意：quick_config 使用 typer，需要模拟命令行参数
+        # 由于 jqc (quick_config) 现在没有任何参数了，直接调用 quick_config.app()
         import sys
+
+        from jarvis.jarvis_utils import quick_config
 
         original_argv = sys.argv
         try:
-            sys.argv = ["quick-config", "--output", str(config_file_path)]
+            # 由于 quick_config 函数没有参数，不再传递 --output 参数
+            sys.argv = ["quick-config"]
             quick_config.app()
         finally:
             sys.argv = original_argv
@@ -856,9 +1181,28 @@ def load_config() -> None:
             _read_old_config_file(user_config_path.parent / "env")
             return
         else:
-            # 用户配置文件不存在，需要交互式配置
-            _interactive_config_setup(user_config_path)
-            return
+            # 用户配置文件不存在，自动创建默认配置文件
+            PrettyOutput.auto_print("ℹ️  配置文件不存在，正在创建默认配置...")
+            try:
+                schema_path = str(
+                    Path(__file__).parent.parent / "jarvis_data" / "config_schema.json"
+                )
+                user_config_path.parent.mkdir(parents=True, exist_ok=True)
+                generate_default_config(schema_path, str(user_config_path))
+                PrettyOutput.auto_print(f"✅ 已创建默认配置文件: {user_config_path}")
+            except Exception as e:
+                PrettyOutput.auto_print(f"❌ 创建默认配置文件失败: {e}")
+                # 创建一个最小可用的空配置
+                try:
+                    user_config_path.parent.mkdir(parents=True, exist_ok=True)
+                    with open(user_config_path, "w", encoding="utf-8") as f:
+                        f.write("# Jarvis 配置文件\n")
+                    PrettyOutput.auto_print(f"✅ 已创建空配置文件: {user_config_path}")
+                except Exception:
+                    PrettyOutput.auto_print("❌ 无法创建配置文件")
+                    return
+            # 继续加载配置文件
+            config_files.append(str(user_config_path))
 
         # 然后查找当前目录及其父目录中的项目配置文件
         project_config_files = _find_all_config_files(os.getcwd())
@@ -886,10 +1230,10 @@ def load_config() -> None:
                 set_global_config_data(merged_config)
                 _process_env_variables(merged_config)
             except Exception:
-                from jarvis.jarvis_utils.input import user_confirm as get_yes_no
+                from jarvis.jarvis_utils.input import user_confirm
 
                 PrettyOutput.auto_print("❌ 加载配置文件失败")
-                if get_yes_no("配置文件格式错误，是否删除并重新配置？"):
+                if user_confirm("配置文件格式错误，是否删除并重新配置？"):
                     try:
                         os.remove(main_config_file)
                         PrettyOutput.auto_print(
@@ -1018,7 +1362,7 @@ def _load_and_process_config(jarvis_dir: str, config_file: str) -> None:
         jarvis_dir: Jarvis数据目录路径
         config_file: 配置文件路径
     """
-    from jarvis.jarvis_utils.input import user_confirm as get_yes_no
+    from jarvis.jarvis_utils.input import user_confirm
 
     try:
         content, config_data = _load_config_file(config_file)
@@ -1027,7 +1371,7 @@ def _load_and_process_config(jarvis_dir: str, config_file: str) -> None:
         _process_env_variables(config_data)
     except Exception:
         PrettyOutput.auto_print("❌ 加载配置文件失败")
-        if get_yes_no("配置文件格式错误，是否删除并重新配置？"):
+        if user_confirm("配置文件格式错误，是否删除并重新配置？"):
             try:
                 os.remove(config_file)
                 PrettyOutput.auto_print(
@@ -1155,7 +1499,7 @@ def _read_old_config_file(config_file: Union[str, Path]) -> None:
     config_data = {}
     current_key = None
     current_value = []
-    content = read_text_file(config_file, errors="ignore")
+    content = read_text_file(str(config_file), errors="ignore")
     for line in content.splitlines():
         line = line.rstrip()
         if not line or line.startswith(("#", ";")):
@@ -1294,10 +1638,6 @@ def while_success(func: Callable[[], Any]) -> Any:
             _reset_retry_count_success()  # 成功后重置计数器
             break
         except Exception as e:
-            # 用户 Ctrl+C：不再进入长 sleep 重试，尽快回到上层（如输入提示）
-            if get_interrupt() > 0 and is_immediate_abort():
-                _reset_retry_count_success()
-                return None
             retry_count = _increment_retry_count_success()
             if retry_count <= MAX_RETRIES:
                 # 指数退避：第1次等待1s (2^0)，第2次等待2s (2^1)，第3次等待4s (2^2)，第4次等待8s (2^3)，第6次等待32s (2^5)
@@ -1306,14 +1646,7 @@ def while_success(func: Callable[[], Any]) -> Any:
                     PrettyOutput.auto_print(
                         f"⚠️ 发生异常:\n{e}\n重试中 ({retry_count}/{MAX_RETRIES})，等待 {sleep_time}s..."
                     )
-                    remaining = float(sleep_time)
-                    while remaining > 0:
-                        if get_interrupt() > 0 and is_immediate_abort():
-                            _reset_retry_count_success()
-                            return None
-                        step = min(0.15, remaining)
-                        time.sleep(step)
-                        remaining -= step
+                    time.sleep(sleep_time)
                 else:
                     PrettyOutput.auto_print(
                         f"⚠️ 发生异常:\n{e}\n已达到最大重试次数 ({retry_count}/{MAX_RETRIES})"
@@ -1365,14 +1698,7 @@ def while_true(func: Callable[[], bool]) -> Any:
                 PrettyOutput.auto_print(
                     f"⚠️ 返回空值，重试中 ({retry_count}/{MAX_RETRIES})，等待 {sleep_time}s..."
                 )
-                remaining = float(sleep_time)
-                while remaining > 0:
-                    if get_interrupt() > 0 and is_immediate_abort():
-                        _reset_retry_count_true()
-                        return False
-                    step = min(0.15, remaining)
-                    time.sleep(step)
-                    remaining -= step
+                time.sleep(sleep_time)
             else:
                 PrettyOutput.auto_print(
                     f"⚠️ 返回空值，已达到最大重试次数 ({retry_count}/{MAX_RETRIES})"
@@ -1394,8 +1720,8 @@ def get_file_md5(filepath: str) -> str:
     返回:
         str: 文件内容的MD5哈希值（为降低内存占用，仅读取前100MB进行计算）
     """
-    # 采用流式读取，避免一次性加载100MB到内存
-    h = hashlib.md5()
+    # 采用流式读取，避免一次性加载100MB到内存（MD5用于文件校验，非安全用途）
+    h = hashlib.md5(usedforsecurity=False)
     max_bytes = 100 * 1024 * 1024  # 与原实现保持一致：仅读取前100MB
     buf_size = 8 * 1024 * 1024  # 8MB缓冲
     read_bytes = 0
@@ -1488,10 +1814,65 @@ def get_loc_stats() -> str:
         return ""
 
 
+def is_uv_tool_installed_jarvis() -> bool:
+    """检测当前 Jarvis 是否通过 uv 安装（uv tool install 或 uv pip install）。
+
+    Returns:
+        bool: 如果是通过 uv 安装返回 True，否则返回 False
+    """
+    # 检查当前 Python 解释器路径
+    # uv tool 安装的路径特征：
+    # - Linux/macOS: ~/.local/share/uv/tools/
+    # - Windows: %LOCALAPPDATA%\uv\uv\tools\
+    exec_path = Path(sys.executable).resolve()
+    exec_path_str = str(exec_path).lower()
+
+    # 检查路径中是否包含 uv/tools/（uv tool install）
+    if "uv/tools" in exec_path_str:
+        return True
+
+    # 检查是否为 uv pip install
+    # 方法：尝试运行 uv pip show jarvis-ai-assistant
+    try:
+        result = subprocess.run(
+            ["uv", "pip", "show", "jarvis-ai-assistant"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        # 如果命令成功且输出包含包名，说明是通过 uv pip 安装的
+        if result.returncode == 0 and "jarvis-ai-assistant" in result.stdout:
+            return True
+    except (
+        FileNotFoundError,
+        subprocess.TimeoutExpired,
+        subprocess.CalledProcessError,
+    ):
+        # uv 命令不可用或执行失败
+        pass
+
+    return False
+
+
 def _pull_git_repo(repo_path: Path, repo_type: str) -> None:
     """对指定的git仓库执行git pull操作，并根据commit hash判断是否有更新。"""
     git_dir = repo_path / ".git"
     if not git_dir.is_dir():
+        return
+
+    # 只为 uv 安装的用户自动升级（uv tool install 或 uv pip install）
+    if not is_uv_tool_installed_jarvis():
+        PrettyOutput.auto_print(
+            f"ℹ️ 检测到您不是通过 uv 安装的 Jarvis，跳过自动更新 '{repo_path.name}'。"
+        )
+        PrettyOutput.auto_print("   如需使用自动更新功能，请使用以下任一命令重新安装：")
+        PrettyOutput.auto_print(
+            "   uv tool install git+https://github.com/skyfireitdiy/Jarvis.git"
+        )
+        PrettyOutput.auto_print("   或")
+        PrettyOutput.auto_print(
+            "   uv pip install git+https://github.com/skyfireitdiy/Jarvis.git"
+        )
         return
 
     try:
@@ -1515,43 +1896,8 @@ def _pull_git_repo(repo_path: Path, repo_type: str) -> None:
             timeout=10,
         )
         if decode_output(status_result.stdout):
-            from jarvis.jarvis_utils.input import user_confirm
-
-            if user_confirm(
-                f"检测到 '{repo_path.name}' 存在未提交的更改，是否放弃这些更改并更新？"
-            ):
-                try:
-                    subprocess.run(
-                        ["git", "checkout", "."],
-                        cwd=repo_path,
-                        capture_output=True,
-                        check=True,
-                        timeout=10,
-                    )
-                except (
-                    subprocess.CalledProcessError,
-                    subprocess.TimeoutExpired,
-                    FileNotFoundError,
-                ) as e:
-                    PrettyOutput.auto_print(
-                        f"❌ 放弃 '{repo_path.name}' 的更改失败: {str(e)}"
-                    )
-                    return
-            else:
-                PrettyOutput.auto_print(
-                    f"ℹ️ 跳过更新 '{repo_path.name}' 以保留未提交的更改。"
-                )
-                return
-
-        # 获取更新前的commit hash
-        before_hash_result = subprocess.run(
-            ["git", "rev-parse", "HEAD"],
-            cwd=repo_path,
-            capture_output=True,
-            check=True,
-            timeout=10,
-        )
-        before_hash = decode_output(before_hash_result.stdout).strip()
+            # 后台线程不询问用户，直接跳过有未提交更改的仓库
+            return
 
         # 检查是否是空仓库
         ls_remote_result = subprocess.run(
@@ -1574,19 +1920,6 @@ def _pull_git_repo(repo_path: Path, repo_type: str) -> None:
             timeout=60,
         )
 
-        # 获取更新后的commit hash
-        after_hash_result = subprocess.run(
-            ["git", "rev-parse", "HEAD"],
-            cwd=repo_path,
-            capture_output=True,
-            check=True,
-            timeout=10,
-        )
-        after_hash = decode_output(after_hash_result.stdout).strip()
-
-        if before_hash != after_hash:
-            PrettyOutput.auto_print(f"✅ {repo_type}库 '{repo_path.name}' 已更新。")
-
     except FileNotFoundError:
         PrettyOutput.auto_print(f"⚠️ git 命令未找到，跳过更新 '{repo_path.name}'。")
     except subprocess.TimeoutExpired:
@@ -1606,6 +1939,10 @@ def daily_check_git_updates(repo_dirs: List[str], repo_type: str) -> None:
         repo_dirs (List[str]): 需要检查的git仓库目录列表。
         repo_type (str): 仓库的类型名称，例如 "工具" 或 "方法论"，用于日志输出。
     """
+    # 只为 uv tool 安装的用户自动升级
+    if not is_uv_tool_installed_jarvis():
+        return
+
     data_dir = Path(str(get_data_dir()))
     last_check_file = data_dir / f"{repo_type}_updates_last_check.txt"
     should_check_for_updates = True
@@ -1628,3 +1965,186 @@ def daily_check_git_updates(repo_dirs: List[str], repo_type: str) -> None:
             last_check_file.write_text(str(time.time()))
         except IOError as e:
             PrettyOutput.auto_print(f"⚠️ 无法写入git更新检查时间戳: {e}")
+
+
+def find_repeated_pattern(
+    text: str, min_pattern_len: int = 10, min_repeat_count: int = 2
+) -> Tuple[str, int, float]:
+    """查找字符串末尾的连续重复模式。
+
+    利用重复模式出现在末尾的前提，从末尾反向构建 KMP 失配函数，
+    在 O(n) 时间内检测最小周期和重复次数。
+
+    参数:
+        text: 要分析的字符串
+        min_pattern_len: 最小模式长度（默认10）
+        min_repeat_count: 最小重复次数（默认2）
+
+    返回:
+        Tuple[str, int, float]:
+            - 重复的字符串内容（找不到则返回空字符串）
+            - 重复次数（找不到则返回0）
+            - 重复内容占总内容的比例，0.0~1.0（找不到则返回0.0）
+    """
+    if not text or len(text) < min_pattern_len * min_repeat_count:
+        return "", 0, 0.0
+
+    total_len = len(text)
+
+    # 对反转文本构建 KMP 失配函数，O(n)
+    # 反转后，原来的"末尾重复"变成"开头重复"，KMP 可以直接检测
+    rev = text[::-1]
+    fail = [0] * total_len
+    j = 0
+    for i in range(1, total_len):
+        while j > 0 and rev[i] != rev[j]:
+            j = fail[j - 1]
+        if rev[i] == rev[j]:
+            j += 1
+        fail[i] = j
+
+    # 对反转文本的每个前缀（即原文本的后缀），求最小周期
+    # rev 的前缀 rev[0:i+1] 对应原文本的后缀 text[total_len-1-i:]
+    # 前缀长度 L = i + 1，周期 period = L - fail[i]（当 L % period == 0 时）
+    best_pattern = ""
+    best_count = 0
+    best_ratio = 0.0
+    checked_periods = set()
+
+    for i in range(min_pattern_len - 1, total_len):
+        L = i + 1  # 前缀长度（即后缀长度）
+        period = L - fail[i]
+        if L % period != 0:
+            continue
+        if period in checked_periods:
+            continue
+        checked_periods.add(period)
+
+        # 原文本中，末尾 L 个字符由 (L/period) 个周期为 period 的模式组成
+        # 但我们需要从末尾向前验证连续重复次数（可能超过 L/period）
+        # 因为重复可能延伸到前缀部分
+        pattern = text[total_len - period :]  # 原文本末尾的 period 长度
+        count = 0
+        pos = total_len
+        while pos >= period and text[pos - period : pos] == pattern:
+            count += 1
+            pos -= period
+
+        if count >= min_repeat_count:
+            ratio = (count * period) / total_len
+            if ratio > best_ratio:
+                best_pattern = pattern
+                best_count = count
+                best_ratio = ratio
+            if best_ratio > 0.9:
+                break
+
+    return best_pattern, best_count, best_ratio
+
+
+def is_repeating_text(
+    text: str,
+    min_text_len: int = 1000,
+    min_total_repeat_len: int = 500,
+    min_repeat_count: int = 5,
+    min_ratio: float = 0.3,
+) -> Tuple[bool, str, int, float]:
+    """判断字符串是否开始异常重复。
+
+    判定标准:
+        - 字符串总长度 > min_text_len（默认1000）
+        - 重复内容总长度（模式长度×次数）> min_total_repeat_len（默认500）
+        - 重复次数 > min_repeat_count（默认5）
+        - 重复占比 > min_ratio（默认30%）
+
+    参数:
+        text: 要检测的字符串
+        min_text_len: 最小字符串总长度
+        min_total_repeat_len: 最小重复内容总长度（模式长度×次数）
+        min_repeat_count: 最小重复次数
+        min_ratio: 最小重复占比
+
+    返回:
+        Tuple[bool, str, int, float]:
+            - 是否判定为重复
+            - 重复的字符串内容
+            - 重复次数
+            - 重复占比
+    """
+    if len(text) <= min_text_len:
+        return False, "", 0, 0.0
+
+    pattern, count, ratio = find_repeated_pattern(
+        text, min_pattern_len=10, min_repeat_count=min_repeat_count
+    )
+
+    total_repeat_len = len(pattern) * count
+    if (
+        total_repeat_len > min_total_repeat_len
+        and count > min_repeat_count
+        and ratio > min_ratio
+    ):
+        return True, pattern, count, ratio
+
+    return False, pattern, count, ratio
+
+
+def extract_json_from_text(text: str, start_pos: int = 0) -> Tuple[Optional[str], int]:
+    """从文本中提取完整的JSON对象（通过括号匹配）
+
+    参数:
+        text: 要提取的文本
+        start_pos: 开始搜索的位置
+
+    返回:
+        Tuple[Optional[str], int]:
+            - 第一个元素是提取的JSON字符串（如果找到），否则为None
+            - 第二个元素是JSON结束后的位置
+    """
+    # 跳过空白字符
+    pos = start_pos
+    while pos < len(text) and text[pos] in (" ", "\t", "\n", "\r"):
+        pos += 1
+
+    if pos >= len(text):
+        return None, pos
+
+    # 检查是否以 { 开头
+    if text[pos] != "{":
+        return None, pos
+
+    # 使用括号匹配找到完整的JSON对象
+    brace_count = 0
+    in_string = False
+    escape_next = False
+    string_char = None
+
+    json_start = pos
+    for i in range(pos, len(text)):
+        char = text[i]
+
+        if escape_next:
+            escape_next = False
+            continue
+
+        if char == "\\":
+            escape_next = True
+            continue
+
+        if not in_string:
+            if char in ('"', "'"):
+                in_string = True
+                string_char = char
+            elif char == "{":
+                brace_count += 1
+            elif char == "}":
+                brace_count -= 1
+                if brace_count == 0:
+                    # 找到完整的JSON对象
+                    return text[json_start : i + 1], i + 1
+        else:
+            if char == string_char:
+                in_string = False
+                string_char = None
+
+    return None, len(text)

@@ -9,17 +9,26 @@
 """
 
 import base64
+import json
 import os
 import sys
+import threading
+from abc import ABC
+from abc import abstractmethod
 
 from jarvis.jarvis_utils.output import PrettyOutput
 
 # -*- coding: utf-8 -*-
+from typing import Dict
 from typing import Iterable
 from typing import List
 from typing import Any
 from typing import Optional
 from typing import Tuple
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    pass
 
 import wcwidth
 from colorama import Fore
@@ -46,12 +55,9 @@ from prompt_toolkit.styles import Style as PromptStyle
 
 from jarvis.jarvis_utils.clipboard import copy_to_clipboard
 from jarvis.jarvis_utils.config import get_data_dir
-from jarvis.jarvis_utils.config import get_normal_model_name
 from jarvis.jarvis_utils.config import get_replace_map
-from jarvis.jarvis_utils.config import get_smart_model_name
-from jarvis.jarvis_utils.config import get_conversation_turn_threshold
+from jarvis.jarvis_utils.config import get_submit_keys
 from jarvis.jarvis_utils.globals import get_message_history
-from jarvis.jarvis_utils.globals import get_current_agent
 from jarvis.jarvis_utils.tag import ot
 from jarvis.jarvis_utils.utils import decode_output
 
@@ -60,172 +66,6 @@ from jarvis.jarvis_utils.utils import decode_output
 import os as _os
 import subprocess as _subprocess
 import shutil as _shutil
-
-# Git root cache (used for @ completion)
-_GIT_ROOT_CACHE: Optional[str] = None
-_COMPLETION_ROOT_CACHE: Optional[str] = None
-_CACHE_CWD: Optional[str] = None
-
-
-def _iter_cwd_entries_for_at_completion(
-    token: str, max_items: int
-) -> List[Tuple[str, str]]:
-    """为单个 '@' 提供“当前工作目录(os.getcwd)逐级展开”的补全候选。"""
-    try:
-        base_dir = os.getcwd()
-    except Exception:
-        return []
-    if not base_dir or not os.path.isdir(base_dir):
-        return []
-
-    raw = (token or "").strip().replace("\\", "/")
-    # 兼容历史插入的引号包裹，或误把 '@' 写进 token 的情况
-    while raw and raw[0] in "'\"":
-        raw = raw[1:]
-    while raw and raw[-1] in "'\"":
-        raw = raw[:-1]
-    if raw.startswith("@"):
-        raw = raw[1:].lstrip("/")
-
-    # 不支持绝对路径或 ~（避免补全越界）
-    if raw.startswith(("/", "~")):
-        return []
-
-    dir_prefix = ""
-    leaf_prefix = raw
-    if "/" in raw:
-        dir_prefix, leaf_prefix = raw.rsplit("/", 1)
-        dir_prefix = dir_prefix.strip("/")
-        dir_prefix = (dir_prefix + "/") if dir_prefix else ""
-
-    # 拒绝包含 '..' 的越级
-    if ".." in (dir_prefix.split("/") + ([leaf_prefix] if leaf_prefix else [])):
-        return []
-
-    target_dir = os.path.normpath(os.path.join(base_dir, dir_prefix))
-    try:
-        base_real = os.path.realpath(base_dir)
-        target_real = os.path.realpath(target_dir)
-        if os.path.commonpath([base_real, target_real]) != base_real:
-            return []
-    except Exception:
-        return []
-
-    if not os.path.isdir(target_dir):
-        return []
-
-    excluded = {
-        ".git",
-        "__pycache__",
-        ".pytest_cache",
-        ".mypy_cache",
-        ".ruff_cache",
-        "node_modules",
-        "target",
-    }
-
-    try:
-        with os.scandir(target_dir) as it:
-            entries = [e for e in it if getattr(e, "name", None)]
-    except Exception:
-        return []
-
-    # 过滤并排序：目录优先
-    filtered = []
-    for e in entries:
-        try:
-            name = e.name
-            if not name or name in excluded:
-                continue
-            filtered.append(e)
-        except Exception:
-            continue
-
-    try:
-        filtered.sort(
-            key=lambda e: (not e.is_dir(follow_symlinks=False), e.name.lower())
-        )
-    except Exception:
-        pass
-
-    lp = (leaf_prefix or "").lower()
-    out: List[Tuple[str, str]] = []
-    for e in filtered:
-        try:
-            name = e.name
-            if lp and not name.lower().startswith(lp):
-                continue
-            is_dir = e.is_dir(follow_symlinks=False)
-            rel = f"{dir_prefix}{name}{'/' if is_dir else ''}"
-            out.append((rel, "Dir" if is_dir else "File"))
-            if len(out) >= max_items:
-                break
-        except Exception:
-            continue
-    return out
-
-
-def _get_completion_root() -> str:
-    """获取用于文件补全的项目根目录。
-
-    优先级：
-    1) 环境变量 JARVIS_PROJECT_ROOT
-    2) 当前 Agent 的 root_dir（如果可用）
-    3) git 仓库根目录（git rev-parse --show-toplevel）
-    4) 当前工作目录
-    """
-    global _COMPLETION_ROOT_CACHE
-    global _GIT_ROOT_CACHE
-    global _CACHE_CWD
-
-    # 当用户在不同工程目录之间切换时，自动失效缓存，避免补全一直指向旧工程
-    try:
-        cwd = os.getcwd()
-    except Exception:
-        cwd = None
-    if cwd and _CACHE_CWD and cwd != _CACHE_CWD:
-        _COMPLETION_ROOT_CACHE = None
-        _GIT_ROOT_CACHE = None
-    if cwd and _CACHE_CWD != cwd:
-        _CACHE_CWD = cwd
-
-    if _COMPLETION_ROOT_CACHE:
-        return _COMPLETION_ROOT_CACHE
-
-    try:
-        env_root = os.environ.get("JARVIS_PROJECT_ROOT", "").strip()
-        if env_root and os.path.isdir(env_root):
-            _COMPLETION_ROOT_CACHE = env_root
-            return env_root
-    except Exception:
-        pass
-
-    try:
-        agent = get_current_agent()
-        root_dir = getattr(agent, "root_dir", None) if agent else None
-        if isinstance(root_dir, str) and root_dir and os.path.isdir(root_dir):
-            _COMPLETION_ROOT_CACHE = root_dir
-            return root_dir
-    except Exception:
-        pass
-
-    try:
-        rr = _subprocess.run(
-            ["git", "rev-parse", "--show-toplevel"],
-            stdout=_subprocess.PIPE,
-            stderr=_subprocess.PIPE,
-            text=True,
-        )
-        if rr.returncode == 0:
-            p = rr.stdout.strip()
-            if p and os.path.isdir(p):
-                _COMPLETION_ROOT_CACHE = p
-                return p
-    except Exception:
-        pass
-
-    _COMPLETION_ROOT_CACHE = os.getcwd()
-    return _COMPLETION_ROOT_CACHE
 
 # Sentinel value to indicate that Ctrl+O was pressed
 CTRL_O_SENTINEL = "__CTRL_O_PRESSED__"
@@ -237,98 +77,386 @@ FZF_INSERT_SENTINEL_PREFIX = "__FZF_INSERT__::"
 FZF_REQUEST_SENTINEL_PREFIX = "__FZF_REQUEST__::"
 # Sentinel to request running fzf outside the prompt for all-files mode (exclude .git)
 FZF_REQUEST_ALL_SENTINEL_PREFIX = "__FZF_REQUEST_ALL__::"
+# Sentinel value to indicate that Ctrl+C was pressed
+CTRL_C_SENTINEL = "__CTRL_C_PRESSED__"
+# Sentinel value to indicate that Alt+T was pressed
+CTRL_T_SENTINEL = "__ALT_T_PRESSED__"
+
+
+def _gen_shell_cmd_for_terminal() -> str:
+    """Generate shell command for terminal execution.
+
+    This function generates appropriate shell commands based on the operating system.
+    It's used both for Alt+T in CLI mode and for the Web frontend.
+
+    Returns:
+        Shell command string with appropriate interpreter.
+    """
+    try:
+        if _os.name == "nt":
+            # Prefer PowerShell if available, otherwise fallback to cmd
+            for name in ("pwsh", "powershell", "cmd"):
+                if name == "cmd" or _shutil.which(name):
+                    if name == "cmd":
+                        # Keep session open with /K and set env for spawned shell
+                        return "!cmd /K set terminal=1"
+                    else:
+                        # PowerShell or pwsh: set env then remain in session
+                        return f"!{name} -NoExit -Command \"$env:terminal='1'\""
+        else:
+            shell_path = os.environ.get("SHELL", "")
+            if shell_path:
+                base = os.path.basename(shell_path)
+                if base:
+                    return f"!env terminal=1 {base}"
+            for name in ("fish", "zsh", "bash", "sh"):
+                if _shutil.which(name):
+                    return f"!env terminal=1 {name}"
+            return "!env terminal=1 bash"
+    except Exception:
+        return "!env terminal=1 bash"
+    # Fallback for all cases
+    return "!env terminal=1 bash"
+
 
 # Persistent hint marker for multiline input (shown only once across runs)
 _MULTILINE_HINT_MARK_FILE = os.path.join(get_data_dir(), "multiline_enter_hint_shown")
+
+# Completion usage stats file
+COMPLETION_STATS_FILE = os.path.join(get_data_dir(), "completion_usage_stats.json")
+
+
+def _load_completion_usage_stats() -> Dict[str, int]:
+    """Load completion usage stats from JSON file."""
+    try:
+        if not os.path.exists(COMPLETION_STATS_FILE):
+            return {}
+        with open(COMPLETION_STATS_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+            if not isinstance(data, dict):
+                return {}
+            # Filter out invalid entries
+            return {
+                k: v
+                for k, v in data.items()
+                if isinstance(k, str) and isinstance(v, int) and v > 0
+            }
+    except Exception:
+        return {}
+
+
+def _save_completion_usage_stats(stats: Dict[str, int]) -> None:
+    """Save completion usage stats to JSON file."""
+    try:
+        os.makedirs(os.path.dirname(COMPLETION_STATS_FILE), exist_ok=True)
+        with open(COMPLETION_STATS_FILE, "w", encoding="utf-8") as f:
+            json.dump(stats, f, indent=2, ensure_ascii=False)
+    except Exception:
+        # Non-critical: ignore save failures
+        pass
+
+
+def _update_completion_usage(file_path: str) -> None:
+    """Update usage count for a file path."""
+    try:
+        stats = _load_completion_usage_stats()
+        stats[file_path] = stats.get(file_path, 0) + 1
+        _save_completion_usage_stats(stats)
+    except Exception:
+        # Non-critical: ignore update failures
+        pass
+
 
 # 内置命令标记列表（用于自动补全和 fzf）
 BUILTIN_COMMANDS = [
     ("Summary", "总结"),
     ("Pin", "固定/置顶内容"),
     ("Clear", "清除历史"),
-    ("Exit", "退出 Jarvis"),
     ("Commit", "提交代码"),
     ("ToolUsage", "工具使用说明"),
-    ("ToolList", "列出所有可用工具"),
-    ("ToolShow", "显示指定工具的参数/描述"),
-    ("ToolRun", "运行指定工具并回显结果"),
-    ("RuleShow", "显示指定规则内容"),
-    ("RuleActivate", "激活指定规则并更新上下文"),
-    ("RuleDeactivate", "停用指定规则并更新上下文"),
     ("ReloadConfig", "重新加载配置"),
     ("SaveSession", "保存当前会话"),
     ("RestoreSession", "恢复会话"),
     ("ListSessions", "列出所有会话"),
     ("ListRule", "列出所有规则"),
+    ("UnloadRule", "卸载已加载的规则"),
+    ("ClearRules", "清空所有已加载的规则"),
     ("Quiet", "无人值守模式"),
+    ("AutoComplete", "自动完成后转交用户"),
     ("FixToolCall", "修复工具调用"),
-    ("SwitchModel", "切换模型组"),
-    ("SwitchToJCA", "切换到代码模式（jca）"),
-    ("SwitchToJVS", "切换到通用模式（jvs）"),
-    ("JarvisHelp", "Jarvis 使用答疑（优先从源码/文档检索）"),
-    ("AddDir", "扩大目录访问范围（add-dir）"),
-    (
-        "Init",
-        "在当前目录生成/更新 JVS_MEMORY.md（优先 cheap LLM，失败则 normal；均失败则报错）",
-    ),
-    ("BTW", "顺带一问：独立问答，不写入主会话上下文（jvs/jca 均支持）"),
-    ("MethodologyList", "列出所有方法论"),
-    ("MethodologyShow", "显示指定方法论内容"),
-    ("MethodologyUse", "根据需求加载并使用方法论"),
-    ("MethodologyAdd", "添加方法论"),
-    ("MethodologyUpdate", "更新方法论"),
-    ("MethodologyDelete", "删除方法论"),
-    ("TaskAnalysis", "手动触发任务分析（保存记忆/生成方法论）"),
-    ("MemoryTags", "列出所有记忆标签"),
-    ("MemorySave", "保存一条记忆"),
-    ("MemoryRetrieve", "检索记忆"),
-    ("MemoryClear", "清除记忆"),
+    ("SwitchModelGroup", "切换模型组"),
+    ("SwitchModel", "切换模型"),
+    ("AddDir", "添加附加补全目录"),
+    ("Btw", "临时聊天"),
+    ("PrintConfig", "打印全局配置"),
+    ("SetConfig", "修改全局配置"),
+    ("Diff", "显示从start_commit到当前的变更"),
+    ("Review", "代码审查"),
+    ("InstallSkill", "安装Skill"),
+    ("SubAgent", "启动子Agent执行任务"),
+    ("SubCodeAgent", "启动子CodeAgent执行代码任务"),
+    ("Init", "初始化项目综述"),
+    ("TestCase", "生成需求测试用例"),
+    ("QuickConfig", "快速配置LLM平台"),
 ]
 
-
-def reset_completion_caches() -> None:
-    """清理补全相关缓存，使 add-dir 等变更可立刻生效。"""
-    global _COMPLETION_ROOT_CACHE
-    global _GIT_ROOT_CACHE
-    global _CACHE_CWD
-    _COMPLETION_ROOT_CACHE = None
-    _GIT_ROOT_CACHE = None
-    _CACHE_CWD = None
+_ADDITIONAL_COMPLETION_DIRS: List[str] = []
+_ADDITIONAL_COMPLETION_DIRS_LOCK = threading.RLock()
 
 
-def _get_additional_allowed_dirs() -> List[str]:
-    """获取额外允许目录（会话 env + 配置）。"""
-    dirs: List[str] = []
+def add_additional_completion_dir(dir_path: str) -> bool:
+    """添加会话级附加补全目录。"""
+    normalized = os.path.abspath(os.path.expanduser(dir_path.strip()))
+    if not normalized or not os.path.isdir(normalized):
+        return False
+    with _ADDITIONAL_COMPLETION_DIRS_LOCK:
+        if normalized not in _ADDITIONAL_COMPLETION_DIRS:
+            _ADDITIONAL_COMPLETION_DIRS.append(normalized)
+    return True
+
+
+def get_additional_completion_dirs() -> List[str]:
+    """获取当前会话已添加的附加补全目录。"""
+    with _ADDITIONAL_COMPLETION_DIRS_LOCK:
+        return list(_ADDITIONAL_COMPLETION_DIRS)
+
+
+def _scan_files_under_dir(
+    base_dir: str,
+    exclude_git: bool = False,
+    max_files: int = 10000,
+    use_absolute_path: bool = False,
+) -> List[str]:
+    """扫描指定目录下的文件，并带目录前缀避免重名歧义。
+
+    Args:
+        base_dir: 要扫描的目录
+        exclude_git: 是否排除.git目录
+        max_files: 最大文件数
+        use_absolute_path: 是否使用绝对路径（默认False，使用相对路径）
+    """
+    files: List[str] = []
     try:
-        env_val = os.environ.get("JARVIS_ADDITIONAL_DIRS", "").strip()
-        if env_val:
-            for p in env_val.split(":"):
-                p = (p or "").strip()
-                if p:
-                    dirs.append(p)
+        base_dir_abs = _os.path.abspath(base_dir)
+        display_prefix = _os.path.basename(base_dir_abs.rstrip(_os.sep)) or base_dir_abs
+        for root, dirs, fnames in _os.walk(base_dir_abs, followlinks=False):
+            if exclude_git:
+                dirs[:] = [
+                    d
+                    for d in dirs
+                    if d
+                    not in {
+                        ".git",
+                        "__pycache__",
+                        ".pytest_cache",
+                        ".mypy_cache",
+                        ".ruff_cache",
+                        "node_modules",
+                        "target",
+                    }
+                ]
+            for name in fnames:
+                abs_path = _os.path.join(root, name)
+                if use_absolute_path:
+                    files.append(abs_path)
+                else:
+                    rel_path = _os.path.relpath(abs_path, base_dir_abs)
+                    files.append(_os.path.join(display_prefix, rel_path))
+                if len(files) >= max_files:
+                    return files
     except Exception:
-        pass
-    try:
-        from jarvis.jarvis_utils.config import get_allowed_dirs
+        return []
+    return files
 
-        dirs.extend(get_allowed_dirs())
-    except Exception:
-        pass
-    # 去重保序 + 仅保留存在的目录
-    out: List[str] = []
+
+def _merge_unique_paths(*path_groups: List[str]) -> List[str]:
+    """按顺序合并并去重路径列表。"""
+    merged: List[str] = []
     seen = set()
-    for p in dirs:
+    for group in path_groups:
+        for path in group:
+            if path not in seen:
+                seen.add(path)
+                merged.append(path)
+    return merged
+
+
+class InputProviderTimeoutError(TimeoutError):
+    """输入提供者等待用户输入超时。"""
+
+
+class InputProviderDisconnectedError(RuntimeError):
+    """输入提供者对应的远端会话已断开。"""
+
+
+class InputProvider(ABC):
+    """用户输入提供者抽象。"""
+
+    @abstractmethod
+    def get_multiline_input(
+        self,
+        tip: str,
+        preset: Optional[str] = None,
+        preset_cursor: Optional[int] = None,
+    ) -> str:
+        raise NotImplementedError
+
+    def inject_prompt(self, prompt: str) -> None:
+        """注入提示词到下一次输入中（默认空实现，子类可覆写）。"""
+        pass
+
+
+class CLIInputProvider(InputProvider):
+    """默认本地 CLI 输入提供者，复用既有 prompt_toolkit 实现。"""
+
+    def __init__(self) -> None:
+        self._injected_prompts: list = []
+        self._inject_lock = threading.Lock()
+        # 全局缓冲区，用于在等待输入时注入内容
+        self._injected_buffer: Optional[str] = None
+        self._is_prompting = False
+        self._prompting_thread_id: Optional[int] = None
+
+    def inject_prompt(self, prompt: str) -> None:
+        """注入提示词到下一次输入中（统一使用全局缓冲区）"""
+        from jarvis.jarvis_utils.globals import add_input_buffer
+
+        # 添加到全局缓冲区（主要机制）
+        add_input_buffer(prompt)
+
+        # 向后兼容：同时维护旧的注入列表（用于正在等待输入时的中断）
+        with self._inject_lock:
+            self._injected_prompts.append(prompt)
+
+            # 如果当前正在等待输入，写入本地缓冲区并发送信号中断
+            if self._is_prompting and self._prompting_thread_id is not None:
+                # 将注入内容写入本地缓冲区
+                if self._injected_buffer is None:
+                    self._injected_buffer = prompt
+                else:
+                    self._injected_buffer += "\n" + prompt
+
+                # 发送线程级 SIGINT 信号中断输入
+                try:
+                    import signal
+
+                    if hasattr(signal, "pthread_kill"):
+                        # 验证线程ID是否有效（检查是否是当前进程的活动线程）
+                        import threading
+
+                        active_threads = {t.ident for t in threading.enumerate()}
+                        if self._prompting_thread_id in active_threads:
+                            signal.pthread_kill(
+                                self._prompting_thread_id, signal.SIGINT
+                            )
+                except Exception:
+                    # Windows 或其他不支持 pthread_kill 的平台，或线程已不存在，降级为延迟注入
+                    pass
+
+    def _consume_injected_prompts(self) -> Optional[str]:
+        """消费所有已注入的提示词，合并返回"""
+        with self._inject_lock:
+            if not self._injected_prompts:
+                return None
+            prompts = self._injected_prompts.copy()
+            self._injected_prompts.clear()
+        return "\n".join(prompts)
+
+    def _check_injected_buffer(self) -> Optional[str]:
+        """检查并消费全局缓冲区的内容"""
+        with self._inject_lock:
+            if self._injected_buffer is None:
+                return None
+            content = self._injected_buffer
+            self._injected_buffer = None
+            return content
+
+    def get_multiline_input(
+        self,
+        tip: str,
+        preset: Optional[str] = None,
+        preset_cursor: Optional[int] = None,
+    ) -> str:
+        # 优先检查全局缓冲区（统一注入机制）
+        from jarvis.jarvis_utils.globals import get_input_buffer
+
+        buffered_messages = get_input_buffer()
+        if buffered_messages:
+            result = "\n".join(buffered_messages)
+            return result
+
+        # 检查是否有注入的提示词（向后兼容）
+        injected = self._consume_injected_prompts()
+        if injected is not None:
+            return injected
+
+        # 设置状态标志，记录当前线程ID
+        with self._inject_lock:
+            self._is_prompting = True
+            self._prompting_thread_id = threading.get_ident()
+
         try:
-            ep = os.path.expanduser(os.path.expandvars(str(p)))
-            ap = os.path.abspath(ep)
-            if ap in seen:
-                continue
-            if os.path.isdir(ap):
-                seen.add(ap)
-                out.append(ap)
+            return _get_multiline_input_internal(
+                tip, preset=preset, preset_cursor=preset_cursor, provider=self
+            )
+        finally:
+            # 清除状态标志
+            with self._inject_lock:
+                self._is_prompting = False
+                self._prompting_thread_id = None
+
+
+_default_input_provider: InputProvider = CLIInputProvider()
+_input_provider_lock = threading.RLock()
+_input_providers: Dict[str, InputProvider] = {}
+
+
+def register_input_provider(provider_id: str, provider: InputProvider) -> None:
+    """注册命名输入提供者，供远端会话或特定 Agent 绑定。"""
+    with _input_provider_lock:
+        _input_providers[provider_id] = provider
+
+
+def unregister_input_provider(provider_id: str) -> None:
+    """移除命名输入提供者；若不存在则忽略。"""
+    with _input_provider_lock:
+        _input_providers.pop(provider_id, None)
+
+
+def set_default_input_provider(provider: InputProvider) -> None:
+    """设置全局默认输入提供者。"""
+    global _default_input_provider
+    with _input_provider_lock:
+        _default_input_provider = provider
+
+
+def get_default_input_provider() -> InputProvider:
+    """获取当前默认输入提供者。"""
+    with _input_provider_lock:
+        return _default_input_provider
+
+
+def _resolve_input_provider_key(agent: Optional[Any]) -> Optional[str]:
+    if agent is None:
+        return None
+    for attr_name in ("input_provider_key", "session_id"):
+        try:
+            value = getattr(agent, attr_name, None)
         except Exception:
-            continue
-    return out
+            value = None
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return None
+
+
+def get_current_input_provider() -> InputProvider:
+    """获取当前 Agent 对应的输入提供者；未命中时回退到默认 CLI。"""
+    agent = _get_current_agent_for_input()
+    provider_key = _resolve_input_provider_key(agent)
+    with _input_provider_lock:
+        if provider_key and provider_key in _input_providers:
+            return _input_providers[provider_key]
+        return _default_input_provider
 
 
 def _display_width(s: str) -> int:
@@ -355,22 +483,7 @@ def _calc_prompt_rows(prev_text: str) -> int:
         cols = os.get_terminal_size().columns
     except Exception:
         cols = 80
-    
-    # 获取模型名称以计算正确的提示符宽度
-    def _get_model_name_hint() -> str:
-        try:
-            current_agent = get_current_agent()
-            if current_agent and hasattr(current_agent, "model"):
-                model = current_agent.model
-                if model and getattr(model, "model_name", None):
-                    # 提示头只显示模型名，避免显示 `|normal`/`|smart` 档位后缀
-                    return f"[{model.model_name}]"
-        except Exception:
-            pass
-        return ""
-    
-    model_hint = _get_model_name_hint()
-    prefix = f"👤{model_hint} > "
+    prefix = "👤 > "
     prefix_w = _display_width(prefix)
 
     lines = prev_text.splitlines()
@@ -395,25 +508,11 @@ def _get_git_files() -> List[str]:
     """获取Git仓库中的文件列表。"""
     files = []
     try:
-        global _GIT_ROOT_CACHE
-        # 与补全根目录保持一致：切换目录时缓存会在 _get_completion_root 中被失效
-        if _GIT_ROOT_CACHE is None:
-            rr = _subprocess.run(
-                ["git", "rev-parse", "--show-toplevel"],
-                stdout=_subprocess.PIPE,
-                stderr=_subprocess.PIPE,
-                text=True,
-            )
-            _GIT_ROOT_CACHE = rr.stdout.strip() if rr.returncode == 0 else ""
-        # 首选补全根目录下的 git 根（更符合用户“项目文件”预期）
-        completion_root = _get_completion_root()
-        git_root = _GIT_ROOT_CACHE or completion_root
         r = _subprocess.run(
             ["git", "ls-files"],
             stdout=_subprocess.PIPE,
             stderr=_subprocess.PIPE,
             text=False,
-            cwd=git_root,
         )
         if r.returncode == 0:
             files = [
@@ -421,6 +520,26 @@ def _get_git_files() -> List[str]:
             ]
     except Exception:
         files = []
+    return files
+
+
+def _get_additional_dir_files(
+    exclude_git: bool = False, max_files: int = 10000
+) -> List[str]:
+    """获取已添加附加目录中的文件列表。"""
+    files: List[str] = []
+    remaining = max_files
+    for dir_path in get_additional_completion_dirs():
+        if remaining <= 0:
+            break
+        current_files = _scan_files_under_dir(
+            dir_path,
+            exclude_git=exclude_git,
+            max_files=remaining,
+            use_absolute_path=True,
+        )
+        files.extend(current_files)
+        remaining = max_files - len(files)
     return files
 
 
@@ -433,25 +552,15 @@ def _get_all_files(exclude_git: bool = False) -> List[str]:
     files = []
     try:
         import os as _os
-        global _GIT_ROOT_CACHE
-        base_dir = _get_completion_root()
-        extra_dirs = _get_additional_allowed_dirs()
-        roots = [base_dir] + [d for d in extra_dirs if d and d != base_dir]
 
-        for scan_root in roots:
-            for root, dirs, fnames in _os.walk(scan_root, followlinks=False):
-                if exclude_git:
-                    # Exclude .git directories
-                    dirs[:] = [d for d in dirs if d != ".git"]
-                for name in fnames:
-                    full = _os.path.join(root, name)
-                    if scan_root == base_dir:
-                        files.append(_os.path.relpath(full, base_dir))
-                    else:
-                        # 额外目录直接输出绝对路径，避免相对路径歧义
-                        files.append(_os.path.abspath(full))
-                if len(files) > 10000:
-                    break
+        for root, dirs, fnames in _os.walk(".", followlinks=False):
+            if exclude_git:
+                # Exclude .git directories
+                dirs[:] = [d for d in dirs if d != ".git"]
+            for name in fnames:
+                files.append(_os.path.relpath(_os.path.join(root, name), "."))
+            if len(files) > 10000:
+                break
     except Exception:
         files = []
     return files
@@ -466,8 +575,14 @@ def _get_files_for_fzf(use_git: bool = True) -> List[str]:
     if use_git:
         files = _get_git_files()
         if files:
-            return files
-    return _get_all_files(exclude_git=True)
+            return _merge_unique_paths(
+                files,
+                _get_additional_dir_files(exclude_git=True),
+            )
+    return _merge_unique_paths(
+        _get_all_files(exclude_git=True),
+        _get_additional_dir_files(exclude_git=True),
+    )
 
 
 def _parse_fzf_payload(
@@ -569,6 +684,11 @@ def _clear_previous_prompt(text: str) -> None:
     Args:
         text: 上一次的输入文本
     """
+    # Windows平台禁用ANSI转义序列清除，避免终端状态混乱导致乱码
+    # Windows的cmd.exe和部分终端默认不支持ANSI转义序列，需要启用VT处理模式
+    if sys.platform == "win32":
+        return
+
     try:
         rows_total = _calc_prompt_rows(text)
         for _ in range(rows_total):
@@ -602,84 +722,54 @@ def get_single_line_input(tip: str, default: str = "") -> str:
     """
     获取支持历史记录的单行输入。
     """
-    # 获取当前模型名称用于提示符
-    def _get_model_name_hint() -> str:
-        try:
-            current_agent = get_current_agent()
-            if current_agent and hasattr(current_agent, "model"):
-                model = current_agent.model
-                if model and getattr(model, "model_name", None):
-                    # 提示头只显示模型名，避免显示 `|normal`/`|smart` 档位后缀
-                    return f"[{model.model_name}]"
-        except Exception:
-            pass
-        return ""
-    
-    model_hint = _get_model_name_hint()
-    
-    session: PromptSession[Any] = PromptSession(history=None)
+    is_non_interactive = _is_non_interactive_for_current_agent()
+    if is_non_interactive:
+        return default.strip()
+
+    # 检查是否在 Gateway 模式下
+    gateway = None
+    GatewayInputRequest = None
+    try:
+        from jarvis.jarvis_gateway.events import (
+            GatewayInputRequest as _GatewayInputRequest,
+        )
+        from jarvis.jarvis_gateway.manager import get_current_gateway
+
+        gateway = get_current_gateway()
+        GatewayInputRequest = _GatewayInputRequest
+    except Exception:
+        gateway = None
+
+    if gateway is not None and GatewayInputRequest is not None:
+        # Gateway 模式：发送输入请求到前端，断连时等待重连
+        import time
+
+        while True:
+            try:
+                request = GatewayInputRequest(
+                    tip=tip,
+                    mode="single",
+                    preset=default,
+                )
+                result = gateway.request_input(request)
+                return result.text.strip() if result is not None else default.strip()
+            except InputProviderTimeoutError:
+                PrettyOutput.auto_print("⚠ 输入超时，使用默认值\n")
+                return default.strip()
+            except InputProviderDisconnectedError:
+                PrettyOutput.auto_print("⚠ WebSocket 未连接，等待前端重连...\n")
+                time.sleep(2)
+
+    # 非 Gateway 模式：使用命令行输入
+    history_dir = get_data_dir()
+    session: PromptSession[Any] = PromptSession(
+        history=FileHistory(os.path.join(history_dir, "single_line_input_history"))
+    )
     style = PromptStyle.from_dict(
         {"prompt": "ansicyan", "bottom-toolbar": "fg:#888888"}
     )
-    prompt = FormattedText([("class:prompt", f"👤{model_hint} > {tip}")])
-    # 等待用户输入属于“正常静默”，暂停无输出看门狗，避免误触发思考中提示
-    try:
-        from jarvis.jarvis_utils.output import OutputWatchdogPaused
-    except Exception:
-        OutputWatchdogPaused = None
-    if OutputWatchdogPaused:
-        with OutputWatchdogPaused():
-            return str(session.prompt(prompt, default=default, style=style))
-    return str(session.prompt(prompt, default=default, style=style))
-
-
-def run_truncated_history_viewer() -> None:
-    """进入历史隐藏查看界面：展示索引与摘要列表，输入序号并回车查看对应完整内容。
-
-    在 run_in_terminal 中执行，故使用内置 input() 读取序号，避免嵌套 asyncio 事件循环。
-    """
-    from rich.console import Console
-    from rich.table import Table
-
-    history = PrettyOutput.get_truncated_history()
-    if not history:
-        PrettyOutput.auto_print("ℹ️ 当前无历史隐藏内容")
-        return
-    console = Console()
-    table = Table(
-        title="📋 历史隐藏查看",
-        show_header=True,
-        header_style="bold magenta",
-        title_style="bold cyan",
-    )
-    table.add_column("索引", style="cyan", width=6)
-    table.add_column("隐藏摘要", style="yellow")
-    for i, (_content, summary) in enumerate(history, 1):
-        row_summary = (
-            (summary[:80] + "…") if len(summary) > 80 else summary
-        )
-        table.add_row(str(i), row_summary)
-    console.print(table)
-    try:
-        from jarvis.jarvis_utils.output import OutputWatchdogPaused
-    except Exception:
-        OutputWatchdogPaused = None
-    try:
-        if OutputWatchdogPaused:
-            with OutputWatchdogPaused():
-                line = input("请输入序号 (直接回车退出): ").strip()
-        else:
-            line = input("请输入序号 (直接回车退出): ").strip()
-    except (EOFError, KeyboardInterrupt):
-        line = ""
-    if not line:
-        return
-    try:
-        idx = int(line.strip())
-        if not PrettyOutput.show_truncated_item_by_index(idx):
-            PrettyOutput.auto_print("⚠️ 无效序号")
-    except ValueError:
-        PrettyOutput.auto_print("⚠️ 请输入有效数字")
+    prompt = FormattedText([("class:prompt", f"👤 > {tip}")])
+    return str(session.prompt(prompt, default=default, style=style)).strip()
 
 
 def get_choice(tip: str, choices: List[str]) -> str:
@@ -689,6 +779,38 @@ def get_choice(tip: str, choices: List[str]) -> str:
     if not choices:
         raise ValueError("Choices cannot be empty.")
 
+    # 检查是否在 Gateway 模式下
+    gateway = None
+    GatewayInputRequest = None
+    try:
+        from jarvis.jarvis_gateway.events import (
+            GatewayInputRequest as _GatewayInputRequest,
+        )
+        from jarvis.jarvis_gateway.manager import get_current_gateway
+
+        gateway = get_current_gateway()
+        GatewayInputRequest = _GatewayInputRequest
+    except Exception:
+        gateway = None
+
+    if gateway is not None and GatewayInputRequest is not None:
+        # Gateway 模式：一次性打印选项列表，通过单行输入获取选择
+        lines = [tip]
+        for i, choice in enumerate(choices, 1):
+            lines.append(f"  {i}. {choice}")
+        PrettyOutput.auto_print("\n".join(lines))
+
+        result = get_single_line_input("请输入选项编号: ", default="1")
+        try:
+            index = int(result.strip()) - 1
+            if 0 <= index < len(choices):
+                return choices[index]
+        except ValueError:
+            pass
+        # 无效输入返回第一个选项作为默认
+        return choices[0]
+
+    # CLI 模式：使用 prompt_toolkit 全屏应用
     try:
         terminal_height = os.get_terminal_size().lines
     except OSError:
@@ -767,7 +889,7 @@ def get_choice(tip: str, choices: List[str]) -> str:
         layout=layout,
         key_bindings=bindings,
         style=style,
-        mouse_support=True,
+        mouse_support=False,
         full_screen=True,
     )
 
@@ -794,6 +916,8 @@ class FileCompleter(Completer):
         self._max_walk_files = 10000
         # Cache for rules to avoid repeated loading
         self._rules_cache: Optional[List[Tuple[str, str]]] = None
+        # Load completion usage stats
+        self._usage_stats: Dict[str, int] = _load_completion_usage_stats()
 
     def _get_all_rule_completions(self) -> List[str]:
         """获取所有规则补全项的统一接口
@@ -890,13 +1014,12 @@ class FileCompleter(Completer):
         return all_rules
 
     def get_completions(
-        self, document: Document, _: CompleteEvent
+        self, document: Document, complete_event: CompleteEvent
     ) -> Iterable[Completion]:
-        global _GIT_ROOT_CACHE
         text = document.text_before_cursor
         cursor_pos = document.cursor_position
 
-        # Support both '@' (cwd path completion) and '#' (builtin menu + files)
+        # Support both '@' (git files) and '#' (all files excluding .git)
         sym_positions = [(i, ch) for i, ch in enumerate(text) if ch in ("@", "#")]
         if not sym_positions:
             return
@@ -917,52 +1040,25 @@ class FileCompleter(Completer):
         replace_length = len(text_after) + 1
 
         all_completions = []
-        # '#'：仅内置补全菜单（tags/commands），不显示规则与文件候选
-        if current_sym != "@":
-            all_completions.extend(
-                [(ot(tag), self._get_description(tag)) for tag in self.replace_map.keys()]
-            )
-            all_completions.extend([(ot(cmd), desc) for cmd, desc in BUILTIN_COMMANDS])
+        all_completions.extend(
+            [(ot(tag), self._get_description(tag)) for tag in self.replace_map.keys()]
+        )
+        all_completions.extend([(ot(cmd), desc) for cmd, desc in BUILTIN_COMMANDS])
+        # 添加所有规则（包括内置规则、文件规则、YAML规则）到补全列表
+        rules = self._get_all_rules()
+        for rule_name, rule_desc in rules:
+            all_completions.append((f"<rule:{rule_name}>", rule_desc))
 
-        # '@'：按当前工作目录逐级补全（不再一次性展开全仓库文件列表）
-        if current_sym == "@":
-            try:
-                candidates = _iter_cwd_entries_for_at_completion(
-                    token=token, max_items=self.max_suggestions
-                )
-                for t, desc in candidates:
-                    # replace_length 含触发位置的 '@'：插入内容必须保留 '@'，否则下一级无法继续补全
-                    full = f"@{t}"
-                    yield Completion(
-                        text=full,
-                        start_position=-replace_length,
-                        display=full,
-                        display_meta=desc,
-                    )
-            except Exception:
-                pass
-            return
-
-        # File path candidates（仅在 '@' 下启用；避免 '#' 下把文件塞进候选）
-        if current_sym == "@":
-            try:
+        # File path candidates
+        try:
+            additional_paths = _get_additional_dir_files(exclude_git=True)
+            if current_sym == "@":
                 if self._git_files_cache is None:
-                    if _GIT_ROOT_CACHE is None:
-                        rr = _subprocess.run(
-                            ["git", "rev-parse", "--show-toplevel"],
-                            stdout=_subprocess.PIPE,
-                            stderr=_subprocess.PIPE,
-                            text=True,
-                            cwd=_get_completion_root(),
-                        )
-                        _GIT_ROOT_CACHE = rr.stdout.strip() if rr.returncode == 0 else ""
-                    git_root = _GIT_ROOT_CACHE or _get_completion_root()
                     result = _subprocess.run(
                         ["git", "ls-files"],
                         stdout=_subprocess.PIPE,
                         stderr=_subprocess.PIPE,
                         text=False,
-                        cwd=git_root,
                     )
                     if result.returncode == 0:
                         self._git_files_cache = [
@@ -972,12 +1068,43 @@ class FileCompleter(Completer):
                         ]
                     else:
                         self._git_files_cache = []
-                paths: List[str] = self._git_files_cache or []
-                if not paths:
-                    paths = _get_all_files(exclude_git=True)
-                all_completions.extend([(path, "File") for path in paths])
-            except Exception:
-                pass
+                paths = _merge_unique_paths(
+                    self._git_files_cache or [], additional_paths
+                )
+            else:
+                if self._all_files_cache is None:
+                    files: List[str] = []
+                    for root, dirs, fnames in _os.walk(".", followlinks=False):
+                        # Explicitly include hidden directories (starting with .), but exclude .git, __pycache__, .pytest_cache, etc.
+                        dirs[:] = [
+                            d
+                            for d in dirs
+                            if d
+                            not in {
+                                ".git",
+                                "__pycache__",
+                                ".pytest_cache",
+                                ".mypy_cache",
+                                ".ruff_cache",
+                                "node_modules",
+                                "target",
+                            }
+                        ]
+                        for name in fnames:
+                            files.append(
+                                _os.path.relpath(_os.path.join(root, name), ".")
+                            )
+                            if len(files) > self._max_walk_files:
+                                break
+                        if len(files) > self._max_walk_files:
+                            break
+                    self._all_files_cache = files
+                paths = _merge_unique_paths(
+                    self._all_files_cache or [], additional_paths
+                )
+            all_completions.extend([(path, "File") for path in paths])
+        except Exception:
+            pass
 
         if token:
             # Check if token contains only punctuation/special characters
@@ -999,14 +1126,26 @@ class FileCompleter(Completer):
                     [item[0] for item in all_completions],
                     limit=self.max_suggestions,
                 )
-                scored_items = [
-                    (item[0], item[1])
-                    for item in scored_items
-                    if item[1] > self.min_score
-                ]
+                # Adjust scores based on usage stats
+                scored_items_with_usage: List[Tuple[str, int, int]] = []
+                for item_path, score in scored_items:
+                    usage_count = self._usage_stats.get(item_path, 0)
+                    # Add usage count as weight (usage_count * 5 to balance with fuzzy score)
+                    final_score = score + (usage_count * 5)
+                    scored_items_with_usage.append((item_path, final_score, score))
+
+                # Sort by final score and filter by minimum score
+                scored_items_with_usage.sort(key=lambda x: x[1], reverse=True)
+                # Filter by minimum score and limit to max_suggestions
+                filtered_items: List[Tuple[str, int, int]] = [
+                    item for item in scored_items_with_usage if item[2] > self.min_score
+                ][: self.max_suggestions]
+
                 completion_map = {item[0]: item[1] for item in all_completions}
-                for t, score in scored_items:
-                    display_text = f"{t} ({score}%)" if score < 100 else t
+                for t, final_score, original_score in filtered_items:
+                    display_text = (
+                        f"{t} ({original_score}%)" if original_score < 100 else t
+                    )
                     yield Completion(
                         text=f"'{t}'",
                         start_position=-replace_length,
@@ -1023,43 +1162,13 @@ class FileCompleter(Completer):
                 )
 
     def _get_description(self, tag: str) -> str:
-        """
-        内置菜单里右侧显示的“提示内容”。
-
-        规则：
-        - `append=True`：显示 description，并附加工具线索（如模板里可提取到）。
-        - `append=False`（Replace）：如果没有任何可用工具/命令线索，则右侧留空（避免出现无意义的 Replace 提示）。
-        - 若模板里能提取到工具名（例如 Web 模板里有 `name: search_web`），则用于补充显示。
-        """
-        entry = self.replace_map.get(tag)
-        if not entry:
-            return tag
-
-        append = bool(entry.get("append", False))
-        desc = entry.get("description") or ""
-        template = entry.get("template") or ""
-
-        # 从模板提取显式工具名（内置模板目前主要通过 `name: xxx` 给出）
-        tool_names: list[str] = []
-        try:
-            import re
-
-            # 支持模板里 `name:` 行可能带缩进
-            m = re.search(r"(?m)^\\s*name:\\s*([A-Za-z0-9_\\-]+)\\s*$", template)
-            if m:
-                tool_names.append(m.group(1))
-        except Exception:
-            pass
-
-        tool_hint = f"工具: {', '.join(tool_names)}" if tool_names else ""
-
-        # 右侧栏“使用说明”优先展示 description；如果还能提取到工具名则一并补充。
-        # 行为标记用中文，便于用户理解模板会“追加/替换”。
-        mode_hint = "（追加）" if append else "（替换）"
-        parts = [p for p in (desc, tool_hint) if p]
-        if not parts:
-            return ""
-        return " ".join(parts) + mode_hint
+        if tag in self.replace_map:
+            return (
+                self.replace_map[tag].get("description", tag) + "(Append)"
+                if "append" in self.replace_map[tag] and self.replace_map[tag]["append"]
+                else "(Replace)"
+            )
+        return tag
 
 
 def get_all_rules_formatted() -> List[str]:
@@ -1274,7 +1383,40 @@ def user_confirm(tip: str, default: bool = True) -> bool:
         except Exception:
             pass
 
+        # 检查是否在 Gateway 模式下
+        gateway = None
+        GatewayConfirmRequest = None
+        try:
+            from jarvis.jarvis_gateway.events import (
+                GatewayConfirmRequest as _GatewayConfirmRequest,
+            )
+            from jarvis.jarvis_gateway.manager import get_current_gateway
+
+            gateway = get_current_gateway()
+            GatewayConfirmRequest = _GatewayConfirmRequest
+        except Exception:
+            gateway = None
+
         suffix = "[Y/n]" if default else "[y/N]"
+        message = f"{agent_name}{tip} {suffix}"
+
+        if gateway is not None and GatewayConfirmRequest is not None:
+            # Gateway 模式：发送确认请求到前端，断连时等待重连
+            import time
+
+            while True:
+                try:
+                    request = GatewayConfirmRequest(message=message, default=default)
+                    result = gateway.request_confirm(request)
+                    return result.confirmed if result is not None else default
+                except InputProviderTimeoutError:
+                    PrettyOutput.auto_print("⚠ 确认超时，使用默认值\n")
+                    return default
+                except InputProviderDisconnectedError:
+                    PrettyOutput.auto_print("⚠ WebSocket 未连接，等待前端重连...\n")
+                    time.sleep(2)
+
+        # CLI 模式：本地输入
         ret = get_single_line_input(f"{agent_name}{tip} {suffix}: ")
         return default if ret == "" else ret.lower() == "y"
     except KeyboardInterrupt:
@@ -1334,53 +1476,16 @@ def _show_history_and_copy() -> None:
             break
 
 
-def try_toggle_agent_normal_smart_tier() -> bool:
-    """主会话在 normal 与 smart 之间切换（多行输入栏 F2）。
-
-    cheap 档位会先切到 smart（再按一次可回到 normal）；从 normal 按快捷键进入 smart。
-    """
-    try:
-        ag = get_current_agent()
-        if not ag or not getattr(ag, "model", None):
-            return False
-        m = ag.model
-        if not hasattr(m, "set_platform_type"):
-            return False
-        pt = getattr(m, "platform_type", "normal") or "normal"
-        if pt == "smart":
-            m.set_platform_type("normal")
-            # 这里不要额外向 stdout 打印，避免破坏 prompt_toolkit 的原地刷新区域。
-        else:
-            m.set_platform_type("smart")
-            # 这里不要额外向 stdout 打印，避免破坏 prompt_toolkit 的原地刷新区域。
-        return True
-    except Exception as e:
-        PrettyOutput.auto_print(f"⚠️ 切换 smart/normal 失败: {e}")
-        return False
-
-
 def _get_multiline_input_internal(
-    tip: str, preset: Optional[str] = None, preset_cursor: Optional[int] = None
+    tip: str,
+    preset: Optional[str] = None,
+    preset_cursor: Optional[int] = None,
+    provider: Optional["CLIInputProvider"] = None,
 ) -> str:
     """
     Internal function to get multiline input using prompt_toolkit.
     Returns a sentinel value if Ctrl+O is pressed.
     """
-    # 获取当前模型名称用于提示符
-    def _get_model_name_hint() -> str:
-        try:
-            current_agent = get_current_agent()
-            if current_agent and hasattr(current_agent, "model"):
-                model = current_agent.model
-                if model and getattr(model, "model_name", None):
-                    # 提示头只显示模型名，避免显示 `|normal`/`|smart` 档位后缀
-                    return f"[{model.model_name}]"
-        except Exception:
-            pass
-        return ""
-    
-    model_hint = _get_model_name_hint()
-    
     bindings = KeyBindings()
 
     # Show a one-time hint on the first Enter press in this invocation (disabled; using inlay toolbar instead)
@@ -1392,9 +1497,15 @@ def _get_multiline_input_internal(
         if not first_enter_hint_shown and not _multiline_hint_already_shown():
             first_enter_hint_shown = True
 
+            # 生成快捷键显示文本
+            submit_keys = get_submit_keys()
+            submit_keys_display = " 或 ".join(
+                [k.replace("c-", "Ctrl+").upper() for k in submit_keys]
+            )
+
             def _show_notice() -> None:
                 PrettyOutput.auto_print(
-                    "ℹ️ 提示：当前支持多行输入。输入完成请使用 Ctrl+J 或 Ctrl+D 确认；Enter 仅用于换行。"
+                    f"ℹ️ 提示：当前支持多行输入。输入完成请使用 {submit_keys_display} 确认；Enter 仅用于换行。"
                 )
                 try:
                     input("按回车继续...")
@@ -1413,18 +1524,25 @@ def _get_multiline_input_internal(
             completion = event.current_buffer.complete_state.current_completion
             if completion:
                 event.current_buffer.apply_completion(completion)
+                # Track completion usage when user selects an item
+                if hasattr(completion, "text") and completion.text:
+                    # Extract item from completion text (remove quotes)
+                    item = completion.text.strip("'\"")
+                    # Track all completions (files, commands, etc.)
+                    if item:
+                        _update_completion_usage(item)
             else:
                 event.current_buffer.insert_text("\n")
         else:
             event.current_buffer.insert_text("\n")
 
-    @bindings.add("c-j", filter=has_focus(DEFAULT_BUFFER))
-    def _(event: KeyPressEvent) -> None:
-        event.current_buffer.validate_and_handle()
+    # 从配置获取提交快捷键列表
+    submit_keys = get_submit_keys()
+    for key in submit_keys:
 
-    @bindings.add("c-d", filter=has_focus(DEFAULT_BUFFER))
-    def _(event: KeyPressEvent) -> None:
-        event.current_buffer.validate_and_handle()
+        @bindings.add(key, filter=has_focus(DEFAULT_BUFFER))
+        def _(event: KeyPressEvent) -> None:
+            event.current_buffer.validate_and_handle()
 
     @bindings.add("c-o", filter=has_focus(DEFAULT_BUFFER))
     def _(event: KeyPressEvent) -> None:
@@ -1436,47 +1554,24 @@ def _get_multiline_input_internal(
         """Handle Ctrl+X by exiting the prompt and requesting program exit."""
         event.app.exit(result=CTRL_X_SENTINEL)
 
-    @bindings.add("f2", filter=has_focus(DEFAULT_BUFFER))
-    def _(event: KeyPressEvent) -> None:
-        """F2：主会话 normal ↔ smart（增强档需手动切换）。"""
-        try_toggle_agent_normal_smart_tier()
-        try:
-            event.app.invalidate()
-        except Exception:
-            pass
+    def _handle_shell_cmd(event: KeyPressEvent) -> None:
+        """Handle shell command trigger (called by Ctrl+T and Alt+T).
 
-    # Ctrl+R：进入历史隐藏查看界面（列表 + 输入序号查看，注意在 bash 中 Ctrl+R 为反向历史搜索）
-    @bindings.add("c-r", filter=has_focus(DEFAULT_BUFFER), eager=True)
-    def _(event: KeyPressEvent) -> None:
-        """Ctrl+R: 进入历史隐藏查看界面，输入序号并回车查看对应完整内容。"""
-        run_in_terminal(run_truncated_history_viewer)
-
-    def _gen_shell_cmd() -> str:
-        try:
-            if _os.name == "nt":
-                for name in ("pwsh", "powershell", "cmd"):
-                    if name == "cmd" or _shutil.which(name):
-                        if name == "cmd":
-                            return "!cmd /K set terminal=1"
-                        return f"!{name} -NoExit -Command \"$env:terminal='1'\""
-            else:
-                shell_path = os.environ.get("SHELL", "")
-                if shell_path:
-                    base = os.path.basename(shell_path)
-                    if base:
-                        return f"!env terminal=1 {base}"
-                for name in ("fish", "zsh", "bash", "sh"):
-                    if _shutil.which(name):
-                        return f"!env terminal=1 {name}"
-                return "!env terminal=1 bash"
-        except Exception:
-            pass
-        return "!env terminal=1 bash"
+        This binding works globally (without focus filter) so it can be triggered
+        even when LLM is outputting or after interrupting output with Ctrl+C.
+        """
+        # Append a special marker to indicate no-confirm execution in shell_input_handler
+        event.app.exit(result=_gen_shell_cmd_for_terminal() + " # JARVIS-NOCONFIRM")
 
     @bindings.add("c-t", eager=True)
     def _(event: KeyPressEvent) -> None:
-        """Ctrl+T: 打开终端(!SHELL)。"""
-        event.app.exit(result=_gen_shell_cmd() + " # JARVIS-NOCONFIRM")
+        """Handle Ctrl+T to trigger shell command (CLI mode)."""
+        _handle_shell_cmd(event)
+
+    @bindings.add("escape", "t", eager=True)
+    def _(event: KeyPressEvent) -> None:
+        """Handle Alt+T to trigger shell command (CLI/Web mode)."""
+        _handle_shell_cmd(event)
 
     @bindings.add("@", filter=has_focus(DEFAULT_BUFFER), eager=True)
     def _(event: KeyPressEvent) -> None:
@@ -1488,23 +1583,20 @@ def _get_multiline_input_internal(
         """
         try:
             buf = event.current_buffer
-            # 默认行为：插入 '@' 并触发补全（单个 @ 为文件补全）
-            # 如需沿用旧行为（@ 触发 fzf），可设置 JARVIS_AT_USE_FZF=true
-            use_fzf = os.environ.get("JARVIS_AT_USE_FZF", "false").lower() == "true"
-            if use_fzf and _shutil.which("fzf") is not None:
-                # 先插入 '@'，以便外层根据最后一个 '@' 进行片段替换
+            if _shutil.which("fzf") is None:
                 buf.insert_text("@")
-                doc = buf.document
-                text = doc.text
-                cursor = doc.cursor_position
-                payload = (
-                    f"{cursor}:{base64.b64encode(text.encode('utf-8')).decode('ascii')}"
-                )
-                event.app.exit(result=FZF_REQUEST_SENTINEL_PREFIX + payload)
+                # 手动触发补全，以便显示 rule 和其他补全选项
+                buf.start_completion(select_first=False)
                 return
-
+            # 先插入 '@'，以便外层根据最后一个 '@' 进行片段替换
             buf.insert_text("@")
-            buf.start_completion(select_first=False)
+            doc = buf.document
+            text = doc.text
+            cursor = doc.cursor_position
+            payload = (
+                f"{cursor}:{base64.b64encode(text.encode('utf-8')).decode('ascii')}"
+            )
+            event.app.exit(result=FZF_REQUEST_SENTINEL_PREFIX + payload)
             return
         except Exception:
             try:
@@ -1518,184 +1610,76 @@ def _get_multiline_input_internal(
     @bindings.add("#", filter=has_focus(DEFAULT_BUFFER), eager=True)
     def _(event: KeyPressEvent) -> None:
         """
-        使用 # 触发 fzf（当 fzf 存在），以“全量文件模式”进行选择（排除 .git）；
-        否则插入 # 并触发内置补全菜单（内置命令/规则 + 文件）。
+        使用 # 触发 fzf（当 fzf 存在），以“全量文件模式”进行选择（排除 .git）；否则仅插入 # 启用内置补全
         """
         try:
             buf = event.current_buffer
-            disable_fzf = (
-                os.environ.get("JARVIS_DISABLE_FZF_COMPLETION", "false").lower()
-                == "true"
-            )
-            if disable_fzf or _shutil.which("fzf") is None:
+            if _shutil.which("fzf") is None:
                 buf.insert_text("#")
+                # 手动触发补全，以便显示 rule 和其他补全选项
                 buf.start_completion(select_first=False)
                 return
+            # 先插入 '#'
             buf.insert_text("#")
             doc = buf.document
             text = doc.text
             cursor = doc.cursor_position
-            payload = f"{cursor}:{base64.b64encode(text.encode('utf-8')).decode('ascii')}"
+            payload = (
+                f"{cursor}:{base64.b64encode(text.encode('utf-8')).decode('ascii')}"
+            )
             event.app.exit(result=FZF_REQUEST_ALL_SENTINEL_PREFIX + payload)
             return
         except Exception:
             try:
                 buf = event.current_buffer
                 buf.insert_text("#")
+                # 即使发生异常，也尝试触发补全
                 buf.start_completion(select_first=False)
             except Exception:
                 pass
 
-    # 快捷键栏：去除背景色（与终端背景一致），说明文字浅青、快捷键组合白色加粗
     style = PromptStyle.from_dict(
         {
-            "prompt": "ansicyan bold",
-            "bottom-toolbar": "bg:default noreverse",
-            "bottom-toolbar.text": "bg:default noreverse",
-            "bt.line": "bg:default fg:#00bcd4 noreverse",
-            "bt.tip": "fg:#00bcd4 bold",
-            "bt.sep": "fg:#00bcd4",
-            "bt.key": "fg:#ffffff bold",
-            "bt.label": "fg:#00bcd4",
+            "prompt": "ansibrightmagenta bold",
+            "bottom-toolbar": "bg:#4b145b #ffd6ff bold",
+            "bt.tip": "bold fg:#ff5f87",
+            "bt.sep": "fg:#ffb3de",
+            "bt.key": "bg:#d7005f #ffffff bold",
+            "bt.label": "fg:#ffd6ff",
             "placeholder": "italic fg:#888888",
         }
     )
 
+    # 获取提交快捷键显示文本
+    submit_keys = get_submit_keys()
+    # 将快捷键转换为显示格式（如 "c-d" -> "Ctrl+D"）
+    submit_keys_display = "/".join(
+        [k.replace("c-", "Ctrl+").upper() for k in submit_keys]
+    )
+
     def _bottom_toolbar() -> Any:
-        try:
-            cols = os.get_terminal_size().columns
-        except Exception:
-            cols = 80
-        rule_str = "─" * max(0, cols)
-
-        def _truncate_segments_from_left(
-            segments: list[tuple[str, str]], max_width: int
-        ) -> list[tuple[str, str]]:
-            """按字符宽度限制在终端列数内，超过则从左侧截断（保留右侧信息）。"""
-            from wcwidth import wcswidth
-
-            def _text_width(s: str) -> int:
-                w = wcswidth(s)
-                return w if w >= 0 else len(s)
-
-            def _suffix_by_width(s: str, width: int) -> str:
-                """按显示宽度从字符串末尾截取 suffix，确保其 w <= width。"""
-                if width <= 0 or not s:
-                    return ""
-                out_rev: list[str] = []
-                used_w = 0
-                for ch in reversed(s):
-                    ch_w = _text_width(ch)
-                    if used_w + ch_w > width:
-                        break
-                    out_rev.append(ch)
-                    used_w += ch_w
-                return "".join(reversed(out_rev))
-
-            if max_width <= 0:
-                return []
-            # 计算总宽度（需要考虑中文全角等“显示宽度”差异）
-            total = 0
-            for _, t in segments:
-                total += _text_width(t)
-            if total <= max_width:
-                return segments
-
-            kept: list[tuple[str, str]] = []
-            used = 0
-            for style, text in reversed(segments):
-                if not text:
-                    continue
-                seg_w = _text_width(text)
-                if used + seg_w <= max_width:
-                    kept.append((style, text))
-                    used += seg_w
-                    continue
-
-                # 仅保留本段的“右侧 suffix”
-                remain = max_width - used
-                if remain <= 0:
-                    break
-
-                ellipsis = "..."
-                ell_w = _text_width(ellipsis)
-                if remain <= ell_w:
-                    new_text = _suffix_by_width(text, remain)
-                else:
-                    suffix = _suffix_by_width(text, remain - ell_w)
-                    new_text = ellipsis + suffix
-
-                kept.append((style, new_text))
-                used = max_width
-                break
-
-            return list(reversed(kept))
-
-        # line2：尽量把“轮次/Token”等右侧状态保留在同一行，避免换行导致的 UI 漂移。
-        line2_items: list[tuple[str, str]] = [
-            ("class:bt.key", "@"),
-            ("class:bt.label", " 文件补全 "),
-            ("class:bt.sep", " • "),
-            ("class:bt.key", "Ctrl+D"),
-            ("class:bt.label", " 提交 "),
-            ("class:bt.sep", " • "),
-            ("class:bt.key", "Ctrl+O"),
-            ("class:bt.label", " 复制历史信息 "),
-            ("class:bt.sep", " • "),
-            ("class:bt.key", "Ctrl+R"),
-            ("class:bt.label", " 历史隐藏查看 "),
-            ("class:bt.sep", " • "),
-            ("class:bt.key", "Ctrl+T"),
-            ("class:bt.label", " 终端(!SHELL) "),
-            ("class:bt.sep", " • "),
-            ("class:bt.key", "F2"),
-            ("class:bt.label", " normal↔smart "),
-            ("class:bt.sep", " • "),
-            ("class:bt.key", "Ctrl+C"),
-            ("class:bt.label", " 取消 "),
-        ]
-        
-        # 获取当前轮次和token信息
-        try:
-            current_agent = get_current_agent()
-            if current_agent and hasattr(current_agent, 'model'):
-                model = current_agent.model
-                if hasattr(model, "platform_type"):
-                    pt = getattr(model, "platform_type", "normal") or "normal"
-                    # normal 档位不做额外展示，避免界面噪音；smart/cheap 才提示
-                    if pt != "normal":
-                        line2_items.append(("class:bt.sep", " • "))
-                        line2_items.append(("class:bt.key", "当前档"))
-                        line2_items.append(("class:bt.label", f": {pt} "))
-                if hasattr(model, 'get_conversation_turn'):
-                    current_turn = model.get_conversation_turn()
-                    threshold = get_conversation_turn_threshold()
-                    
-                    # 尝试获取token使用信息
-                    token_percent = 0.0
-                    if hasattr(model, '_get_token_usage_info'):
-                        try:
-                            token_percent, percent_color, progress_bar = model._get_token_usage_info()
-                        except Exception:
-                            token_percent = 0.0
-                    
-                    # 添加右侧的分隔符和状态信息，使用与Ctrl+X相同的样式
-                    line2_items.append(("class:bt.sep", " • "))
-                    line2_items.append(("class:bt.key", "轮次"))
-                    line2_items.append(
-                        ("class:bt.label", f": {current_turn}/{threshold} ")
-                    )
-                    if token_percent > 0:
-                        line2_items.append(("class:bt.sep", " • "))
-                        line2_items.append(("class:bt.key", "Token"))
-                        line2_items.append(("class:bt.label", f": {token_percent:.1f}% "))
-        except Exception:
-            pass
-
-        line2_items = _truncate_segments_from_left(line2_items, cols)
-        # 强制使用固定“2行”布局：第1行横线，第2行状态文本；避免 F2 切换时因宽度变化自动换行。
-        toolbar_items = [("class:bt.line", rule_str), ("", "\n"), *line2_items]
-        return FormattedText(toolbar_items)
+        return FormattedText(
+            [
+                ("class:bt.label", "快捷键: "),
+                ("class:bt.key", "@"),
+                ("class:bt.label", " 文件补全 "),
+                ("class:bt.sep", " • "),
+                ("class:bt.key", submit_keys_display),
+                ("class:bt.label", " 提交 "),
+                ("class:bt.sep", " • "),
+                ("class:bt.key", "Ctrl+O"),
+                ("class:bt.label", " 复制历史信息 "),
+                ("class:bt.sep", " • "),
+                ("class:bt.key", "Alt+T"),
+                ("class:bt.label", " 终端(!SHELL) "),
+                ("class:bt.sep", " • "),
+                ("class:bt.key", "Ctrl+X"),
+                ("class:bt.label", " 退出程序 "),
+                ("class:bt.sep", " • "),
+                ("class:bt.key", "Ctrl+C"),
+                ("class:bt.label", " 取消 "),
+            ]
+        )
 
     history_dir = get_data_dir()
     session: PromptSession[Any] = PromptSession(
@@ -1709,7 +1693,7 @@ def _get_multiline_input_internal(
     )
 
     # Tip is shown in placeholder; avoid extra print
-    prompt = FormattedText([("class:prompt", f"👤{model_hint} > ")])
+    prompt = FormattedText([("class:prompt", "👤 > ")])
 
     def _pre_run() -> None:
         try:
@@ -1723,42 +1707,23 @@ def _get_multiline_input_internal(
         except Exception:
             pass
 
-    # 输入框上方横线（两条横线中间是用户输入）
     try:
-        cols = os.get_terminal_size().columns
-        sys.stdout.write("\033[36m" + "─" * max(0, cols) + "\033[0m\n")
-        sys.stdout.flush()
-    except Exception:
-        pass
-
-    try:
-        # 等待用户输入属于“正常静默”，暂停无输出看门狗，避免误触发思考中提示
-        try:
-            from jarvis.jarvis_utils.output import OutputWatchdogPaused
-        except Exception:
-            OutputWatchdogPaused = None
-        if OutputWatchdogPaused:
-            with OutputWatchdogPaused():
-                result = session.prompt(
-                    prompt,
-                    style=style,
-                    pre_run=_pre_run,
-                    bottom_toolbar=_bottom_toolbar,
-                    placeholder=FormattedText([("class:placeholder", tip)]),
-                    default=(preset or ""),
-                )
-        else:
-            result = session.prompt(
-                prompt,
-                style=style,
-                pre_run=_pre_run,
-                bottom_toolbar=_bottom_toolbar,
-                placeholder=FormattedText([("class:placeholder", tip)]),
-                default=(preset or ""),
-            )
+        result = session.prompt(
+            prompt,
+            style=style,
+            pre_run=_pre_run,
+            bottom_toolbar=_bottom_toolbar,
+            placeholder=FormattedText([("class:placeholder", tip)]),
+            default=(preset or ""),
+        )
         return str(result).strip() if result else ""
     except (KeyboardInterrupt, EOFError):
-        return ""
+        # 检查全局缓冲区，如果有注入内容则返回注入内容
+        if provider is not None:
+            injected = provider._check_injected_buffer()
+            if injected is not None:
+                return injected
+        return CTRL_C_SENTINEL
 
 
 def get_multiline_input(tip: str, print_on_empty: bool = True) -> str:
@@ -1770,19 +1735,66 @@ def get_multiline_input(tip: str, print_on_empty: bool = True) -> str:
         tip: 提示文本，将显示在底部工具栏中
         print_on_empty: 当输入为空字符串时，是否打印“输入已取消”提示。默认打印。
     """
+    # 获取提交快捷键配置，用于生成提示文本
+    submit_keys = get_submit_keys()
+    submit_keys_display = "/".join(
+        [k.replace("c-", "Ctrl+").upper() for k in submit_keys]
+    )
+
     preset: Optional[str] = None
     preset_cursor: Optional[int] = None
     while True:
         # 基于“当前Agent”精确判断非交互与自动完成，避免多Agent相互干扰
         if _is_non_interactive_for_current_agent():
             return _get_non_interactive_response(_is_auto_complete_for_current_agent())
-        user_input = _get_multiline_input_internal(
-            tip, preset=preset, preset_cursor=preset_cursor
-        )
+
+        def _get_input_via_provider() -> str:
+            provider = get_current_input_provider()
+            return provider.get_multiline_input(
+                tip, preset=preset, preset_cursor=preset_cursor
+            )
+
+        gateway = None
+        GatewayInputRequest = None
+        try:
+            from jarvis.jarvis_gateway.events import (
+                GatewayInputRequest as _GatewayInputRequest,
+            )
+            from jarvis.jarvis_gateway.manager import get_current_gateway
+
+            gateway = get_current_gateway()
+            GatewayInputRequest = _GatewayInputRequest
+        except Exception:
+            gateway = None
+
+        try:
+            if gateway is not None and GatewayInputRequest is not None:
+                request = GatewayInputRequest(
+                    tip=tip,
+                    mode="multi",
+                    preset=preset,
+                    preset_cursor=preset_cursor,
+                )
+                result = gateway.request_input(request)
+                user_input = result.text if result is not None else ""
+            else:
+                user_input = _get_input_via_provider()
+        except InputProviderTimeoutError:
+            PrettyOutput.auto_print("⚠️ 输入等待超时，已取消本次输入")
+            return ""
+        except InputProviderDisconnectedError:
+            # Web Gateway 模式：断开连接时不退出，继续等待重连
+            if gateway is not None:
+                continue
+            # CLI 模式：保持原样，返回空字符串触发退出
+            PrettyOutput.auto_print("⚠️ 远端输入连接已断开，已取消本次输入")
+            return ""
+        except Exception:
+            user_input = _get_input_via_provider()
 
         if user_input == CTRL_O_SENTINEL:
             _show_history_and_copy()
-            tip = "请继续输入（或按Ctrl+J/Ctrl+D确认）:"
+            tip = f"请继续输入（或按{submit_keys_display}确认）:"
             continue
         if user_input == CTRL_X_SENTINEL:
             PrettyOutput.auto_print("🛑 用户请求退出程序...")
@@ -1807,7 +1819,7 @@ def get_multiline_input(tip: str, print_on_empty: bool = True) -> str:
                 preset, preset_cursor = _insert_file_path(
                     text, cursor, selected_path, "@"
                 )
-                tip = "已插入文件，继续编辑或按Ctrl+J/Ctrl+]确认:"
+                tip = f"已插入文件，继续编辑或按{submit_keys_display}确认:"
             else:
                 # No selection; keep original text and cursor
                 preset = text
@@ -1837,7 +1849,7 @@ def get_multiline_input(tip: str, print_on_empty: bool = True) -> str:
                 preset, preset_cursor = _insert_file_path(
                     text, cursor, selected_path, "#"
                 )
-                tip = "已插入文件，继续编辑或按Ctrl+J/Ctrl+D确认:"
+                tip = f"已插入文件，继续编辑或按{submit_keys_display}确认:"
             else:
                 # No selection; keep original text and cursor
                 preset = text
@@ -1861,9 +1873,17 @@ def get_multiline_input(tip: str, print_on_empty: bool = True) -> str:
                 sys.stdout.flush()
             except Exception:
                 pass
-            tip = "已插入文件，继续编辑或按Ctrl+J/Ctrl+D确认:"
+            tip = f"已插入文件，继续编辑或按{submit_keys_display}确认:"
             continue
         else:
-            if not user_input and print_on_empty:
-                PrettyOutput.auto_print("ℹ️ 输入已取消")
-            return user_input
+            if user_input == CTRL_C_SENTINEL:
+                # Ctrl+C pressed, allow exit and return empty string
+                return ""
+            elif user_input == CTRL_T_SENTINEL:
+                # Alt+T pressed, generate shell command for terminal
+                return _gen_shell_cmd_for_terminal() + " # JARVIS-NOCONFIRM"
+            elif not user_input:
+                # Empty submission, require user to input something
+                continue
+            else:
+                return user_input

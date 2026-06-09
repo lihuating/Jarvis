@@ -41,6 +41,15 @@ running_agent_stack: List[str] = []  # 正在运行的agent栈（最顶层是当
 g_in_chat: int = 0
 # 表示是否接收到中断信号
 g_interrupt: int = 0
+# Web Gateway / Gateway 代理相关（来自 Jarvis_sky）
+proxy_node: Optional[str] = None
+master_url: Optional[str] = None
+agent_id: Optional[str] = None
+input_buffer: List[str] = []
+MAX_INPUT_BUFFER_SIZE = 100
+input_inject_callback: Optional[Any] = None
+# 当前运行的脚本进程 PID（Web Gateway / execute_script）
+current_script_pid: Optional[int] = None
 # 上次“部分显示”时保存的完整内容，供 Ctrl+R 查看全部使用
 last_truncated_full_content: Optional[str] = None
 # 上次截断内容的标题（如工具名），用于展开时显示
@@ -245,6 +254,24 @@ def get_interrupt() -> int:
     return g_interrupt
 
 
+def set_script_pid(pid: Optional[int]) -> None:
+    """设置当前脚本进程 PID。"""
+    global current_script_pid
+    current_script_pid = pid
+
+
+def get_script_pid() -> Optional[int]:
+    """获取当前脚本进程 PID。"""
+    global current_script_pid
+    return current_script_pid
+
+
+def clear_script_pid() -> None:
+    """清除当前脚本进程 PID。"""
+    global current_script_pid
+    current_script_pid = None
+
+
 def set_last_message(message: str) -> None:
     """
     将消息添加到历史记录中。
@@ -335,6 +362,35 @@ def clear_short_term_memories() -> None:
     """
     global short_term_memories
     short_term_memories.clear()
+
+
+def add_input_buffer(message: str) -> None:
+    """将消息添加到全局输入缓冲区。"""
+    global input_buffer
+    if message:
+        input_buffer.append(message)
+        if len(input_buffer) > MAX_INPUT_BUFFER_SIZE:
+            input_buffer.pop(0)
+
+
+def get_input_buffer() -> List[str]:
+    """获取并清空全局输入缓冲区。"""
+    global input_buffer
+    messages = input_buffer.copy()
+    input_buffer.clear()
+    return messages
+
+
+def peek_input_buffer() -> List[str]:
+    """查看全局输入缓冲区（不清空）。"""
+    global input_buffer
+    return input_buffer.copy()
+
+
+def clear_input_buffer() -> None:
+    """清空全局输入缓冲区。"""
+    global input_buffer
+    input_buffer.clear()
 
 
 def _sample_tags_when_over_limit(

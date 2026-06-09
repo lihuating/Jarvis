@@ -64,24 +64,16 @@ def execute_llm_plan(
             created_dir = Path(target_root)
 
         # 在 crate 目录内执行 git 初始化与初始提交（按新策略）
-        # 用户要求移除自动 git commit：这里根据开关禁用自动提交。
         try:
-            from jarvis.jarvis_utils.config import is_enable_auto_commit
-
-            if is_enable_auto_commit():
-                # 初始化 git 仓库（若已存在则该命令为幂等）
-                subprocess.run(
-                    ["git", "init"], check=False, cwd=str(created_dir)
-                )
-                # 添加所有文件并尝试提交
-                subprocess.run(
-                    ["git", "add", "-A"], check=False, cwd=str(created_dir)
-                )
-                subprocess.run(
-                    ["git", "commit", "-m", "[c2rust-llm-planner] init crate"],
-                    check=False,
-                    cwd=str(created_dir),
-                )
+            # 初始化 git 仓库（若已存在则该命令为幂等）
+            subprocess.run(["git", "init"], check=False, cwd=str(created_dir))
+            # 添加所有文件并尝试提交
+            subprocess.run(["git", "add", "-A"], check=False, cwd=str(created_dir))
+            subprocess.run(
+                ["git", "commit", "-m", "[c2rust-llm-planner] init crate"],
+                check=False,
+                cwd=str(created_dir),
+            )
         except Exception:
             # 保持稳健，不因 git 失败影响主流程
             pass
@@ -193,6 +185,8 @@ def execute_llm_plan(
                     non_interactive=non_interactive,
                     enable_task_list_manager=False,
                     disable_review=True,
+                    enable_auto_rule_select=False,
+                    quick_mode=True,
                 )
                 # 验证 agent 内部的模型配置
                 if hasattr(agent, "model") and agent.model:
@@ -277,6 +271,8 @@ def execute_llm_plan(
                         non_interactive=non_interactive,
                         enable_task_list_manager=False,
                         disable_review=True,
+                        enable_auto_rule_select=False,
+                        quick_mode=True,
                     )
                     repair_agent.run(
                         repair_prompt,

@@ -27,7 +27,7 @@ class PostInstallCommand(install):
 
 setup(
     name="jarvis-ai-assistant",
-    version="2.0.19",
+    version="3.1.10+jarvis",
     author="skyfire",
     author_email="skyfireitdiy@hotmail.com",
     description="An AI assistant that uses various tools to interact with the system",
@@ -38,7 +38,10 @@ setup(
     package_dir={"": "src"},
     include_package_data=True,
     package_data={
-        "jarvis": ["jarvis_data/**/*"],
+        "jarvis": [
+            "jarvis_data/**/*",
+            "jarvis_service/frontend/**/*",
+        ],
     },
     install_requires=[
         "requests==2.32.3",
@@ -68,6 +71,7 @@ setup(
         "typer",
         "plotext==5.2.8",
         "packaging",
+        "pysqlite3-binary>=0.5.0",
         "tree-sitter==0.25.2",
         "tree-sitter-python==0.25.0",
         "tree-sitter-javascript==0.25.0",
@@ -193,6 +197,12 @@ setup(
             "jb=jarvis.jarvis_browser.cli:app",
             "jarvis-windows=jarvis.jarvis_windows.cli:app",
             "jw=jarvis.jarvis_windows.cli:app",
+            "jarvis-web-gateway=jarvis.jarvis_web_gateway.cli:app",
+            "jwg=jarvis.jarvis_web_gateway.cli:app",
+            "jarvis-service=jarvis.jarvis_service.cli:app",
+            "jservice=jarvis.jarvis_service.cli:app",
+            "jarvis-rules-index=jarvis.jarvis_rules_index.cli:main",
+            "jri=jarvis.jarvis_rules_index.cli:main",
         ],
     },
     python_requires="==3.12.*",

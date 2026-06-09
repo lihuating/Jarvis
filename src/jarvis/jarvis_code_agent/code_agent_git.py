@@ -125,14 +125,6 @@ class GitManager:
 
     def handle_git_changes(self, prefix: str, suffix: str, agent: Any) -> None:
         """处理git仓库中的未提交修改"""
-        # 默认关闭自动提交：仅在显式开启（环境变量/配置）时才允许
-        try:
-            from jarvis.jarvis_utils.config import is_enable_auto_commit
-
-            if not is_enable_auto_commit():
-                return
-        except Exception:
-            return
         if has_uncommitted_changes():
             git_commiter = GitCommitTool()
             git_commiter.execute(
@@ -266,15 +258,6 @@ class GitManager:
         4. 如果用户拒绝添加大量文件，提示修改.gitignore并重新检测
         5. 暂存并提交所有修改
         """
-        # 默认关闭自动提交流程：仅在配置项启用时才允许自动提交/Checkpoint
-        try:
-            from jarvis.jarvis_utils.config import is_enable_auto_commit
-
-            if not is_enable_auto_commit():
-                return
-        except Exception:
-            return
-
         # 重置全局标记，允许在此流程中重新进行文件确认
         reset_confirm_add_new_files_flag()
 
@@ -317,7 +300,7 @@ class GitManager:
             except subprocess.CalledProcessError as e:
                 PrettyOutput.auto_print(f"❌ 提交失败: {str(e)}")
 
-    def show_commit_history(
+    def show_commit_between(
         self, start_commit: Optional[str], end_commit: Optional[str]
     ) -> List[Tuple[str, str]]:
         """显示两个提交之间的提交历史
@@ -349,12 +332,10 @@ class GitManager:
         suffix: str,
         agent: Any,
         post_process_func: Any,
+        skip_confirm: bool = False,
     ) -> None:
         """处理提交确认和可能的重置"""
-        # 这里用于“用户显式执行 Commit 命令”的场景。
-        # 由于工程已硬禁用自动 commit，这里不再受 is_enable_auto_commit 影响，
-        # 以确保用户手动提交仍可用。
-        if commits and user_confirm("是否接受以上提交记录？", True):
+        if commits and (skip_confirm or user_confirm("是否接受以上提交记录？", True)):
             subprocess.run(
                 ["git", "reset", "--mixed", str(start_commit)],
                 stdout=subprocess.DEVNULL,

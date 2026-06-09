@@ -167,7 +167,7 @@ class Optimizer:
             下一个步骤编号，如果失败则返回 None
         """
         PrettyOutput.auto_print(
-            f"\n🔧 [c2rust-optimizer] 第 {step_num} 步：{step_display_name}",
+            f"🔧 [c2rust-optimizer] 第 {step_num} 步：{step_display_name}",
         )
         self.progress_manager.snapshot_commit()
         if not self.options.dry_run:
@@ -322,6 +322,7 @@ def optimize_project(
     git_guard: bool = True,
     cargo_test_timeout: int = 300,
     non_interactive: bool = True,
+    quick_mode: bool = False,
 ) -> Dict:
     """
     对指定 crate 执行优化。返回结果摘要 dict。
@@ -362,6 +363,7 @@ def optimize_project(
         git_guard=git_guard,
         cargo_test_timeout=cargo_test_timeout,
         non_interactive=non_interactive,
+        quick_mode=quick_mode,
     )
     optimizer = Optimizer(crate, opts, project_root=project_root)
     stats = optimizer.run()

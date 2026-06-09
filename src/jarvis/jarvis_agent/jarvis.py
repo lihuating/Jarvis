@@ -2,12 +2,15 @@
 """Jarvis AI 助手主入口模块"""
 
 import json
+import logging
 import os
 import shutil
 import subprocess
 import sys
+import threading
 import traceback
 from datetime import datetime
+from enum import Enum
 from pathlib import Path
 from typing import Any
 from typing import List
@@ -19,6 +22,7 @@ import yaml
 from rich.console import Console
 from rich.table import Table
 
+import jarvis.jarvis_utils.globals as jglobals
 import jarvis.jarvis_utils.utils as jutils
 from jarvis.jarvis_agent.agent_manager import AgentManager
 from jarvis.jarvis_agent.builtin_input_handler import builtin_input_handler
@@ -51,6 +55,62 @@ from jarvis.jarvis_jck.cli import (
     _print_results,
     _perform_check,
 )
+
+logger = logging.getLogger(__name__)
+
+
+class AgentStatus(Enum):
+    """Agent 状态枚举。"""
+
+    RUNNING = "running"
+    WAITING_MULTI = "waiting_multi"
+    WAITING_SINGLE = "waiting_single"
+    WAITING_CONFIRM = "waiting_confirm"
+
+
+class AgentStateManager:
+    """Agent 状态管理器（线程安全）。"""
+
+    def __init__(self):
+        self._status = AgentStatus.RUNNING
+        self._current_mode = None
+        self._lock = threading.Lock()
+
+    def get_status(self) -> str:
+        with self._lock:
+            return self._status.value
+
+    def set_status(self, status: AgentStatus) -> None:
+        with self._lock:
+            self._status = status
+
+    def set_running(self) -> None:
+        self.set_status(AgentStatus.RUNNING)
+
+    def get_mode(self) -> Optional[str]:
+        with self._lock:
+            return self._current_mode
+
+    def set_mode(self, mode: Optional[str]) -> None:
+        with self._lock:
+            self._current_mode = mode
+
+    def set_waiting_multi(self) -> None:
+        self.set_status(AgentStatus.WAITING_MULTI)
+
+    def set_waiting_single(self) -> None:
+        self.set_status(AgentStatus.WAITING_SINGLE)
+
+
+_agent_status_manager: Optional[AgentStateManager] = None
+
+
+def get_agent_status_manager() -> AgentStateManager:
+    """获取全局 Agent 状态管理器实例。"""
+    global _agent_status_manager
+    if _agent_status_manager is None:
+        _agent_status_manager = AgentStateManager()
+    return _agent_status_manager
 
 
 def _normalize_backup_data_argv(argv: List[str]) -> None:
@@ -828,10 +888,43 @@ def run_cli(
         "--auto-jca",
         help="检测到 Git 仓库时自动切换到代码开发模式（jca）（默认关闭）",
     ),
+    web_gateway: bool = typer.Option(
+        False,
+        "--web-gateway",
+        help="启用 Web Gateway 服务（WebSocket 输入输出）",
+    ),
+    web_gateway_port: int = typer.Option(
+        8000,
+        "--web-gateway-port",
+        help="Web Gateway 监听端口",
+    ),
+    gateway_password: Optional[str] = typer.Option(
+        None,
+        "--gateway-password",
+        help="Web Gateway 密码（如未设置将禁用密码认证）",
+    ),
+    proxy_node: Optional[str] = typer.Option(
+        None,
+        "--proxy-node",
+        help="HTTP 代理请求转发到的目标节点 ID",
+    ),
+    master_url: Optional[str] = typer.Option(
+        None,
+        "--master-url",
+        help="Master 节点 URL，用于 HTTP 代理请求转发",
+    ),
+    agent_id: Optional[str] = typer.Option(
+        None,
+        "--agent-id",
+        help="Agent ID，由 Web Gateway 的 AgentManager 分配的唯一标识符",
+    ),
 ) -> None:
     """Jarvis AI assistant command-line interface."""
     if ctx.invoked_subcommand is not None:
         return
+
+    web_gateway_server = None
+    web_gateway_thread = None
 
     # 处理 --quick-config 参数：启动快速配置向导
     if quick_config:
@@ -948,6 +1041,12 @@ def run_cli(
             # 指定会话名称时，自动启用会话恢复
             set_config("restore_session", True)
             set_config("session_name", str(session_name))
+        if proxy_node:
+            jglobals.proxy_node = proxy_node
+        if master_url:
+            jglobals.master_url = master_url
+        if agent_id:
+            jglobals.agent_id = agent_id
     except Exception:
         # 静默忽略同步异常，不影响主流程
         pass
@@ -1020,8 +1119,8 @@ def run_cli(
         pass
 
     # 在初始化环境前自动检测Git仓库，并自动切换到代码开发模式（jca）
-    # 如果指定了 -T/--task 参数，跳过自动切换
-    if not non_interactive and not task:
+    # 如果指定了 -T/--task 参数或 --web-gateway 参数，跳过自动切换
+    if not non_interactive and not task and not web_gateway:
         try_switch_to_jca_if_git_repo(
             llm_group,
             tool_group,
@@ -1046,8 +1145,8 @@ def run_cli(
 
     # 在进入默认通用代理前，列出内置配置供选择（agent/multi_agent/roles）
     # 非交互模式下跳过内置角色/配置选择
-    # 如果指定了 -T/--task 参数，跳过配置选择
-    if not non_interactive and not task:
+    # 如果指定了 -T/--task 参数或 --web-gateway 参数，跳过配置选择
+    if not non_interactive and not task and not web_gateway:
         handle_builtin_config_selector(
             llm_group, tool_group, config_file, task, skip_config_selector
         )
@@ -1078,6 +1177,207 @@ def run_cli(
         # 静默忽略同步异常，不影响主流程
         pass
 
+    if web_gateway:
+        try:
+            import uvicorn
+
+            from jarvis.jarvis_web_gateway.app import create_app
+            from jarvis.jarvis_web_gateway.app import set_status_update_callback
+
+            auth_token = os.environ.get("JARVIS_AUTH_TOKEN")
+            if auth_token:
+                logger.info("Using JARVIS_AUTH_TOKEN for authentication")
+            elif gateway_password:
+                from jarvis.jarvis_utils.config import GLOBAL_CONFIG_DATA
+
+                if "gateway_auth" not in GLOBAL_CONFIG_DATA:
+                    GLOBAL_CONFIG_DATA["gateway_auth"] = {}
+                GLOBAL_CONFIG_DATA["gateway_auth"]["password"] = gateway_password
+                GLOBAL_CONFIG_DATA["gateway_auth"]["enable"] = True
+                GLOBAL_CONFIG_DATA["gateway_auth"]["allow_unset"] = False
+                logger.info("Using gateway_password for authentication (legacy mode)")
+
+            status_manager = get_agent_status_manager()
+
+            def on_status_update(status_str: str) -> None:
+                if status_str == "running":
+                    status_manager.set_running()
+                elif status_str == "waiting_multi":
+                    status_manager.set_waiting_multi()
+                elif status_str == "waiting_single":
+                    status_manager.set_waiting_single()
+
+            set_status_update_callback(on_status_update)
+
+            from fastapi import FastAPI, Request
+            from fastapi.responses import JSONResponse
+            from jarvis.jarvis_utils.globals import get_current_agent
+
+            custom_app = FastAPI()
+
+            @custom_app.get("/status")
+            async def get_status():
+                return {
+                    "execution_status": status_manager.get_status(),
+                    "status": "running",
+                }
+
+            @custom_app.get("/diff")
+            async def get_diff_api() -> dict:
+                return {"diff": "", "files": []}
+
+            @custom_app.get("/rules")
+            async def get_rules_api() -> dict:
+                from jarvis.jarvis_web_gateway.common_endpoints import get_rules_info
+
+                return get_rules_info()
+
+            @custom_app.get("/tools")
+            async def get_tools_api() -> dict:
+                from jarvis.jarvis_web_gateway.common_endpoints import get_tools_info
+
+                return get_tools_info()
+
+            @custom_app.get("/sessions")
+            async def list_sessions():
+                try:
+                    agent = get_current_agent()
+                    if agent is None:
+                        return {"success": False, "error": "No active agent"}
+
+                    sessions = agent.session._parse_session_files()
+                    session_list = []
+                    for (
+                        session_file,
+                        timestamp,
+                        session_name_item,
+                        commit_status,
+                    ) in sessions:
+                        session_list.append(
+                            {
+                                "file": session_file,
+                                "timestamp": timestamp,
+                                "name": session_name_item,
+                                "commit_status": commit_status,
+                            }
+                        )
+
+                    return {"success": True, "data": session_list}
+                except Exception as e:
+                    return {"success": False, "error": str(e)}
+
+            @custom_app.post("/sessions")
+            async def do_restore_session(request: dict):
+                try:
+                    session_file = request.get("session_file")
+                    if not session_file:
+                        return {"success": False, "error": "session_file is required"}
+
+                    agent = get_current_agent()
+                    if agent is None:
+                        return {"success": False, "error": "No active agent"}
+
+                    session_name_item = agent.session._read_session_name(session_file)
+                    result = agent.session.restore_session_from_file(
+                        session_file, session_name_item
+                    )
+
+                    if result:
+                        agent.first = False
+                        return {
+                            "success": True,
+                            "data": {
+                                "session_file": session_file,
+                                "session_name": session_name_item,
+                            },
+                        }
+                    return {"success": False, "error": "Failed to restore session"}
+                except Exception as e:
+                    return {"success": False, "error": str(e)}
+
+            @custom_app.post("/update_token")
+            async def update_token(request: Request):
+                try:
+                    auth_header = request.headers.get("Authorization", "")
+                    current_token = os.environ.get("JARVIS_AUTH_TOKEN", "")
+                    if not auth_header or not auth_header.startswith("Bearer "):
+                        return JSONResponse(
+                            status_code=401,
+                            content={"success": False, "error": "unauthorized"},
+                        )
+                    if auth_header[7:] != current_token:
+                        return JSONResponse(
+                            status_code=401,
+                            content={"success": False, "error": "invalid token"},
+                        )
+
+                    body = await request.json()
+                    new_token = body.get("token")
+                    if not new_token:
+                        return {"success": False, "error": "token is required"}
+
+                    os.environ["JARVIS_AUTH_TOKEN"] = new_token
+                    logger.info("Auth token updated via /update_token endpoint")
+                    return {"success": True}
+                except Exception as e:
+                    logger.error("Failed to update token: %s", e)
+                    return {"success": False, "error": str(e)}
+
+            @custom_app.post("/message")
+            async def receive_message(request: dict):
+                try:
+                    sender_id = request.get("sender_id")
+                    content = request.get("content")
+
+                    if not content:
+                        return {"success": False, "error": "content is required"}
+
+                    if sender_id:
+                        message = f"Agent {sender_id} 发来消息：{content}"
+                    else:
+                        message = f"Agent 发来消息：{content}"
+
+                    if jglobals.input_inject_callback is not None:
+                        jglobals.input_inject_callback(message)
+                        delivered = "instant"
+                    else:
+                        jglobals.input_buffer.append(message)
+                        delivered = "buffered"
+
+                    return {
+                        "success": True,
+                        "data": {
+                            "sender_id": sender_id,
+                            "content": content,
+                            "delivered": delivered,
+                        },
+                    }
+                except Exception as e:
+                    return {"success": False, "error": str(e)}
+
+            config = uvicorn.Config(
+                create_app(custom_app=custom_app),
+                host="127.0.0.1",
+                port=web_gateway_port,
+                log_level="info",
+            )
+            web_gateway_server = uvicorn.Server(config)
+            web_gateway_thread = threading.Thread(
+                target=web_gateway_server.run, daemon=True
+            )
+            web_gateway_thread.start()
+            PrettyOutput.auto_print(
+                f"🌐 Web Gateway 已启动: ws://127.0.0.1:{web_gateway_port}/ws"
+            )
+        except Exception as web_gateway_err:
+            try:
+                from jarvis.jarvis_gateway.manager import set_current_gateway
+
+                set_current_gateway(None)
+            except Exception:
+                pass
+            PrettyOutput.auto_print(f"⚠️ 启动 Web Gateway 失败: {str(web_gateway_err)}")
+
     # 运行主流程
     try:
         agent_manager = AgentManager(
@@ -1096,6 +1396,7 @@ def run_cli(
         output_content = ""
         exit_code = 0
         error_message = ""
+        agent = None
 
         try:
             # 初始化agent并运行任务，捕获输出
@@ -1179,6 +1480,27 @@ def run_cli(
             error_message = str(exec_err)
             raise
         finally:
+            if agent is not None:
+                try:
+                    agent.save_session()
+                except Exception:
+                    pass
+
+            if web_gateway_server is not None:
+                try:
+                    web_gateway_server.should_exit = True
+                    web_gateway_server.force_exit = True
+                    if web_gateway_thread is not None:
+                        web_gateway_thread.join(timeout=2)
+                except Exception:
+                    pass
+                try:
+                    from jarvis.jarvis_gateway.manager import set_current_gateway
+
+                    set_current_gateway(None)
+                except Exception:
+                    pass
+
             # 如果是tmux并行任务，写入状态文件
             if status_file_path:
                 try:

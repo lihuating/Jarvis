@@ -25,6 +25,8 @@ def create_agent(
     use_analysis: bool = False,
     need_summary: bool = False,
     rule_names: Optional[str] = None,
+    model_type: str = "normal",
+    quick_mode: bool = False,
     **kwargs: Any,
 ) -> AgentType:
     """
@@ -38,6 +40,8 @@ def create_agent(
         use_analysis: 是否使用代码分析
         need_summary: 是否需要总结
         rule_names: 规则名称
+        model_type: 模型类型，可选 "normal"、"smart"、"cheap"（默认 "normal"）
+        quick_mode: 快速模式，为True时强制关闭方法论、分析和规则加载
         **kwargs: 其他参数
 
     返回:
@@ -54,15 +58,24 @@ def create_agent(
     # 延迟导入，避免循环依赖
     from jarvis.jarvis_agent import Agent
 
+    # quick_mode: 强制关闭方法论、分析和规则
+    _use_methodology = False if quick_mode else use_methodology
+    _use_analysis = False if quick_mode else use_analysis
+    _rule_names = None if quick_mode else rule_names
+
+    # 自动去重：从 kwargs 中弹出 enable_auto_rule_select（如果存在），避免重复传递
+    _enable_auto_rule_select = kwargs.pop("enable_auto_rule_select", False)
+
     return Agent(  # type: ignore[return-value]
         system_prompt=system_prompt,
         name=name,
         non_interactive=non_interactive,
-        use_methodology=use_methodology,
-        use_analysis=use_analysis,
+        use_methodology=_use_methodology,
+        use_analysis=_use_analysis,
         need_summary=need_summary,
-        rule_names=rule_names,
-        enable_auto_rule_select=False,
+        rule_names=_rule_names,
+        enable_auto_rule_select=_enable_auto_rule_select,
+        model_type=model_type,
         **kwargs,
     )
 
@@ -80,6 +93,7 @@ def create_code_agent(
     force_save_memory: bool = False,
     tool_group: Optional[str] = None,
     rule_names: Optional[str] = None,
+    quick_mode: bool = False,
     **kwargs: Any,
 ) -> CodeAgentType:
     """
@@ -98,6 +112,7 @@ def create_code_agent(
         force_save_memory: 是否强制保存记忆
         tool_group: 工具组配置
         rule_names: 规则名称
+        quick_mode: 快速模式，为True时强制关闭方法论、分析和规则加载
         **kwargs: 其他参数
 
     返回:
@@ -115,19 +130,27 @@ def create_code_agent(
     # 延迟导入，避免循环依赖
     from jarvis.jarvis_code_agent.code_agent import CodeAgent
 
+    # quick_mode: 强制关闭方法论、分析和规则
+    _use_methodology = False if quick_mode else use_methodology
+    _use_analysis = False if quick_mode else use_analysis
+    _rule_names = None if quick_mode else rule_names
+
+    # 自动去重：从 kwargs 中弹出 enable_auto_rule_select（如果存在），避免重复传递
+    _enable_auto_rule_select = kwargs.pop("enable_auto_rule_select", False)
+
     return CodeAgent(  # type: ignore[return-value]
         name=name,
         non_interactive=non_interactive,
         need_summary=need_summary,
         summary_prompt=summary_prompt,
         append_tools=append_tools,
-        use_methodology=use_methodology,
-        use_analysis=use_analysis,
+        use_methodology=_use_methodology,
+        use_analysis=_use_analysis,
         disable_review=disable_review,
         enable_task_list_manager=enable_task_list_manager,
         force_save_memory=force_save_memory,
         tool_group=tool_group,
-        rule_names=rule_names,
-        enable_auto_rule_select=False,
+        rule_names=_rule_names,
+        enable_auto_rule_select=_enable_auto_rule_select,
         **kwargs,
     )

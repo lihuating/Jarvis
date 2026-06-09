@@ -4,9 +4,7 @@
 """
 
 import os
-import random
 import shutil
-import string
 import subprocess
 from datetime import datetime
 from typing import Optional
@@ -42,14 +40,6 @@ class WorktreeManager:
         如果有未提交的更改，自动执行提交。
         """
         try:
-            # 默认关闭自动提交：仅在配置项启用时才允许自动提交
-            try:
-                from jarvis.jarvis_utils.config import is_enable_auto_commit
-
-                if not is_enable_auto_commit():
-                    return
-            except Exception:
-                return
             if has_uncommitted_changes():
                 PrettyOutput.auto_print("⚠️  检测到主仓库有未提交的更改")
                 PrettyOutput.auto_print("🔄 自动提交主仓库更改...")
@@ -117,12 +107,13 @@ class WorktreeManager:
         """生成 worktree 分支名
 
         返回:
-            str: 格式为 jarvis-{project_name}-YYYYMMDD-HHMMSS-<4位随机字符>
+            str: 格式为 jarvis-{project_name}-YYYYMMDD-HHMMSS-fff（fff为毫秒）
         """
         project_name = self._get_project_name()
-        timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-        random_suffix = "".join(random.choices(string.ascii_lowercase, k=4))
-        return f"jarvis-{project_name}-{timestamp}-{random_suffix}"
+        # 生成时间戳，包含毫秒（微秒的前3位）
+        now = datetime.now()
+        timestamp = now.strftime("%Y%m%d-%H%M%S") + f"-{now.microsecond // 1000:03d}"
+        return f"jarvis-{project_name}-{timestamp}"
 
     def get_current_branch(self) -> str:
         """获取当前分支名
@@ -156,7 +147,7 @@ class WorktreeManager:
         2. 为运行时数据目录创建软链接（共享主仓库数据）
 
         这样设计的原因：
-        - .jarvis/rules/需要独立，避免分支间修改冲突
+        - .jarvis/rule.md和.jarvis/rules/需要独立，避免分支间修改冲突
         - .jarvis/memory/等运行时数据需要共享，避免重复和混乱
 
         参数:
@@ -176,6 +167,7 @@ class WorktreeManager:
         # 定义需要独立复制的Git跟踪文件/目录
         # 这些文件在每个worktree中独立，避免分支间修改冲突
         git_tracked_items = [
+            "rule.md",  # .jarvis/rule.md
             "rules",  # .jarvis/rules/
         ]
 
@@ -234,9 +226,18 @@ class WorktreeManager:
 
                 # 创建软链接：worktree/.jarvis/item -> 原仓库/.jarvis/item
                 try:
-                    os.symlink(src_path, dst_path)
-                    item_type = "目录" if os.path.isdir(src_path) else "文件"
-                    PrettyOutput.auto_print(f"🔗 已创建{item_type}软链接: {item}")
+                    if os.name == "nt":
+                        # Windows: use copy instead of symlink (requires admin privilege)
+                        if os.path.isdir(src_path):
+                            shutil.copytree(src_path, dst_path)
+                        else:
+                            shutil.copy2(src_path, dst_path)
+                        item_type = "目录" if os.path.isdir(src_path) else "文件"
+                        PrettyOutput.auto_print(f"📋 已复制{item_type}: {item}")
+                    else:
+                        os.symlink(src_path, dst_path)
+                        item_type = "目录" if os.path.isdir(src_path) else "文件"
+                        PrettyOutput.auto_print(f"🔗 已创建{item_type}软链接: {item}")
                 except Exception as e:
                     PrettyOutput.auto_print(f"⚠️ 创建软链接失败 {item}: {str(e)}")
 
@@ -276,16 +277,6 @@ class WorktreeManager:
 
         # 检测仓库是否有提交记录，如果没有则自动创建初始提交
         if not self._has_commits():
-            # 用户要求移除自动 git commit：当仓库没有初始提交时，不再自动创建，
-            # 而是提示用户手动完成。
-            from jarvis.jarvis_utils.config import is_enable_auto_commit
-
-            if not is_enable_auto_commit():
-                raise RuntimeError(
-                    "仓库没有任何提交记录，且已禁用自动创建初始提交。\n"
-                    "请先手动执行：`git commit --allow-empty -m \"Initial commit\"`"
-                )
-
             PrettyOutput.auto_print("⚠️ 仓库没有任何提交记录，自动创建初始提交...")
             try:
                 # 配置 git 用户信息（避免提交失败）

@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
 import json
+import logging
 import os
 import re
 from typing import Any
@@ -8,15 +9,19 @@ from typing import Generator
 from typing import List
 from typing import Optional
 from typing import Tuple
+from typing import Union
 from typing import cast
 
 from openai import OpenAI
 
 from jarvis.jarvis_platform.base import BasePlatform
-from jarvis.jarvis_utils.config import is_immediate_abort
-from jarvis.jarvis_utils.globals import get_interrupt
+from jarvis.jarvis_platform.content_types import ContentBlock
 from jarvis.jarvis_utils.output import PrettyOutput
 from jarvis.jarvis_utils.tag import ot, ct
+import jarvis.jarvis_utils.globals as jglobals
+
+# 配置日志
+logger = logging.getLogger(__name__)
 
 
 class OpenAIModel(BasePlatform):
@@ -33,6 +38,7 @@ class OpenAIModel(BasePlatform):
         """
         super().__init__(platform_type=platform_type, agent=agent)
         self.system_message = ""
+        self.extra_headers: Dict[str, str] = {}  # 初始化额外请求头
         llm_config = self._llm_config or {}
 
         # 如果传入了 llm_config（非空字典），优先从 llm_config 读取，避免环境变量污染
@@ -63,11 +69,23 @@ class OpenAIModel(BasePlatform):
             self.api_key = os.getenv("OPENAI_API_KEY")
             self.base_url = os.getenv("OPENAI_API_BASE", "https://api.openai.com/v1")
 
+        # 如果设置了代理节点，将 base_url 转为 Gateway 代理 URL
+        if jglobals.proxy_node and jglobals.master_url:
+            # 将 base_url 拼接为代理格式
+            # 注意：需要添加 /api/node/{node_id}/ 前缀以匹配 FastAPI 路由
+            self.base_url = f"{jglobals.master_url}/api/node/{jglobals.proxy_node}/http_proxy/{self.base_url}"
+            # 在代理模式下，添加 X-Jarvis-Token 头用于 Gateway 认证
+            # 从环境变量获取 Jarvis Token（由 Agent 启动时设置）
+            jarvis_token = os.getenv("JARVIS_AUTH_TOKEN")
+            if jarvis_token:
+                self.extra_headers["X-Jarvis-Token"] = jarvis_token
+
         # 只有当 llm_config 不为空但其中没有 openai_api_key，且环境变量也没有设置时，才打印警告
         # 如果 llm_config 为空字典，说明可能是配置还未加载完成，不打印警告（避免第一轮误报）
         if not self.api_key and llm_config:
-            PrettyOutput.auto_print("⚠️ OPENAI_API_KEY 未设置")
-
+            PrettyOutput.auto_print(
+                "⚠️ 未找到 OpenAI API Key，请在 llm_config 中设置 openai_api_key 或设置 OPENAI_API_KEY 环境变量"
+            )
         # model_name 已在基类 BasePlatform.__init__ 中根据 platform_type 设置
 
         # Optional: Inject extra HTTP headers via llm_config or environment variable
@@ -82,7 +100,8 @@ class OpenAIModel(BasePlatform):
                 else json.dumps(headers_value)
             )
 
-        self.extra_headers: Dict[str, str] = {}
+        # 注意：不要重新初始化 self.extra_headers，保留之前代理模式下设置的头
+        # self.extra_headers: Dict[str, str] = {}  # 已移除这行
         if headers_str:
             try:
                 parsed = (
@@ -95,11 +114,57 @@ class OpenAIModel(BasePlatform):
                     self.extra_headers = {str(k): str(v) for k, v in parsed.items()}
                 else:
                     PrettyOutput.auto_print(
-                        "⚠️ openai_extra_headers 应为 JSON 对象，如 {'X-Source':'jarvis'}"
+                        "⚠️ openai_extra_headers 格式错误，应为 JSON 字符串"
                     )
             except Exception as e:
                 PrettyOutput.auto_print(f"⚠️ 解析 openai_extra_headers 失败: {e}")
+        # 默认添加浏览器 User-Agent，避免被某些 API 网关拦截
+        if "User-Agent" not in self.extra_headers:
+            # 检测是否为 Kimi API，如果是则使用特定的 User-Agent
+            if self.base_url and "https://api.kimi.com" in self.base_url:
+                self.extra_headers["User-Agent"] = "KimiCLI/1.6"
+            else:
+                self.extra_headers["User-Agent"] = (
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                    "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+                )
 
+        # Optional: Set reasoning effort for o1 series models via llm_config or environment variable
+        # Expected format: openai_reasoning_effort="low" or "medium" or "high" or "xhigh"
+        reasoning_effort_value = llm_config.get("openai_reasoning_effort")
+        if reasoning_effort_value is None:
+            reasoning_effort_value = os.getenv("OPENAI_REASONING_EFFORT")
+
+        self.reasoning_effort: Optional[str] = (
+            reasoning_effort_value if reasoning_effort_value else None
+        )
+
+        # Optional: Set extra_body for additional API parameters via llm_config
+        # Expected format: openai_extra_body='{"key": "value"}' or dict
+        extra_body_value = llm_config.get("openai_extra_body")
+        if extra_body_value is None:
+            extra_body_str = os.getenv("OPENAI_EXTRA_BODY")
+        else:
+            extra_body_str = (
+                extra_body_value
+                if isinstance(extra_body_value, str)
+                else json.dumps(extra_body_value)
+            )
+
+        self.extra_body: Optional[Dict[str, Any]] = None
+        if extra_body_str:
+            try:
+                parsed = (
+                    json.loads(extra_body_str)
+                    if isinstance(extra_body_str, str)
+                    else extra_body_str
+                )
+                if isinstance(parsed, dict):
+                    self.extra_body = parsed
+                else:
+                    PrettyOutput.auto_print("⚠️ openai_proxy 格式错误，应为字符串")
+            except Exception as e:
+                PrettyOutput.auto_print(f"⚠️ 设置 OpenAI 代理失败: {e}")
         # Initialize OpenAI client, try to pass default headers if SDK supports it
         try:
             if self.extra_headers:
@@ -115,35 +180,13 @@ class OpenAIModel(BasePlatform):
             self.client = OpenAI(api_key=self.api_key, base_url=self.base_url)
             if self.extra_headers:
                 PrettyOutput.auto_print(
-                    "⚠️ 当前 OpenAI SDK 不支持 default_headers，未能注入额外 HTTP 头"
+                    "⚠️ 当前 OpenAI SDK 版本不支持 default_headers，已忽略 extra_headers"
                 )
-        self.messages: List[Dict[str, str]] = []
+        self.messages: List[Dict[str, Any]] = []
         self.system_message = ""
+        self._streaming_disabled: Optional[bool] = None
 
-    def set_platform_type(self, platform_type: str) -> None:
-        """切换 cheap/normal/smart 后同步 API 凭证与 Client（与基类 _llm_config 一致）。"""
-        super().set_platform_type(platform_type)
-        llm_config = self._llm_config or {}
-        if llm_config:
-            if "openai_api_key" in llm_config:
-                self.api_key = llm_config.get("openai_api_key")
-            if "openai_api_base" in llm_config:
-                self.base_url = llm_config.get("openai_api_base") or os.getenv(
-                    "OPENAI_API_BASE", "https://api.openai.com/v1"
-                )
-        try:
-            if self.extra_headers:
-                self.client = OpenAI(
-                    api_key=self.api_key,
-                    base_url=self.base_url,
-                    default_headers=self.extra_headers,
-                )
-            else:
-                self.client = OpenAI(api_key=self.api_key, base_url=self.base_url)
-        except TypeError:
-            self.client = OpenAI(api_key=self.api_key, base_url=self.base_url)
-
-    def set_messages(self, messages: List[Dict[str, str]]) -> None:
+    def set_messages(self, messages: List[Dict[str, Any]]) -> None:
         """替换对话历史
 
         参数:
@@ -167,11 +210,11 @@ class OpenAIModel(BasePlatform):
             1 for msg in non_system_messages if msg.get("role") == "user"
         )
 
-    def get_messages(self) -> List[Dict[str, str]]:
+    def get_messages(self) -> List[Dict[str, Any]]:
         """获取对话历史
 
         返回:
-            List[Dict[str, str]]: 对话历史列表，每个元素包含 role 和 content
+            List[Dict[str, Any]]: 对话历史列表，每个元素包含 role 和 content
         """
         return self.messages
 
@@ -238,15 +281,17 @@ class OpenAIModel(BasePlatform):
         self.system_message = message
         self.messages.append({"role": "system", "content": self.system_message})
 
-    def chat(self, message: str) -> Generator[str, None, None]:
+    def chat(
+        self, message: Union[str, List[ContentBlock]]
+    ) -> Generator[Tuple[str, str], None, None]:
         """
         执行对话并返回生成器
 
         参数:
-            message: 用户输入的消息内容
+            message: 用户输入的消息内容，支持纯文本(str)或多模态内容(List[ContentBlock])
 
         返回:
-            Generator[str, None, None]: 生成器，逐块返回AI响应内容
+            Generator[Tuple[str, str], None, None]: 生成器，逐块返回AI响应内容
 
         异常:
             当API调用失败时会抛出异常并打印错误信息
@@ -255,109 +300,158 @@ class OpenAIModel(BasePlatform):
         messages_before_user = len(self.messages)
 
         try:
-            self.messages.append({"role": "user", "content": message})
+            # 处理多模态消息
+            if isinstance(message, str):
+                user_message_content = message
+            else:
+                # 检查多模态支持，如果不支持则降级为纯文本
+                if not self.supports_multimodal():
+                    from jarvis.jarvis_utils.output import PrettyOutput
 
-            import time
+                    PrettyOutput.auto_print(
+                        "⚠️ 当前模型不支持多模态输入，已自动降级为纯文本模式"
+                    )
+                    # 只保留文本内容
+                    text_parts = [
+                        block["text"] for block in message if block["type"] == "text"
+                    ]
+                    user_message_content = (
+                        "\n".join(text_parts) if text_parts else "[多模态内容已跳过]"
+                    )
+                else:
+                    # 将 List[ContentBlock] 转换为 OpenAI API 期望的格式
+                    user_message_content = []
+                    for block in message:
+                        if block["type"] == "text":
+                            user_message_content.append(
+                                {"type": "text", "text": block["text"]}
+                            )
+                        elif block["type"] == "image_url":
+                            # OpenAI API 期望 image_url 是一个对象，包含 url 字段
+                            image_url_data = block["image_url"]
+                            if isinstance(image_url_data, str):
+                                image_url_data = {"url": image_url_data}
+                            user_message_content.append(
+                                {"type": "image_url", "image_url": image_url_data}
+                            )
+                    else:
+                        # 未知类型，忽略或报错
+                        pass
 
-            def _stream_once() -> str:
-                """执行一次流式请求并返回完整文本（同时 yield 增量）。"""
-                response = self.client.chat.completions.create(
-                    model=self.model_name,  # Use the configured model name
-                    messages=self.messages,  # type: ignore[arg-type]
-                    stream=True,
-                )
+            self.messages.append({"role": "user", "content": user_message_content})
 
-                full = ""
+            # 循环处理，直到不是因为长度限制而结束
+            # 构造 API 调用参数
+            use_streaming = not self._streaming_disabled
+            api_params: Dict[str, Any] = {
+                "model": self.model_name,
+                "messages": self.messages,
+                "stream": use_streaming,
+                "temperature": 0.1,
+                "top_p": 0.3,
+            }
+            # 只有在配置了 reasoning_effort 时才添加 reasoning_effort 参数
+            if self.reasoning_effort:
+                api_params["reasoning_effort"] = self.reasoning_effort
+
+            # 只有在配置了 extra_body 时才添加 extra_body 参数
+            if self.extra_body:
+                api_params["extra_body"] = self.extra_body
+
+            # 如果没有指定 max_tokens，设置为 1M 确保有足够空间处理 reasoning_content
+            if "max_tokens" not in api_params:
+                api_params["max_tokens"] = 4096
+
+            response = self.client.chat.completions.create(**api_params)
+
+            full_response = ""
+            full_reasoning = ""
+
+            if use_streaming:
+                # 流式模式：迭代 chunk 增量输出
                 for chunk in response:
-                    if is_immediate_abort() and get_interrupt():
-                        break
+                    # 使用类型注解明确chunk的类型，避免union类型错误
                     from openai.types.chat import ChatCompletionChunk
 
                     chunk_typed: ChatCompletionChunk = cast(ChatCompletionChunk, chunk)
                     if chunk_typed.choices and len(chunk_typed.choices) > 0:
                         choice = chunk_typed.choices[0]
-                        if choice.delta and choice.delta.content:
-                            text = choice.delta.content
-                            full += text
-                            yield text  # type: ignore[misc]
-                return full
 
-            def _non_stream_once() -> str:
-                """非流式兜底：在流式不稳定时尽量返回答案。"""
-                resp = self.client.chat.completions.create(
-                    model=self.model_name,
-                    messages=self.messages,  # type: ignore[arg-type]
-                    stream=False,
-                )
-                try:
-                    content = resp.choices[0].message.content  # type: ignore[union-attr]
-                    return content or ""
-                except Exception:
-                    return ""
-
-            # 流式优先：首 token 超时/网络抖动时重试一次；仍失败则降级到非流式
-            full_response = ""
-            try:
-                # 通过生成器桥接：_stream_once 内部会 yield 增量
-                stream_gen = _stream_once()
-                # 手动消费生成器以拼 full_response
-                for piece in stream_gen:  # type: ignore[assignment]
-                    if is_immediate_abort() and get_interrupt():
-                        break
-                    full_response += piece
-                    yield piece
-            except Exception as e1:
-                # 短退避后重试一次（改善短暂网络抖动导致的首 token 超时）
-                time.sleep(0.3)
-                try:
-                    stream_gen = _stream_once()
-                    for piece in stream_gen:  # type: ignore[assignment]
-                        if is_immediate_abort() and get_interrupt():
-                            break
-                        full_response += piece
-                        yield piece
-                except Exception:
-                    # 降级为非流式
-                    full_response = _non_stream_once()
-                    if full_response:
-                        yield full_response
-                    else:
-                        raise e1
-
-            if full_response:
-                self.messages.append({"role": "assistant", "content": full_response})
+                        # 获取内容增量
+                        if choice.delta:
+                            # 处理 reasoning_content（推理过程，如 GLM 模型）
+                            if (
+                                hasattr(choice.delta, "reasoning_content")
+                                and choice.delta.reasoning_content
+                            ):
+                                text: str = str(choice.delta.reasoning_content)
+                                full_reasoning = full_reasoning + text
+                                yield ("reason", text)
+                            # 处理 content（正文内容）
+                            if choice.delta.content:
+                                text: str = str(choice.delta.content)
+                                full_response = full_response + text
+                                yield ("content", text)
+                if full_response:
+                    # 曾经成功过，说明流式请求是可以的
+                    self._streaming_disabled = False
+                    assistant_message = {"role": "assistant", "content": full_response}
+                    if full_reasoning:
+                        assistant_message["reasoning_content"] = full_reasoning
+                    self.messages.append(assistant_message)
+                else:
+                    # 未设置的状态才设置为True
+                    if self._streaming_disabled is None:
+                        self._streaming_disabled = True
+                    fallback_params = api_params.copy()
+                    fallback_params["stream"] = False
+                    fallback_response = self.client.chat.completions.create(
+                        **fallback_params
+                    )
+                    if fallback_response.choices and len(fallback_response.choices) > 0:
+                        fallback_message = fallback_response.choices[0].message
+                        fallback_reasoning = (
+                            getattr(fallback_message, "reasoning_content", None) or ""
+                        )
+                        fallback_text = fallback_message.content or ""
+                        fallback_content = fallback_text
+                        if fallback_content:
+                            assistant_message = {
+                                "role": "assistant",
+                                "content": fallback_content,
+                            }
+                            if fallback_reasoning:
+                                assistant_message["reasoning_content"] = (
+                                    fallback_reasoning
+                                )
+                            self.messages.append(assistant_message)
+                            yield ("content", fallback_content)
+                            return
+                    raise Exception("No response from model")
             else:
-                raise Exception("No response from model")
+                # 非流式模式：直接获取完整响应
+                if response.choices and len(response.choices) > 0:
+                    response_message = response.choices[0].message
+                    # 处理 reasoning_content（推理过程，如 GLM 模型）
+                    reasoning = (
+                        getattr(response_message, "reasoning_content", None) or ""
+                    )
+                    content = response_message.content or ""
+                    full_response = content
+                    full_reasoning = reasoning
+                if full_response:
+                    assistant_message = {"role": "assistant", "content": full_response}
+                    if full_reasoning:
+                        assistant_message["reasoning_content"] = full_reasoning
+                    self.messages.append(assistant_message)
+                    yield ("content", full_response)
+                else:
+                    raise Exception("No response from model")
         except Exception as e:
             # 失败时回滚：移除已添加的用户消息
             if len(self.messages) > messages_before_user:
                 self.messages = self.messages[:messages_before_user]
             raise Exception(f"Chat failed: {str(e)}")
-
-    def chat_non_stream(self, message: str) -> str:
-        """非流式对话（用于流式失败降级兜底）。"""
-        messages_before_user = len(self.messages)
-        try:
-            self.messages.append({"role": "user", "content": message})
-            resp = self.client.chat.completions.create(
-                model=self.model_name,
-                messages=self.messages,  # type: ignore[arg-type]
-                stream=False,
-            )
-            content = ""
-            try:
-                if resp.choices and resp.choices[0].message and resp.choices[0].message.content:
-                    content = resp.choices[0].message.content
-            except Exception:
-                content = ""
-            if not content:
-                raise Exception("No response from model (non-stream)")
-            self.messages.append({"role": "assistant", "content": content})
-            return content
-        except Exception as e:
-            if len(self.messages) > messages_before_user:
-                self.messages = self.messages[:messages_before_user]
-            raise Exception(f"Non-stream chat failed: {str(e)}")
 
     def name(self) -> str:
         """
@@ -413,7 +507,7 @@ class OpenAIModel(BasePlatform):
 
         # 如果非system消息少于等于10条，无法裁剪
         if len(non_system_messages) <= 10:
-            PrettyOutput.auto_print("⚠️ 警告：非system消息不足10条，无法裁剪")
+            PrettyOutput.auto_print("⚠️ 非系统消息数量不足，无法裁剪")
             return False
 
         # 丢弃开头的10条非system消息
@@ -431,9 +525,7 @@ class OpenAIModel(BasePlatform):
             )
             return True
         else:
-            PrettyOutput.auto_print(
-                f"⚠️ 警告：已裁剪{trimmed_count}条消息，但仍无剩余token"
-            )
+            PrettyOutput.auto_print(f"⚠️ 裁剪失败：剩余token {remaining_tokens} 不足")
             return False
 
     @classmethod

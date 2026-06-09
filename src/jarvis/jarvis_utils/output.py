@@ -11,17 +11,21 @@
 
 from abc import ABC
 from abc import abstractmethod
-from contextlib import contextmanager
 from dataclasses import dataclass
 from enum import Enum
 import re
 from typing import Any
+from typing import Callable
 from typing import Dict
-from typing import List
+from typing import Generator
 from typing import Iterator
+from typing import List
+from typing import Literal
 from typing import Optional
 from typing import Tuple
 from datetime import datetime
+import threading
+from contextlib import contextmanager
 
 from pygments.lexers import guess_lexer
 from pygments.util import ClassNotFound
@@ -31,185 +35,14 @@ from rich.text import Text
 
 from jarvis.jarvis_utils.config import get_pretty_output
 from jarvis.jarvis_utils.config import is_print_error_traceback
-from jarvis.jarvis_utils.config import get_show_timestamp
 from jarvis.jarvis_utils.globals import console
-from jarvis.jarvis_utils.globals import get_agent
 from jarvis.jarvis_utils.globals import get_agent_list
-from jarvis.jarvis_utils import globals as jarvis_globals
-from jarvis.jarvis_utils.globals import TRUNCATED_HISTORY_MAX_SIZE
-
-import threading
-import time
-
-
-# ---- 全局“无输出提示”看门狗 -------------------------------------------------------------
-#
-# 需求：无论处于哪个阶段，只要超过 N 秒没有任何输出，就提示一次“思考中…”，
-# 防止长耗时操作（Init 索引/LLM、磁盘扫描、网络等待等）看起来像卡死。
-#
-# 实现：
-# - 以 emit_output() 为统一出口：任何 PrettyOutput/Panel 等输出都会触发 touch。
-# - 后台线程轮询检测“距最后输出时间”是否超过阈值，超过则打印提示并限频。
-# - 线程默认懒启动：第一次输出时启动，避免 import 阶段就起线程影响测试。
-_OUTPUT_WATCHDOG_STARTED = False
-_OUTPUT_WATCHDOG_LOCK = threading.Lock()
-_LAST_OUTPUT_TS = 0.0
-_OUTPUT_ACTIVITY_EVENT = threading.Event()
-_WATCHDOG_PAUSE_LOCK = threading.Lock()
-_WATCHDOG_PAUSE_COUNT = 0
-
-# 默认阈值：10 秒无输出提示；每次提示后至少间隔 10 秒再提示一次
-_WATCHDOG_SILENCE_THRESHOLD_S = 10.0
-_WATCHDOG_POLL_INTERVAL_S = 1.0
-
-
-def pause_output_watchdog() -> None:
-    """暂停全局“无输出提示”看门狗（支持嵌套）。用于等待用户输入等正常静默场景。"""
-    global _WATCHDOG_PAUSE_COUNT
-    with _WATCHDOG_PAUSE_LOCK:
-        _WATCHDOG_PAUSE_COUNT += 1
-    # 若正在显示 Live thinking，触发活动事件让其尽快退出
-    try:
-        _OUTPUT_ACTIVITY_EVENT.set()
-    except Exception:
-        pass
-
-
-def resume_output_watchdog() -> None:
-    """恢复全局“无输出提示”看门狗（支持嵌套）。"""
-    global _WATCHDOG_PAUSE_COUNT
-    with _WATCHDOG_PAUSE_LOCK:
-        _WATCHDOG_PAUSE_COUNT = max(0, _WATCHDOG_PAUSE_COUNT - 1)
-    # 恢复时视为一次“输出活动”，避免立刻触发提示
-    try:
-        _touch_output()
-    except Exception:
-        pass
-
-
-class OutputWatchdogPaused:
-    """上下文管理器：作用域内暂停无输出看门狗。"""
-
-    def __enter__(self) -> "OutputWatchdogPaused":
-        pause_output_watchdog()
-        return self
-
-    def __exit__(self, exc_type, exc, tb) -> None:
-        resume_output_watchdog()
-
-
-@contextmanager
-def status_spinner(
-    message: str,
-    *,
-    spinner: str = "dots",
-    console: Optional[Any] = None,
-    **status_kwargs: Any,
-) -> Iterator[Any]:
-    """在终端显示 Rich ``Status`` 行期间暂停全局「无输出 → 思考中」看门狗。
-
-    ``Status`` 与看门狗都使用 ``Live`` 刷新同一行，长时间静默时会冲突；业务侧应优先用本函数，
-    而不是裸用 ``rich.status.Status`` 再手动包 ``OutputWatchdogPaused``。
-    """
-    from rich.status import Status
-
-    from jarvis.jarvis_utils.globals import console as default_console
-
-    cons = console if console is not None else default_console
-    with OutputWatchdogPaused():
-        with Status(message, spinner=spinner, console=cons, **status_kwargs) as st:
-            yield st
-
-
-def _is_watchdog_paused() -> bool:
-    try:
-        with _WATCHDOG_PAUSE_LOCK:
-            return _WATCHDOG_PAUSE_COUNT > 0
-    except Exception:
-        return False
+from jarvis.jarvis_utils.globals import get_agent
 
 
 def _touch_output() -> None:
-    global _LAST_OUTPUT_TS
-    _LAST_OUTPUT_TS = time.time()
-    try:
-        _OUTPUT_ACTIVITY_EVENT.set()
-    except Exception:
-        pass
-    _ensure_output_watchdog_started()
-
-
-def _ensure_output_watchdog_started() -> None:
-    global _OUTPUT_WATCHDOG_STARTED
-    if _OUTPUT_WATCHDOG_STARTED:
-        return
-    with _OUTPUT_WATCHDOG_LOCK:
-        if _OUTPUT_WATCHDOG_STARTED:
-            return
-        _OUTPUT_WATCHDOG_STARTED = True
-
-        def _watchdog_loop() -> None:
-            # 初始化：若尚未 touch，避免立刻提示
-            if _LAST_OUTPUT_TS <= 0:
-                _touch_output()
-            live_active = False
-            while True:
-                try:
-                    # 等待用户输入等场景：暂停看门狗，避免误提示
-                    if _is_watchdog_paused():
-                        time.sleep(_WATCHDOG_POLL_INTERVAL_S)
-                        continue
-
-                    now = time.time()
-                    silent_for = now - (_LAST_OUTPUT_TS or now)
-                    # 静默超过阈值时，展示“思考中...”动态提示，直到任意输出恢复
-                    if (
-                        (not live_active)
-                        and silent_for >= _WATCHDOG_SILENCE_THRESHOLD_S
-                        # 与 stream_chat_with_panel 等使用的 Rich Live 互斥：同 console 只能有一个 Live
-                        and not jarvis_globals.get_in_chat()
-                    ):
-                        live_active = True
-                        try:
-                            from rich.live import Live
-                            from rich.text import Text
-
-                            # 清空活动事件，进入等待“有输出恢复”的阶段
-                            try:
-                                _OUTPUT_ACTIVITY_EVENT.clear()
-                            except Exception:
-                                pass
-
-                            thinking_dots = 0
-                            text_content = Text("思考中.", style="bright_cyan")
-                            with Live(
-                                text_content, refresh_per_second=4, transient=True
-                            ) as live:
-                                # 直到检测到任何输出（emit_output touch）才退出
-                                while True:
-                                    if _is_watchdog_paused():
-                                        break
-                                    try:
-                                        if _OUTPUT_ACTIVITY_EVENT.wait(timeout=0.4):
-                                            break
-                                    except Exception:
-                                        break
-                                    thinking_dots = (thinking_dots + 1) % 4
-                                    dots_str = "." * (thinking_dots + 1)
-                                    live.update(
-                                        Text(f"思考中{dots_str}", style="bright_cyan")
-                                    )
-                        except Exception:
-                            # Live 失败则静默，不影响主流程
-                            pass
-                        finally:
-                            live_active = False
-                except Exception:
-                    pass
-                time.sleep(_WATCHDOG_POLL_INTERVAL_S)
-
-        t = threading.Thread(target=_watchdog_loop, daemon=True)
-        t.start()
+    """刷新「最后输出时间」，供 show_thinking_until 等逻辑使用。"""
+    pass
 
 
 # Rich支持的标准颜色列表
@@ -318,6 +151,12 @@ class OutputType(Enum):
     CHEAP_MODEL = "CHEAP_MODEL"
     NORMAL_MODEL = "NORMAL_MODEL"
     SMART_MODEL = "SMART_MODEL"
+    # 流式输出类型
+    STREAM_START = "STREAM_START"
+    STREAM_CHUNK = "STREAM_CHUNK"
+    STREAM_END = "STREAM_END"
+    # Diff 可视化类型
+    DIFF = "DIFF"
 
 
 # 输出类型图标映射（统一的图标定义）
@@ -344,6 +183,10 @@ OUTPUT_ICONS = {
     OutputType.CHEAP_MODEL: "💰",
     OutputType.NORMAL_MODEL: "⭐",
     OutputType.SMART_MODEL: "🧠",
+    OutputType.STREAM_START: "⏳",
+    OutputType.STREAM_CHUNK: "▶️",
+    OutputType.STREAM_END: "✅",
+    OutputType.DIFF: "🔄",
 }
 
 
@@ -372,6 +215,9 @@ EMOJI_TO_OUTPUT_TYPE = {
     "💰": OutputType.CHEAP_MODEL,
     "⭐": OutputType.NORMAL_MODEL,
     "🧠": OutputType.SMART_MODEL,
+    "🎬": OutputType.STREAM_START,
+    "▶️": OutputType.STREAM_CHUNK,
+    "🏁": OutputType.STREAM_END,
 }
 
 
@@ -523,13 +369,18 @@ class ConsoleOutputSink(OutputSink):
             frame=True,
             meta={"icon": OUTPUT_ICONS[OutputType.SMART_MODEL]},
         ),
+        OutputType.DIFF: RichStyle(
+            color="cyan",
+            frame=True,
+            meta={"icon": OUTPUT_ICONS[OutputType.DIFF]},
+        ),
     }
 
     # 文字颜色映射
     _TEXT_COLORS = {
         OutputType.SYSTEM: "cyan",
         OutputType.CODE: "green",
-        OutputType.RESULT: "grey70",
+        OutputType.RESULT: "blue",
         OutputType.ERROR: "bright_red",
         OutputType.INFO: "grey70",
         OutputType.PLANNING: "magenta",
@@ -549,6 +400,7 @@ class ConsoleOutputSink(OutputSink):
         OutputType.CHEAP_MODEL: "grey58",
         OutputType.NORMAL_MODEL: "bright_blue",
         OutputType.SMART_MODEL: "bright_magenta",
+        OutputType.DIFF: "cyan",
     }
 
     @staticmethod
@@ -605,14 +457,21 @@ class ConsoleOutputSink(OutputSink):
             )
 
     def emit(self, event: OutputEvent) -> None:
+        # 流式输出类型由 Gateway 处理，CLI 模式忽略
+        if event.output_type in (
+            OutputType.STREAM_START,
+            OutputType.STREAM_CHUNK,
+            OutputType.STREAM_END,
+        ):
+            return
+
         # 章节输出
         if event.section is not None:
             # 使用带背景色和样式的Text替代Panel
             style_obj = self._SECTION_STYLES.get(
                 event.output_type, RichStyle(color="white")
             )
-            # 所有章节标题都靠左对齐
-            text = Text(f"\n{event.section}\n", style=style_obj, justify="left")
+            text = Text(f"\n{event.section}\n", style=style_obj, justify="center")
             if get_pretty_output():
                 console.print(text)
             else:
@@ -625,19 +484,13 @@ class ConsoleOutputSink(OutputSink):
             if event.lang is not None
             else PrettyOutput._detect_language(event.text, default_lang="markdown")
         )
-        # 大块输出降级：超长文本使用纯文本，避免 Syntax/Pygments 带来的排版开销
-        # 经验阈值：>8000 字符或 >240 行时关闭高亮
-        lines_count = event.text.count("\n") + 1
-        use_syntax = not (len(event.text) > 8000 or lines_count > 240)
-        content = (
-            Syntax(
-                event.text,
-                lang,
-                theme="monokai",
-                word_wrap=True,
-            )
-            if use_syntax
-            else Text(event.text, overflow="fold")
+
+        content = Syntax(
+            event.text,
+            lang,
+            theme="monokai",
+            word_wrap=True,
+            # 使用终端默认背景色
         )
         # 直接输出带背景色的内容，不再使用Panel包装
         agent_name = PrettyOutput._format(event.output_type, event.timestamp)
@@ -670,110 +523,60 @@ class ConsoleOutputSink(OutputSink):
                 combined_text.append(header_text)
                 combined_text.append(" ")
 
-                # 第一行：检测并高亮进度信息；##/### 标题行使用醒目样式
+                # 第一行：检测并高亮进度信息
                 first_line = lines[0]
-                if first_line.strip().startswith(("#", "##", "###")):
-                    colored_first_line = Text(
-                        first_line, style=RichStyle(bold=True, color="bright_cyan")
-                    )
-                else:
-                    colored_first_line = self._highlight_progress_text(
-                        first_line, event.output_type, self._TEXT_COLORS
-                    )
+                colored_first_line = self._highlight_progress_text(
+                    first_line, event.output_type, self._TEXT_COLORS
+                )
 
                 combined_text.append(colored_first_line)
                 console.print(combined_text)
 
-                # 后续行使用缩进，保持视觉层次；##/### 标题行加粗+亮青突出显示
+                # 后续行使用缩进，保持视觉层次
                 for line in lines[1:]:
                     if line.strip():  # 非空行
-                        line_stripped = line.strip()
-                        is_heading = line_stripped.startswith(
-                            ("#", "##", "###", "####", "#####", "######")
-                        )
                         # 检测列表项标记并适当格式化
+                        line_stripped = line.strip()
                         is_list_item = line_stripped.startswith(("- ", "* ", "• ")) or (
                             line_stripped
                             and line_stripped[0].isdigit()
                             and ". " in line_stripped[:5]
                         )
 
-                        # 如果已经是缩进的，保持原样；标题和列表项（1. / - * •）靠左不缩进，其余续行缩进
+                        # 如果已经是缩进的，保持原样；否则添加缩进
                         if line.startswith(("   ", "  ", "\t")):
-                            display_line = line
-                        elif is_heading or is_list_item:
                             display_line = line
                         else:
                             display_line = f"   {line}"
 
-                        if is_heading:
-                            indented_line = Text(
-                                display_line,
-                                style=RichStyle(bold=True, color="bright_cyan"),
-                            )
-                        else:
-                            indented_line = Text(
-                                display_line,
-                                style=RichStyle(
-                                    color=_safe_color_get(
-                                        self._TEXT_COLORS[event.output_type], "white"
-                                    ),
-                                    dim=not is_list_item
-                                    and line.startswith(
-                                        ("   ", "  ", "\t")
-                                    ),  # 已缩进的非列表项稍微变暗
+                        indented_line = Text(
+                            display_line,
+                            style=RichStyle(
+                                color=_safe_color_get(
+                                    self._TEXT_COLORS[event.output_type], "white"
                                 ),
-                            )
+                                dim=not is_list_item
+                                and line.startswith(
+                                    ("   ", "  ", "\t")
+                                ),  # 已缩进的非列表项稍微变暗
+                            ),
+                        )
                         console.print(indented_line)
                     else:
                         console.print()  # 空行保持原样
             else:
-                # 单行或简单多行：合并header和content；markdown 多行时对 ##/### 标题行突出显示
+                # 单行或简单多行：合并header和content在同一行显示
                 combined_text = Text()
                 combined_text.append(header_text)
                 combined_text.append(" ")
 
-                if lang == "markdown" and "\n" in event.text:
-                    # 多行 markdown：首行与 header 同排，后续行逐行输出并高亮 ## 标题
-                    lines = event.text.split("\n")
-                    first_line = lines[0]
-                    if first_line.strip().startswith(("#", "##", "###")):
-                        combined_text.append(
-                            Text(
-                                first_line,
-                                style=RichStyle(bold=True, color="bright_cyan"),
-                            )
-                        )
-                    else:
-                        colored_first = self._highlight_progress_text(
-                            first_line, event.output_type, self._TEXT_COLORS
-                        )
-                        combined_text.append(colored_first)
-                    console.print(combined_text)
-                    for line in lines[1:]:
-                        if line.strip().startswith(
-                            ("#", "##", "###", "####", "#####", "######")
-                        ):
-                            console.print(
-                                Text(
-                                    line,
-                                    style=RichStyle(bold=True, color="bright_cyan"),
-                                )
-                            )
-                        elif line.strip():
-                            colored_line = self._highlight_progress_text(
-                                line, event.output_type, self._TEXT_COLORS
-                            )
-                            console.print(colored_line)
-                        else:
-                            console.print()
-                else:
-                    # 单行或非 markdown：沿用原逻辑
-                    colored_content = self._highlight_progress_text(
-                        event.text, event.output_type, self._TEXT_COLORS
-                    )
-                    combined_text.append(colored_content)
-                    console.print(combined_text)
+                # 检测并高亮进度信息（单行情况）
+                colored_content = self._highlight_progress_text(
+                    event.text, event.output_type, self._TEXT_COLORS
+                )
+                combined_text.append(colored_content)
+
+                console.print(combined_text)
         else:
             console.print(content)
         if event.traceback or (
@@ -788,20 +591,54 @@ class ConsoleOutputSink(OutputSink):
 # 模块级输出分发器（默认注册控制台后端）
 _output_sinks: List[OutputSink] = [ConsoleOutputSink()]
 
+# 输出锁，确保多线程输出不会混乱
+_output_lock = threading.Lock()
+
 
 def emit_output(event: OutputEvent) -> None:
     """向所有已注册的输出后端广播事件。"""
-    # 任意输出都算“有进展”，用于无输出看门狗
+    # 先检查是否需要跳过控制台输出（避免向终端打印 Gateway 专用数据）
+    context = event.context or {}
+    skip_console = context.get("_gateway_skip", False)
+
+    # 如果没有设置跳过标记，向所有输出后端广播事件
+    if not skip_console:
+        with _output_lock:
+            for sink in list(_output_sinks):
+                try:
+                    sink.emit(event)
+                except Exception as e:
+                    # 后端故障不影响其他后端
+                    console.print(f"[输出后端错误] {sink.__class__.__name__}: {e}")
+
     try:
-        _touch_output()
+        from jarvis.jarvis_gateway.events import GatewayOutputEvent
+        from jarvis.jarvis_gateway.manager import get_current_gateway
     except Exception:
-        pass
-    for sink in list(_output_sinks):
-        try:
-            sink.emit(event)
-        except Exception as e:
-            # 后端故障不影响其他后端
-            console.print(f"[输出后端错误] {sink.__class__.__name__}: {e}")
+        return
+
+    gateway = get_current_gateway()
+    if gateway is None:
+        return
+
+    gateway_context = dict(context) if context else None
+    if gateway_context:
+        gateway_context.pop("_gateway_skip", None)
+
+    try:
+        gateway.emit_output(
+            GatewayOutputEvent(
+                text=event.text,
+                output_type=event.output_type.value,
+                timestamp=event.timestamp,
+                lang=event.lang,
+                traceback=event.traceback,
+                section=event.section,
+                context=gateway_context,
+            )
+        )
+    except Exception as e:
+        console.print(f"[网关输出错误] {gateway.__class__.__name__}: {e}")
 
 
 class PrettyOutput:
@@ -880,10 +717,6 @@ class PrettyOutput:
         返回：
             str: 包含时间戳和Agent名字的字符串
         """
-        # 检查配置是否允许显示时间戳
-        if not get_show_timestamp():
-            return ""
-        
         agent_info = get_agent_list()
         if not agent_info:
             return ""
@@ -919,40 +752,58 @@ class PrettyOutput:
         timestamp: bool = True,
         lang: Optional[str] = None,
         traceback: bool = False,
+        context: Optional[Dict[str, Any]] = None,
     ) -> None:
         """
         使用样式和语法高亮打印格式化输出（已抽象为事件 + Sink 机制）。
         内部接口，不建议直接使用，请使用 auto_print 代替。
         保持对现有调用方的向后兼容，同时为TUI/日志等前端预留扩展点。
         """
+        # 自动获取上下文信息
+        if context is None:
+            context = {}
+
+        # 获取当前 agent 名称
+        try:
+            from jarvis.jarvis_utils.globals import get_current_agent_name
+
+            agent_name = get_current_agent_name()
+            if agent_name and "agent_name" not in context:
+                context["agent_name"] = agent_name
+        except Exception:
+            pass
+
+        # 获取当前 ARCHER 工作流阶段
+        try:
+            from jarvis.jarvis_utils.globals import get_current_agent
+
+            agent = get_current_agent()
+            if agent and hasattr(agent, "state_manager"):
+                current_mode = agent.state_manager.get_mode()
+                if current_mode and "current_mode" not in context:
+                    context["current_mode"] = current_mode
+        except Exception:
+            pass
+
+        # 获取是否无交互模式
+        try:
+            from jarvis.jarvis_utils.config import is_non_interactive
+
+            non_interactive = is_non_interactive()
+            if "non_interactive" not in context:
+                context["non_interactive"] = non_interactive
+        except Exception:
+            pass
+
         event = OutputEvent(
             text=text,
             output_type=output_type,
             timestamp=timestamp,
             lang=lang,
             traceback=traceback,
+            context=context if context else None,
         )
         emit_output(event)
-
-    @staticmethod
-    def flush_after_nested_prompts() -> None:
-        """在内置命令串联多层 prompt_toolkit 后、再次打开多行输入前刷新终端缓冲。
-
-        避免 Rich 与 prompt_toolkit 交替控制终端时，上一条 PrettyOutput 与下一轮用户输入回显顺序错乱。
-        """
-        import sys
-
-        try:
-            sys.stdout.flush()
-            sys.stderr.flush()
-        except Exception:
-            pass
-        try:
-            out_f = getattr(console, "file", None)
-            if out_f is not None and hasattr(out_f, "flush"):
-                out_f.flush()
-        except Exception:
-            pass
 
     @staticmethod
     def section(title: str, output_type: OutputType = OutputType.INFO) -> None:
@@ -966,21 +817,33 @@ class PrettyOutput:
         )
         emit_output(event)
 
+    @staticmethod
     # Sink管理（为外部注册自定义后端预留）
     @staticmethod
     def add_sink(sink: OutputSink) -> None:
         """注册一个新的输出后端。"""
-        _output_sinks.append(sink)
+        with _output_lock:
+            _output_sinks.append(sink)
+
+    @staticmethod
+    def remove_sink(sink: OutputSink) -> None:
+        """移除指定输出后端；若不存在则忽略。"""
+        with _output_lock:
+            try:
+                _output_sinks.remove(sink)
+            except ValueError:
+                pass
 
     @staticmethod
     def clear_sinks(keep_default: bool = True) -> None:
         """清空已注册的输出后端；可选择保留默认控制台后端。"""
-        if keep_default:
-            globals()["_output_sinks"] = [
-                s for s in _output_sinks if isinstance(s, ConsoleOutputSink)
-            ]
-        else:
-            _output_sinks.clear()
+        with _output_lock:
+            if keep_default:
+                globals()["_output_sinks"] = [
+                    s for s in _output_sinks if isinstance(s, ConsoleOutputSink)
+                ]
+            else:
+                _output_sinks.clear()
 
     @staticmethod
     def get_sinks() -> List[OutputSink]:
@@ -1016,14 +879,17 @@ class PrettyOutput:
             # 使用ANSI转义序列设置颜色
             colored_lines.append(f"\033[38;2;{r};{g};{b}m{line}\033[0m")
         colored_text = Text(
-            "\n".join(colored_lines), style=OutputType.TOOL.value, justify="left"
+            "\n".join(colored_lines), style=OutputType.TOOL.value, justify="center"
         )
         # 直接输出渐变文本，不再使用Panel包装
         console.print(colored_text)
 
     @staticmethod
     def auto_print(
-        text: str, timestamp: bool = True, lang: Optional[str] = None
+        text: str,
+        timestamp: bool = True,
+        lang: Optional[str] = None,
+        context: Optional[Dict[str, Any]] = None,
     ) -> None:
         """
         自动根据打印信息的前缀emoji判断类型并着色输出。
@@ -1046,6 +912,7 @@ class PrettyOutput:
             text: 要打印的文本
             timestamp: 是否显示时间戳
             lang: 语言类型（用于语法高亮）
+            context: 额外上下文信息（用于前端显示 agent_name 等）
         """
         # 检测emoji前缀（使用统一的emoji映射）
         output_type = OutputType.INFO  # 默认类型
@@ -1066,214 +933,49 @@ class PrettyOutput:
         if "\n" in text:
             text = f"\n{text}"
 
+        # 如果有当前阶段信息，在文本前添加阶段标识
+        if context and "current_mode" in context:
+            mode = context["current_mode"]
+            text = f"[{mode}] {text}"
+
         # 使用现有的print方法进行着色输出
         PrettyOutput._print(
-            text=text, output_type=output_type, timestamp=timestamp, lang=lang
+            text=text,
+            output_type=output_type,
+            timestamp=timestamp,
+            lang=lang,
+            context=context,
         )
 
     @staticmethod
-    def print_task_list_plan_status(summary: Dict[str, Any]) -> None:
-        """以 Plan 风格打印待办事项列表，便于用户查看任务拆解与执行进度。
+    def _left_aligned_heading_rich_console(
+        self: Any, rich_console: Any, options: Any
+    ) -> Any:
+        """自定义 Rich Markdown Heading 渲染，让标题左对齐。"""
+        from rich import box
+        from rich.panel import Panel
+        from rich.text import Text
 
-        格式示例：
-          ✔  Plan 更新待办事项列表（2个待处理，1个进行中，1个已完成）
-             ·已更新待办事项列表
-               ⎿ ✔ 已完成的任务名
-                 ☐ 待执行的任务名
-
-        参数：
-            summary: get_task_list_summary 返回的字典，需包含 pending, running,
-                     completed, failed, abandoned, tasks（tasks 中每项含 task_name, status）
-        """
-        if not summary or "tasks" not in summary:
-            return
-        pending = summary.get("pending", 0)
-        running = summary.get("running", 0)
-        completed = summary.get("completed", 0)
-        failed = summary.get("failed", 0)
-        abandoned = summary.get("abandoned", 0)
-        parts = [f"{pending}个待处理", f"{running}个进行中", f"{completed}个已完成"]
-        if failed:
-            parts.append(f"{failed}个失败")
-        if abandoned:
-            parts.append(f"{abandoned}个已放弃")
-        count_str = "，".join(parts)
-        line1 = f"  ✔  Plan 更新待办事项列表（{count_str}）"
-        line2 = "     ·已更新待办事项列表"
-
-        def _task_sort_key(t: Dict[str, Any]) -> int:
-            tid = t.get("task_id", "")
-            try:
-                return int(tid.split("-")[1])
-            except (IndexError, ValueError):
-                return 999999
-
-        tasks = sorted(summary["tasks"], key=_task_sort_key)
-        completed_status = "completed"
-        lines = [line1, line2]
-        for i, t in enumerate(tasks):
-            name = (t.get("task_name") or "").strip()
-            status = (t.get("status") or "").strip().lower()
-            mark = "✔ " if status == completed_status else "☐ "
-            # 第一项带树形符 ⎿，后续项仅缩进（与示例格式一致）
-            prefix = "       ⎿ " if i == 0 else "         "
-            lines.append(f"{prefix}{mark}{name}")
-
-        block = "\n".join(lines)
-        PrettyOutput._print(
-            text=f"\n{block}",
-            output_type=OutputType.PLANNING,
-            timestamp=True,
-            lang=None,
-        )
-
-    @staticmethod
-    def print_truncated_with_expand_hint(
-        full_content: str,
-        title: Optional[str] = None,
-        visible_before: int = 12,
-        visible_after: int = 30,
-        max_lines: int = 60,
-        output_type: OutputType = OutputType.RESULT,
-        expand_hint: str = "输入 Ctrl+R 查看全部",
-        trigger_context: Optional[str] = None,
-        purpose: Optional[str] = None,
-    ) -> None:
-        """对非关键长内容做部分显示，其余隐藏，完整内容可通过 Ctrl+R 查看。
-
-        purpose: 历史列表中显示的摘要（是什么信息、做什么用），便于用户区分。
-        """
-        lines = full_content.splitlines()
-        total = len(lines)
-        if total <= max_lines:
-            PrettyOutput._print(
-                text=full_content, output_type=output_type, timestamp=True, lang=None
+        text = self.text
+        text.justify = "left"
+        if self.tag == "h1":
+            yield Panel(
+                text,
+                box=box.HORIZONTALS,
+                style="markdown.h1.border",
             )
-            jarvis_globals.last_truncated_full_content = None
-            jarvis_globals.last_truncated_title = None
-            return
-        # 需要折叠显示：写入历史列表（供 Ctrl+R 历史查看）并保留最近一条
-        PrettyOutput.push_truncated_to_history(
-            full_content,
-            title,
-            trigger_context=trigger_context,
-            purpose=purpose,
-        )
-        jarvis_globals.last_truncated_full_content = full_content
-        jarvis_globals.last_truncated_title = title
-        history = getattr(jarvis_globals, "truncated_history", [])
-        index = len(history)  # 本条在历史中的序号（1-based 即 index）
-        head = visible_before
-        tail = visible_after
-        if head + tail >= total:
-            head = max(1, total - tail)
-        hidden_count = total - head - tail
-        mid_hint = f"\n... 前 {hidden_count} 行已隐藏 ...（{expand_hint}，对应索引为：{index}）\n"
-        partial_lines = lines[:head] + [mid_hint.strip()] + lines[-tail:]
-        partial_text = "\n".join(partial_lines)
-        PrettyOutput._print(
-            text=partial_text, output_type=output_type, timestamp=True, lang=None
-        )
-
-    @staticmethod
-    def show_last_truncated_full() -> bool:
-        """显示上次通过 print_truncated_with_expand_hint 保存的完整内容。
-
-        供 Ctrl+R 快捷键调用。若有内容则用当前控制台输出并返回 True，否则返回 False。
-        
-        注意：显示后不会清除保存的内容，用户可以多次查看。
-        """
-        full = getattr(
-            jarvis_globals, "last_truncated_full_content", None
-        )
-        title = getattr(jarvis_globals, "last_truncated_title", None)
-        if not full:
-            return False
-        if title:
-            PrettyOutput.auto_print(f"\n📄 完整内容：{title}")
-            PrettyOutput.auto_print("─" * 80)
-        PrettyOutput._print(
-            text=full,
-            output_type=OutputType.RESULT,
-            timestamp=False,  # 不显示时间戳，避免重复
-            lang=None,
-        )
-        if title:
-            PrettyOutput.auto_print("─" * 80)
-        # 不清除保存的内容，允许用户多次查看
-        return True
-
-    @staticmethod
-    def push_truncated_to_history(
-        full_content: str,
-        title: Optional[str] = None,
-        trigger_context: Optional[str] = None,
-        purpose: Optional[str] = None,
-    ) -> None:
-        """将一次折叠的完整内容与摘要加入历史列表，供 Ctrl+R 历史查看界面使用。
-
-        purpose: 隐藏摘要的完整描述（是什么信息、做什么用），优先于 trigger_context/title。
-        trigger_context: 触发背景，与 title 组合成摘要（当 purpose 未提供时）。
-        """
-        if purpose and purpose.strip():
-            summary = purpose.strip()
-        elif trigger_context and title:
-            summary = f"{trigger_context} · {title}"
-        elif trigger_context:
-            summary = trigger_context
-        elif title:
-            summary = title
         else:
-            summary = ""
-        if not summary and full_content:
-            first_line = full_content.splitlines()[0].strip() if full_content else ""
-            summary = (first_line[:60] + "…") if len(first_line) > 60 else first_line
-        history = getattr(jarvis_globals, "truncated_history", None)
-        if history is None:
-            return
-        history.append((full_content, summary or "(无标题)"))
-        while len(history) > TRUNCATED_HISTORY_MAX_SIZE:
-            history.pop(0)
-
-    @staticmethod
-    def get_truncated_history() -> List[Tuple[str, str]]:
-        """返回折叠历史列表，每项为 (完整内容, 摘要)。"""
-        return getattr(jarvis_globals, "truncated_history", [])
-
-    @staticmethod
-    def show_truncated_item_by_index(one_based_index: int) -> bool:
-        """根据序号（从 1 开始）显示历史中对应项的完整内容。"""
-        history = PrettyOutput.get_truncated_history()
-        if one_based_index < 1 or one_based_index > len(history):
-            return False
-        full_content, summary = history[one_based_index - 1]
-        if summary:
-            PrettyOutput.auto_print(f"\n📄 完整内容：{summary}")
-            PrettyOutput.auto_print("─" * 80)
-        PrettyOutput._print(
-            text=full_content,
-            output_type=OutputType.RESULT,
-            timestamp=False,
-            lang=None,
-        )
-        if summary:
-            PrettyOutput.auto_print("─" * 80)
-        PrettyOutput.auto_print(
-            "[dim]（已显示完毕，可继续输入或按 Ctrl+J/Ctrl+D 确认）[/dim]"
-        )
-        return True
+            if self.tag == "h2":
+                yield Text("")
+            yield text
 
     @staticmethod
     def _normalize_markdown_headings(content: str) -> str:
-        """将内容中的标题行规范为 # / ## 格式，便于左对齐与层级显示。
-
-        - 以「数字. 」开头的行（如 1. xxx、2. xxx）规范为二级标题：## 1. xxx
-        - 首个非空、非列表、非已有 # 的短行视为一级标题，补 #
-        """
+        """将内容中的标题行规范为 # / ## 格式，便于左对齐与层级显示。"""
         lines = content.splitlines()
         out: List[str] = []
         seen_first_heading = False
-        for i, line in enumerate(lines):
+        for line in lines:
             stripped = line.lstrip()
             if not stripped:
                 out.append(line)
@@ -1282,12 +984,10 @@ class PrettyOutput:
                 seen_first_heading = True
                 out.append(line)
                 continue
-            # 以「数字.」开头（可有可无空格）→ 二级标题 ## N. xxx
             if re.match(r"^\d+\.\s*", stripped):
                 indent = line[: len(line) - len(stripped)]
                 out.append(indent + "## " + stripped)
                 continue
-            # 首个像标题的短行（无 #、非列表、非数字开头）→ 一级标题 #
             if not seen_first_heading and 3 <= len(stripped) <= 120:
                 if not re.match(r"^[\d\-\*\]\>]", stripped):
                     indent = line[: len(line) - len(stripped)]
@@ -1298,6 +998,22 @@ class PrettyOutput:
         return "\n".join(out)
 
     @staticmethod
+    def _emit_markdown_gateway_event(content: str, title: Optional[str]) -> None:
+        """Gateway 模式下将 markdown 输出同步到 Web 界面。"""
+        try:
+            from jarvis.jarvis_gateway.manager import get_current_gateway
+        except Exception:
+            return
+        if get_current_gateway() is not None:
+            event = OutputEvent(
+                text=content,
+                output_type=OutputType.RESULT,
+                lang="markdown",
+                section=title,
+            )
+            emit_output(event)
+
+    @staticmethod
     def print_markdown(
         content: str,
         title: Optional[str] = None,
@@ -1306,31 +1022,31 @@ class PrettyOutput:
         highlight_headings: bool = False,
     ) -> None:
         """
-        使用Panel显示带markdown语法高亮的内容。
+        使用Panel显示带Markdown渲染的内容（标题左对齐）。
 
         参数：
             content: 要显示的markdown格式内容
             title: Panel标题（可选）
             border_style: 边框样式（默认"bright_blue"）
             theme: markdown高亮主题（默认"monokai"）
-            highlight_headings: 为True时使用Markdown渲染，标题靠左、## 等突出显示（默认False）
+            highlight_headings: 为True时使用Markdown渲染，标题靠左、## 等突出显示
         """
-        from rich.panel import Panel
-        from jarvis.jarvis_utils.rich_box import HORIZONTAL_RULE_BOX
+        if not content.strip():
+            return
 
         if highlight_headings:
             from rich.align import Align
             from rich.console import Console as RichConsole
             from rich.console import ConsoleOptions
             from rich.console import RenderResult
-            from rich.markdown import Markdown
-            from rich.markdown import Heading
+            from rich.markdown import Markdown, Heading
+            from rich.panel import Panel
             from rich.theme import Theme
+            from jarvis.jarvis_utils.rich_box import HORIZONTAL_RULE_BOX
 
-            # 自定义 Heading：强制所有级别标题左对齐（Rich 默认 h1 居中）
             class _LeftHeading(Heading):
                 def __rich_console__(
-                    self, console, options: ConsoleOptions
+                    self, rich_console, options: ConsoleOptions
                 ) -> RenderResult:
                     text = self.text.copy()
                     text.justify = "left"
@@ -1339,10 +1055,8 @@ class PrettyOutput:
             class _LeftMarkdown(Markdown):
                 elements = {**Markdown.elements, "heading_open": _LeftHeading}
 
-            # 规范标题格式（数字开头→## N. xxx），便于统一左对齐与层级
-            content = PrettyOutput._normalize_markdown_headings(content)
-            # 使用自定义 Markdown 渲染，标题全部靠左
-            renderable = Align.left(_LeftMarkdown(content))
+            normalized = PrettyOutput._normalize_markdown_headings(content)
+            renderable = Align.left(_LeftMarkdown(normalized))
             heading_theme = Theme(
                 {
                     "markdown.h1": "bold bright_cyan",
@@ -1362,47 +1076,48 @@ class PrettyOutput:
                 title_align="left",
             )
             RichConsole(theme=heading_theme).print(panel)
+            PrettyOutput._emit_markdown_gateway_event(content, title)
             return
-        else:
-            renderable = Syntax(content, "markdown", theme=theme, word_wrap=True)
 
-        panel = Panel(
-            renderable,
-            title=title,
-            border_style=border_style,
-            box=HORIZONTAL_RULE_BOX,
-            expand=True,
-            title_align="left",
+        from rich import box
+        from rich.markdown import Markdown, Heading
+        from rich.panel import Panel
+
+        _original_rich_console = Heading.__rich_console__
+        setattr(
+            Heading, "__rich_console__", PrettyOutput._left_aligned_heading_rich_console
         )
-        console.print(panel)
+
+        try:
+            markdown = Markdown(content, code_theme=theme)
+            panel = Panel(
+                markdown,
+                title=title,
+                border_style=border_style,
+                box=box.HORIZONTALS,
+                expand=True,
+            )
+            console.print(panel)
+        finally:
+            setattr(Heading, "__rich_console__", _original_rich_console)
+
+        PrettyOutput._emit_markdown_gateway_event(content, title)
 
     @staticmethod
     def show_thinking_until(
         stop_event, interval: float = 0.4, delay_seconds: float = 3.0
     ) -> None:
-        """在等待期间显示「思考中」+ 动态点，直到 stop_event 被设置。
-
-        仅当持续 delay_seconds 秒以上无结果时才显示，避免短暂等待时刷屏。
-        使用单行文本、无边框，字体不加粗。
-
-        参数:
-            stop_event: threading.Event，当阻塞操作完成时调用 set()
-            interval: 动态点刷新间隔（秒）
-            delay_seconds: 超过该秒数无输出后才显示思考中（默认 3 秒）
-        """
-        import threading
+        """在等待期间显示「思考中」+ 动态点，直到 stop_event 被设置。"""
         import time
         from rich.live import Live
         from rich.text import Text
 
         if not (hasattr(stop_event, "wait") and hasattr(stop_event, "set")):
             return
-        # 与全局“无输出提示”看门狗协同：只要 thinking 在刷新，就视为“有输出”，避免重复提示。
         try:
             _touch_output()
         except Exception:
             pass
-        # 先等待 delay_seconds 秒，若期间已完成则直接返回，不显示思考中
         if stop_event.wait(timeout=delay_seconds):
             return
         thinking_dots = 0
@@ -1419,308 +1134,365 @@ class PrettyOutput:
                     pass
 
     @staticmethod
+    def print_centered_panel(
+        renderable: Any,
+        title: Optional[str] = None,
+        title_align: Literal["left", "center", "right"] = "center",
+        border_style: str = "blue",
+        **kwargs: Any,
+    ) -> None:
+        """
+        使用居中的Panel显示内容。
+
+        参数：
+            renderable: 要显示的内容（Text、Group等Rich可渲染对象）
+            title: Panel标题（可选）
+            title_align: 标题对齐方式（默认"center"）
+            border_style: 边框样式（默认"blue"）
+            **kwargs: 传递给Panel的其他参数
+        """
+        from rich import box
+        from rich.align import Align
+        from rich.panel import Panel
+
+        panel = Panel(
+            renderable,
+            title=title,
+            title_align=title_align,
+            border_style=border_style,
+            box=box.HORIZONTALS,
+            **kwargs,
+        )
+        console.print(Align.center(panel))
+
+    @staticmethod
+    def print_script_panel(
+        content: str,
+        title: str,
+        lang: str = "python",
+        theme: str = "monokai",
+    ) -> None:
+        """
+        使用Panel显示带语法高亮的脚本内容。
+
+        参数：
+            content: 脚本内容
+            title: Panel标题
+            lang: 语法高亮语言（默认"python"）
+            theme: 高亮主题（默认"monokai"）
+        """
+        from rich import box
+        from rich.panel import Panel
+
+        syntax = Syntax(
+            content,
+            lang,
+            theme=theme,
+            line_numbers=True,
+            word_wrap=True,
+        )
+        panel = Panel(syntax, title=title, border_style="cyan", box=box.HORIZONTALS)
+        console.print(panel)
+
+        # 通过事件系统输出到Gateway（用于Web界面）
+        # 注意：只在 Gateway 模式下发送事件，避免 CLI 模式下重复打印
+        try:
+            from jarvis.jarvis_gateway.manager import get_current_gateway
+        except Exception:
+            return
+
+        if get_current_gateway() is not None:
+            event = OutputEvent(
+                text=content,
+                output_type=OutputType.CODE,
+                lang=lang,
+                section=None,
+            )
+            emit_output(event)
+
+    @staticmethod
+    def print_resource_overview_panel(
+        welcome_message: str,
+        current_dir: str,
+        stats_parts: List[str],
+    ) -> None:
+        """
+        显示Jarvis资源概览面板（居中）。
+
+        参数：
+            welcome_message: 欢迎信息
+            current_dir: 当前工作目录
+            stats_parts: 统计信息列表（每项为带markup的字符串）
+        """
+        stats_text = Text.from_markup(" | ".join(stats_parts), justify="center")
+        panel_content = Text()
+        panel_content.append(welcome_message, style="bold white")
+        panel_content.append("\n")
+        panel_content.append(f"📁  工作目录: {current_dir}", style="dim white")
+        panel_content.append("\n\n")
+        panel_content.append(stats_text)
+        panel_content.justify = "center"
+        PrettyOutput.print_centered_panel(
+            panel_content,
+            title="✨ Jarvis 资源概览 ✨",
+            title_align="center",
+            border_style="blue",
+            expand=False,
+        )
+
+    @staticmethod
+    def print_welcome_panel(content: Any) -> None:
+        """
+        显示欢迎信息面板（居中）。
+
+        参数：
+            content: 欢迎内容（Group、Text等Rich可渲染对象）
+        """
+        from rich.align import Align
+        from rich.panel import Panel
+
+        terminal_width = console.width
+        content_width = max(len(str(line)) for line in str(content).split("\n"))
+        panel_width = max(terminal_width * 2 // 3, content_width)
+        welcome_panel = Panel(
+            content,
+            border_style="cyan",
+            expand=False,
+            width=panel_width,
+        )
+        console.print(Align.center(welcome_panel))
+
+    @staticmethod
     def stream_chat_with_panel(
-        chat_iterator,
+        chat_iterator: Generator[Tuple[str, str], None, None],
         title: str,
         status_message: str,
-        get_used_token_count,
-        get_conversation_turn,
-        get_platform_max_input_token_count,
-        get_context_token_count,
-        append_session_history,
+        get_used_token_count: Callable[[], int],
+        get_conversation_turn: Callable[[], int],
+        get_platform_max_input_token_count: Callable[[], int],
+        get_context_token_count: Callable[[str], int],
+        append_session_history: Callable[[str, str], None],
         start_time: float,
-        message: str,
+        message: str = "",
         max_output: int = 0,
-        check_interrupt=None,
-        panel_lock=None,
-    ) -> Tuple[str, float]:
-        """使用面板显示流式聊天输出。
-
-        参数:
-            chat_iterator: 聊天迭代器
-            title: 面板标题
-            status_message: 状态消息
-            get_used_token_count: 获取已使用 token 数的函数
-            get_conversation_turn: 获取对话轮次的函数
-            get_platform_max_input_token_count: 获取平台最大输入 token 数的函数
-            get_context_token_count: 获取上下文 token 数的函数
-            append_session_history: 添加会话历史的函数
-            start_time: 开始时间
-            message: 用户消息
-            max_output: 最大输出长度
-            check_interrupt: 检查中断的函数
-            panel_lock: 面板锁
-
-        返回:
-            Tuple[str, float]: (响应内容, 耗时)
+        check_interrupt: Callable[[], bool] = lambda: False,
+        panel_lock: Optional[threading.RLock] = None,
+    ) -> Tuple[str, str, float]:
         """
-        import threading
+        使用Live+Panel进行流式聊天输出（pretty output模式）。
+
+        参数：
+            chat_iterator: 聊天响应迭代器
+            title: 面板标题（模型名称）
+            status_message: 等待首token时显示的Status消息
+            get_used_token_count: 获取已用token数的回调
+            get_conversation_turn: 获取对话轮次的回调
+            get_platform_max_input_token_count: 获取平台最大token数的回调
+            get_context_token_count: 计算文本token数的回调
+            append_session_history: 追加会话历史的回调
+            start_time: 开始时间戳
+            message: 用户消息（用于中断时保存历史）
+            max_output: 最大输出长度，0表示无限制
+            check_interrupt: 检查是否请求中断的回调
+            panel_lock: 用于保护panel更新的线程锁（可选）
+
+        返回：
+            Tuple[str, str, float]: (模型响应, 推理内容, 首token时间)
+        """
         import time
-        import os
+
+        from rich import box
         from rich.live import Live
         from rich.panel import Panel
-        from rich.text import Text
-        from jarvis.jarvis_utils.globals import get_interrupt
+        from rich.status import Status
+
+        from jarvis.jarvis_utils.config import get_conversation_turn_threshold
         from jarvis.jarvis_utils.config import is_immediate_abort
-        from jarvis.jarvis_utils.rich_box import HORIZONTAL_RULE_BOX
+        from jarvis.jarvis_utils.utils import is_repeating_text
 
-        def _abort_stream() -> bool:
+        first_chunk = None
+        first_token_time = 0.0
+
+        with Status(
+            status_message,
+            spinner="dots",
+            console=console,
+        ):
             try:
-                if not is_immediate_abort():
-                    return False
-                if not check_interrupt:
-                    return False
-                return bool(check_interrupt())
-            except Exception:
-                return False
-
-        # 用于后台线程存放首个 chunk 或 StopIteration
-        first_chunk_result = [None]
-        stop_iteration_flag = [False]
-        first_chunk_error = [None]
-
-        def _fetch_first_chunk():
-            try:
-                chunk = next(chat_iterator)
-                first_chunk_result[0] = chunk if chunk else ""
-            except StopIteration:
-                stop_iteration_flag[0] = True
-                first_chunk_result[0] = None
-            except Exception as e:
-                # 捕获异常，避免后台线程直接打印堆栈刷屏；交给主线程统一处理
-                first_chunk_error[0] = e
-                first_chunk_result[0] = None
-
-        fetch_thread = threading.Thread(target=_fetch_first_chunk, daemon=True)
-        fetch_thread.start()
-
-        # 仅当持续 3 秒以上无首个 chunk 时才显示「思考中」，单行、无边框、不加粗
-        thinking_delay = 3.0
-        elapsed = 0.0
-        check_interval = 0.2
-        while elapsed < thinking_delay and fetch_thread.is_alive():
-            if _abort_stream():
-                break
-            time.sleep(check_interval)
-            elapsed += check_interval
-        if fetch_thread.is_alive() and not _abort_stream():
-            thinking_dots = 0
-            text_content = Text("思考中.", style="bright_cyan")
-            with Live(text_content, refresh_per_second=4, transient=True) as live:
-                while fetch_thread.is_alive():
-                    if _abort_stream():
+                while True:
+                    if is_immediate_abort() and check_interrupt():
+                        append_session_history(message, "")
+                        return "", "", 0.0
+                    first_chunk = next(chat_iterator)
+                    if first_chunk and first_chunk[1]:  # 检查内容非空
+                        first_token_time = time.time() - start_time
                         break
-                    thinking_dots = (thinking_dots + 1) % 4
-                    dots_str = "." * (thinking_dots + 1)
-                    text_content = Text(f"思考中{dots_str}", style="bright_cyan")
-                    live.update(text_content)
-                    try:
-                        _touch_output()
-                    except Exception:
-                        pass
-                    time.sleep(0.4)
-        # 等待首包线程：正常等价于无限 join；Ctrl+C 后仅再等待短窗口，尽快退出 Rich Live
-        join_deadline: Optional[float] = None
-        while fetch_thread.is_alive():
-            if _abort_stream():
-                join_deadline = time.time() + 2.0
-            fetch_thread.join(timeout=0.12)
-            if join_deadline is not None and time.time() >= join_deadline:
-                break
-        if fetch_thread.is_alive():
-            append_session_history(message, "")
-            try:
-                PrettyOutput.auto_print("⏹️ 已中断等待模型首包（Ctrl+C）。")
-            except Exception:
-                pass
-            return "", time.time() - start_time
+            except StopIteration:
+                append_session_history(message, "")
+                return "", "", 0.0
 
-        # 首 chunk 获取失败：给出友好错误并降级（返回空响应，避免交互卡死）
-        if first_chunk_error[0] is not None:
+        _lock = panel_lock if panel_lock is not None else threading.RLock()
+
+        def _format_progress_bar(percent: float, width: int = 15) -> str:
+            percent = max(0, min(100, percent))
+            filled = int(width * percent / 100)
+            empty = width - filled
+            return "█" * filled + "░" * empty
+
+        def _get_token_usage_info(current_response: str) -> Tuple[float, str, str]:
             try:
-                PrettyOutput.auto_print(
-                    f"⚠️ 模型响应超时或网络异常：{first_chunk_error[0]}\n"
-                    f"   建议：检查网络/代理，或稍后重试。"
+                history_tokens = get_used_token_count()
+                current_response_tokens = get_context_token_count(current_response)
+                total_tokens = history_tokens + current_response_tokens
+                max_tokens = get_platform_max_input_token_count()
+                if max_tokens > 0:
+                    usage_percent = (total_tokens / max_tokens) * 100
+                    percent_color = (
+                        "red"
+                        if usage_percent >= 90
+                        else "yellow"
+                        if usage_percent >= 80
+                        else "green"
+                    )
+                    progress_bar = _format_progress_bar(usage_percent, width=15)
+                    return usage_percent, percent_color, progress_bar
+                return 0.0, "green", ""
+            except Exception:
+                return 0.0, "green", ""
+
+        def _update_panel_subtitle(
+            pnl: Panel,
+            response: str,
+            reasoning_content: str,
+            is_completed: bool = False,
+            duration: float = 0.0,
+            first_tok_time: float = 0.0,
+        ) -> None:
+            current_time_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            threshold = get_conversation_turn_threshold()
+            try:
+                usage_percent, percent_color, progress_bar = _get_token_usage_info(
+                    response
                 )
+                max_tokens = get_platform_max_input_token_count()
+                total_tokens = get_used_token_count() + get_context_token_count(
+                    response
+                )
+                if is_completed:
+                    response_tokens = get_context_token_count(
+                        response
+                    ) + get_context_token_count(reasoning_content)
+                    generation_time = (
+                        duration - first_tok_time
+                        if duration > first_tok_time
+                        else duration
+                    )
+                    tokens_per_second = (
+                        response_tokens / generation_time if generation_time > 0 else 0
+                    )
+                    if max_tokens > 0 and progress_bar:
+                        pnl.subtitle = (
+                            f"[bold green]✓ {current_time_str} | ({get_conversation_turn()}/{threshold}) | 对话完成耗时: {duration:.2f}秒 | "
+                            f"首token: {first_tok_time:.2f}秒 | 速度: {tokens_per_second:.1f} tokens/s | "
+                            f"Token: [{percent_color}]{progress_bar} {usage_percent:.1f}% ({total_tokens}/{max_tokens})[/{percent_color}][/bold green]"
+                        )
+                    else:
+                        pnl.subtitle = f"[bold green]✓ {current_time_str} | ({get_conversation_turn()}/{threshold}) | 对话完成耗时: {duration:.2f}秒 | 首token: {first_tok_time:.2f}秒 | 速度: {tokens_per_second:.1f} tokens/s[/bold green]"
+                else:
+                    if max_tokens > 0 and progress_bar:
+                        pnl.subtitle = (
+                            f"[yellow]{current_time_str} | ({get_conversation_turn()}/{threshold}) | 正在回答... (按 Ctrl+C 中断) | "
+                            f"Token: [{percent_color}]{progress_bar} {usage_percent:.1f}% ({total_tokens}/{max_tokens})[/{percent_color}][/yellow]"
+                        )
+                    else:
+                        pnl.subtitle = f"[yellow]{current_time_str} | ({get_conversation_turn()}/{threshold}) | 正在回答... (按 Ctrl+C 中断)[/yellow]"
             except Exception:
-                pass
-            append_session_history(message, "")
-            return "", time.time() - start_time
+                if is_completed:
+                    pnl.subtitle = f"[bold green]✓ {current_time_str} | ({get_conversation_turn()}/{threshold}) | 对话完成耗时: {duration:.2f}秒[/bold green]"
+                else:
+                    pnl.subtitle = f"[yellow]{current_time_str} | ({get_conversation_turn()}/{threshold}) | 正在回答... (按 Ctrl+C 中断)[/yellow]"
 
-        if stop_iteration_flag[0]:
-            append_session_history(message, "")
-            return "", time.time() - start_time
+        from rich.markdown import Markdown, Heading
 
-        first_chunk = first_chunk_result[0] or ""
-        # 使用“尾部窗口”限制渲染成本，避免随着全文增长 wrap 越来越慢
-        try:
-            max_window_chars = int(os.environ.get("JARVIS_STREAM_MAX_WINDOW_CHARS", "20000"))
-        except Exception:
-            max_window_chars = 20000
-        if max_window_chars < 2000:
-            max_window_chars = 2000
+        _original_rich_console = Heading.__rich_console__
+        setattr(
+            Heading, "__rich_console__", PrettyOutput._left_aligned_heading_rich_console
+        )
 
-        display_plain = ""  # 仅保留尾部窗口内容（用于 wrap 渲染）
-        text_content = Text("", overflow="fold")
         panel = Panel(
-            text_content,  # 后续会复用 panel，只更新 renderable/subtitle
-            title=None,
-            subtitle=None,
+            Markdown("", code_theme="monokai"),
+            title=f"[bold cyan]{title}[/bold cyan]",
+            subtitle="[yellow]正在回答... (按 Ctrl+C 中断)[/yellow]",
             border_style="cyan",
-            box=HORIZONTAL_RULE_BOX,
+            box=box.HORIZONTALS,
             expand=True,
         )
 
         response = ""
+        reasoning_content = ""
         last_subtitle_update_time = time.time()
-        subtitle_update_interval = 1  # subtitle 更新间隔（秒）
-        update_count = 0  # 更新计数器
+        subtitle_update_interval = 1
+        update_count = 0
+        last_repeating_check_len = 0
+        repeating_check_interval = 100
 
-        def _update_panel_subtitle_with_token(
-            panel_obj: Panel, response_text: str, is_completed: bool = False
-        ):
-            """更新面板的 subtitle，显示 token 信息。"""
-            try:
-                threshold = 100  # 默认阈值
-                try:
-                    max_input = get_platform_max_input_token_count()
-                    current_context = get_context_token_count()
-                    threshold = max_input - current_context if max_input else 100
-                except Exception:
-                    pass
+        with Live(panel, refresh_per_second=6, transient=True) as live:
 
-                current_time = time.time()
-                duration = current_time - start_time
+            def _update_panel_content(
+                content: str,
+                style: str = "bright_white",
+                update_subtitle: bool = False,
+                show_cursor: bool = True,
+            ):
+                nonlocal response, last_subtitle_update_time, update_count, panel
 
-                try:
-                    used_tokens = get_used_token_count()
-                    conversation_turn = get_conversation_turn()
-
-                    if is_completed:
-                        panel_obj.subtitle = (
-                            f"[bold green]✓ {current_time:.0f} | "
-                            f"({conversation_turn}/{threshold}) | "
-                            f"tokens: {used_tokens} | "
-                            f"耗时: {duration:.2f}秒[/bold green]"
-                        )
-                    else:
-                        panel_obj.subtitle = (
-                            f"[yellow]{current_time:.0f} | "
-                            f"({conversation_turn}/{threshold}) | "
-                            f"tokens: {used_tokens} | "
-                            f"正在回答... (按 Ctrl+C 中断)[/yellow]"
-                        )
-                except Exception:
-                    # 如果获取 token 信息失败，使用简化版本
-                    if is_completed:
-                        panel_obj.subtitle = (
-                            f"[bold green]✓ {current_time:.0f} | "
-                            f"耗时: {duration:.2f}秒[/bold green]"
-                        )
-                    else:
-                        panel_obj.subtitle = (
-                            f"[yellow]{current_time:.0f} | "
-                            f"正在回答... (按 Ctrl+C 中断)[/yellow]"
-                        )
-            except Exception:
-                # 如果更新 subtitle 失败，使用默认值
-                current_time = time.time()
-                duration = current_time - start_time
-                if is_completed:
-                    panel_obj.subtitle = (
-                        f"[bold green]✓ 耗时: {duration:.2f}秒[/bold green]"
-                    )
-                else:
-                    panel_obj.subtitle = (
-                        f"[yellow]正在回答... (按 Ctrl+C 中断)[/yellow]"
-                    )
-
-        with Live(panel, refresh_per_second=4, transient=True) as live:
-
-            def _update_panel_content(content: str, update_subtitle: bool = False):
-                nonlocal response, last_subtitle_update_time, update_count, text_content, panel, display_plain
-
-                # 仅维护尾部窗口，避免全量字符串增长导致 wrap 成本线性变大
-                display_plain = (display_plain + content)[-max_window_chars:]
-                new_text_obj = Text(display_plain, overflow="fold", style="bright_white")
                 update_count += 1
 
-                # Scrolling Logic - 只在内容超过一定行数时才应用滚动
-                max_text_height = console.height - 5
-                if max_text_height <= 0:
-                    max_text_height = 1
+                # 用 Markdown 渲染累积的 response 文本
+                display_text = response
+                # 添加动态光标效果
+                if show_cursor and content:
+                    display_text = response + " ▌"
 
-                lines = new_text_obj.wrap(
-                    console,
-                    console.width - 4 if console.width > 4 else 1,
-                )
+                # 先创建 Markdown 对象
+                md_content = Markdown(display_text, code_theme="monokai")
 
-                # 只在内容超过最大高度时才截取，减少不必要的操作
-                final_text = new_text_obj
-                if len(lines) > max_text_height:
-                    # 创建新的Text对象，避免直接修改plain属性导致内部状态不一致
-                    # 这确保了Rich内部spans列表与文本内容保持同步
-                    final_text = Text(
-                        "\n".join([line.plain for line in lines[-max_text_height:]]),
-                        overflow="fold",
-                    )
-
-                # 使用锁保护 panel 更新，避免与 Live 内部线程冲突
-                if panel_lock:
-                    with panel_lock:
-                        text_content = final_text
-                        # 复用 Panel：只更新 renderable，减少布局重算
-                        try:
-                            panel.renderable = text_content  # type: ignore[attr-defined]
-                        except Exception:
-                            # 回退：极端情况下再重建
-                            panel = Panel(
-                                text_content,
-                                title=None,
-                                subtitle=None,
-                                border_style="cyan",
-                                box=HORIZONTAL_RULE_BOX,
-                                expand=True,
-                            )
-
-                        # 只在需要时更新 subtitle（减少更新频率，避免重复渲染标题）
-                        # 策略：每 10 次内容更新或每 3 秒更新一次 subtitle
-                        current_time = time.time()
-                        should_update_subtitle = (
-                            update_subtitle
-                            or update_count % 10 == 0  # 每 10 次更新一次
-                            or (current_time - last_subtitle_update_time)
-                            >= subtitle_update_interval
-                        )
-
-                        if should_update_subtitle:
-                            _update_panel_subtitle_with_token(
-                                panel, response, is_completed=False
-                            )
-                            last_subtitle_update_time = current_time
-
-                        # 更新 panel（只更新内容，subtitle 更新频率已降低）
-                        # 添加异常处理，防止 rich 内部线程冲突导致的 IndexError
-                        try:
-                            live.update(panel)
-                        except (IndexError, RuntimeError):
-                            # 忽略 rich 内部错误，避免影响主流程
-                            # 这些错误通常是由于 Live 内部线程与主线程的时序冲突导致的
-                            pass
-                else:
-                    # 如果没有提供 panel_lock，直接更新
-                    text_content = final_text
+                # 流式输出时截断文本，保持 Panel 在终端可视范围内
+                # 基于 Markdown 渲染后的实际行数进行计算，而非原始文本行数
+                if show_cursor:
+                    max_text_height = console.height - 5
+                    if max_text_height <= 0:
+                        max_text_height = 1
+                    # 使用 console.render_lines() 获取渲染后的实际行数
                     try:
-                        panel.renderable = text_content  # type: ignore[attr-defined]
-                    except Exception:
-                        panel = Panel(
-                            text_content,
-                            title=None,
-                            subtitle=None,
-                            border_style="cyan",
-                            box=HORIZONTAL_RULE_BOX,
-                            expand=True,
+                        rendered_lines = console.render_lines(
+                            md_content, console.options
                         )
+                        rendered_height = len(rendered_lines)
+                        if rendered_height > max_text_height:
+                            # 需要截断：从原始文本末尾向前截取，重新渲染
+                            # 使用启发式方法：按字符数比例估算需要保留的内容
+                            ratio = max_text_height / rendered_height
+                            estimated_chars = int(len(display_text) * ratio)
+                            # 从后向前截取，保留末尾内容
+                            truncated_text = display_text[-estimated_chars:]
+                            # 确保从完整的行开始（找到第一个换行符）
+                            newline_idx = truncated_text.find("\n")
+                            if newline_idx != -1:
+                                truncated_text = truncated_text[newline_idx + 1 :]
+                            # 重新创建 Markdown 对象
+                            md_content = Markdown(truncated_text, code_theme="monokai")
+                    except Exception:
+                        # 如果渲染失败，回退到原始的按行截断逻辑
+                        lines = display_text.split("\n")
+                        if len(lines) > max_text_height:
+                            display_text = "\n".join(lines[-max_text_height:])
+                        # 无论如何都重新创建 Markdown 对象，确保安全性
+                        md_content = Markdown(display_text, code_theme="monokai")
+
+                with _lock:
+                    # 直接更新panel的内部内容
+                    panel.renderable = md_content
 
                     current_time = time.time()
                     should_update_subtitle = (
@@ -1731,8 +1503,8 @@ class PrettyOutput:
                     )
 
                     if should_update_subtitle:
-                        _update_panel_subtitle_with_token(
-                            panel, response, is_completed=False
+                        _update_panel_subtitle(
+                            panel, response, reasoning_content, is_completed=False
                         )
                         last_subtitle_update_time = current_time
 
@@ -1741,83 +1513,340 @@ class PrettyOutput:
                     except (IndexError, RuntimeError):
                         pass
 
-            # Process first chunk
-            response += first_chunk
-            if first_chunk:
+            # 解包元组 (chunk_type, chunk_content)
+            first_chunk_type, first_chunk_content = first_chunk
+            # 只有 content 类型才拼接到 response
+            if first_chunk_type == "content":
+                response += first_chunk_content
+            if first_chunk_content:
+                # 根据类型设置样式
+                first_style = "dim" if first_chunk_type == "reason" else "bright_white"
                 _update_panel_content(
-                    first_chunk, update_subtitle=True
-                )  # 第一次更新时更新 subtitle
+                    first_chunk_content, style=first_style, update_subtitle=True
+                )
+                # 解析 title 获取 agent_name 和 model_name
+                agent_name = ""
+                model_name = ""
+                if "·" in title:
+                    parts = title.split("·")
+                    if len(parts) > 1:
+                        agent_name = parts[0].strip()
+                        if "(" in parts[1]:
+                            model_name = parts[1].split("(")[1].rstrip(")").strip()
+                # 发送流式开始事件
+                emit_output(
+                    OutputEvent(
+                        text="",
+                        output_type=OutputType.STREAM_START,
+                        timestamp=False,
+                        context={
+                            "agent_name": agent_name,
+                            "model_name": model_name,
+                            "start_time": start_time,
+                        },
+                    )
+                )
 
-            # 缓存机制：降低更新频率，减少界面闪烁
-            buffer = ""
+                # 发送第一个chunk（避免第一个chunk丢失）
+                if first_chunk_content:
+                    emit_output(
+                        OutputEvent(
+                            text=first_chunk_content,
+                            output_type=OutputType.STREAM_CHUNK,
+                            timestamp=False,
+                        )
+                    )
+
+            buffer: List[Tuple[str, str]] = []
             last_update_time = time.time()
-            # A 方案：节流 Live 刷新，避免每个字符都触发 wrap + live.update
-            # 可通过环境变量微调：
-            # - JARVIS_STREAM_UPDATE_INTERVAL: 秒（默认 0.15）
-            # - JARVIS_STREAM_MIN_BUFFER_SIZE: 字符数（默认 120）
-            # 默认值：质量优先的同时减少卡顿（约 6-10 次/秒刷新，避免每字符刷新）
-            try:
-                update_interval = float(
-                    os.environ.get("JARVIS_STREAM_UPDATE_INTERVAL", "0.16")
-                )
-            except Exception:
-                update_interval = 0.16
-            try:
-                min_buffer_size = int(
-                    os.environ.get("JARVIS_STREAM_MIN_BUFFER_SIZE", "140")
-                )
-            except Exception:
-                min_buffer_size = 140
-            if update_interval < 0.05:
-                update_interval = 0.05
-            if min_buffer_size < 16:
-                min_buffer_size = 16
+            update_interval = 0.2
+            min_buffer_size = 5
 
             def _flush_buffer():
                 nonlocal buffer, last_update_time
                 if buffer:
-                    _update_panel_content(buffer)
-                    buffer = ""
+                    for content, style in buffer:
+                        _update_panel_content(content, style=style)
+                    buffer = []
                     last_update_time = time.time()
 
-            # Process rest of the chunks
-            for s in chat_iterator:
-                if _abort_stream():
-                    _flush_buffer()
-                    append_session_history(message, response)
-                    try:
-                        PrettyOutput.auto_print("⏹️ 已中断模型输出（Ctrl+C）。")
-                    except Exception:
-                        pass
-                    return response, time.time() - start_time
-                if not s:
-                    continue
-                response += s
-                buffer += s
+            try:
+                for chunk_type, chunk_content in chat_iterator:
+                    if not chunk_content:
+                        continue
+                    # 所有内容都显示，reason用灰色样式
+                    style = "dim" if chunk_type == "reason" else "bright_white"
+                    buffer.append((chunk_content, style))
+                    # 只有 content 类型才拼接到 response
+                    if chunk_type == "content":
+                        response += chunk_content
+                    # 收集 reason 类型内容
+                    elif chunk_type == "reason":
+                        reasoning_content += chunk_content
+                    # 发送流式 chunk 事件（reason 和 content 都发送）
+                    if chunk_content:
+                        emit_output(
+                            OutputEvent(
+                                text=chunk_content,
+                                output_type=OutputType.STREAM_CHUNK,
+                                timestamp=False,
+                            )
+                        )
 
-                current_time = time.time()
-                should_update = (
-                    len(buffer) >= min_buffer_size
-                    or (current_time - last_update_time) >= update_interval
-                )
+                    # 实时检测重复输出（包括推理内容）
+                    total_len = len(response) + len(reasoning_content)
+                    if total_len - last_repeating_check_len >= repeating_check_interval:
+                        last_repeating_check_len = total_len
+                        combined_text = reasoning_content + response
+                        is_repeating, _, _, _ = is_repeating_text(combined_text)
+                        if is_repeating:
+                            _flush_buffer()
+                            PrettyOutput.auto_print(
+                                "⚠ 检测到模型输出陷入重复，将自动重试"
+                            )
+                            return "", "", 0.0
 
-                if should_update:
-                    _flush_buffer()
-
-                # 检查中断（节流刷新后再次确认）
-                try:
-                    if _abort_stream():
+                    if max_output > 0 and len(response) >= max_output:
                         _flush_buffer()
                         append_session_history(message, response)
-                        try:
-                            PrettyOutput.auto_print("⏹️ 已中断模型输出（Ctrl+C）。")
-                        except Exception:
-                            pass
-                        return response, time.time() - start_time
-                except Exception:
-                    pass
+                        break
+
+                    current_time = time.time()
+                    should_update = (
+                        len(buffer) >= min_buffer_size
+                        or (current_time - last_update_time) >= update_interval
+                    )
+
+                    if should_update:
+                        _flush_buffer()
+
+                    if is_immediate_abort() and check_interrupt():
+                        _flush_buffer()
+                        append_session_history(message, response)
+                        break
+            except Exception as e:
+                # 发生异常时，打印错误信息并返回已收集的内容
+                PrettyOutput.auto_print(f"⚠️ 流式输出异常: {e}")
+                _flush_buffer()
+                append_session_history(message, response)
+                return response, reasoning_content, first_token_time
 
             _flush_buffer()
-            # 在结束前，将面板内容替换为完整响应，确保最后一次渲染的 panel 显示全部内容
+            end_time = time.time()
+            duration = end_time - start_time
+            _update_panel_content("", update_subtitle=True, show_cursor=False)
+            with _lock:
+                _update_panel_subtitle(
+                    panel,
+                    response,
+                    reasoning_content,
+                    is_completed=True,
+                    duration=duration,
+                    first_tok_time=first_token_time,
+                )
+                live.update(panel)
 
-        return response, time.time() - start_time
+        # 发送流式结束事件
+        response_tokens = (
+            get_context_token_count(response)
+            + get_context_token_count(reasoning_content)
+            if get_context_token_count is not None
+            else 0
+        )
+        generation_time = (
+            duration - first_token_time if duration > first_token_time else duration
+        )
+        tokens_per_second = (
+            response_tokens / generation_time if generation_time > 0 else 0
+        )
+        emit_output(
+            OutputEvent(
+                text="",
+                output_type=OutputType.STREAM_END,
+                timestamp=False,
+                context={
+                    "duration": duration,
+                    "first_token_time": first_token_time,
+                    "tokens": response_tokens,
+                    "tokens_per_second": tokens_per_second,
+                },
+            )
+        )
+
+        setattr(Heading, "__rich_console__", _original_rich_console)
+
+        return response, reasoning_content, first_token_time
+
+    @staticmethod
+    def stream_chat_simple(
+        chat_iterator: Generator[Tuple[str, str], None, None],
+        prefix: str,
+        start_time: float,
+        message: str = "",
+        max_output: int = 0,
+        check_interrupt: Callable[[], bool] = lambda: False,
+        append_session_history: Callable[[str, str], None] = lambda a, b: None,
+        get_context_token_count: Optional[Callable[[str], int]] = None,
+    ) -> Tuple[str, str, float]:
+        """
+        使用简单模式进行流式聊天输出（逐字符打印）。
+
+        参数：
+            chat_iterator: 聊天响应迭代器
+            prefix: 输出前缀（如"🤖 模型输出 - xxx"）
+            start_time: 开始时间戳
+            message: 用户消息（用于中断时保存历史）
+            max_output: 最大输出长度，0表示无限制
+            check_interrupt: 检查是否请求中断的回调
+            append_session_history: 追加会话历史的回调
+            get_context_token_count: 计算文本token数的回调（用于显示速度，可选）
+            output_sink: 输出后端（可选），用于 Gateway 模式流式发送
+
+        返回：
+            Tuple[str, str, float]: (模型响应, 推理内容, 首token时间)
+        """
+        import time
+
+        from jarvis.jarvis_utils.utils import is_repeating_text
+
+        # 解析 prefix 获取 agent_name 和 model_name
+        agent_name = ""
+        model_name = ""
+        if "·" in prefix:
+            parts = prefix.split("·")
+            if len(parts) > 1:
+                agent_name = parts[0].replace("🤖 模型输出 - ", "").strip()
+                if "(" in parts[1]:
+                    model_name = parts[1].split("(")[1].rstrip(")").strip()
+
+        console.print(prefix, soft_wrap=False)
+        response = ""
+        reasoning_content = ""
+        first_token_time = 0.0
+        last_repeating_check_len = 0
+        repeating_check_interval = 100
+
+        # 发送流式开始事件
+        emit_output(
+            OutputEvent(
+                text="",
+                output_type=OutputType.STREAM_START,
+                timestamp=False,
+                context={
+                    "agent_name": agent_name,
+                    "model_name": model_name,
+                    "start_time": start_time,
+                },
+            )
+        )
+
+        try:
+            for chunk_type, chunk_content in chat_iterator:
+                if chunk_content and first_token_time == 0.0:
+                    first_token_time = time.time() - start_time
+                # 打印时 reason 和 content 都显示，reason用灰色样式
+                style = "dim" if chunk_type == "reason" else "bright_white"
+                console.print(chunk_content, end="", style=style)
+                # 返回时只拼接 content 类型
+                if chunk_type == "content":
+                    response += chunk_content
+                # 收集 reason 类型内容
+                elif chunk_type == "reason":
+                    reasoning_content += chunk_content
+                # 发送流式 chunk 事件
+                if chunk_content:
+                    emit_output(
+                        OutputEvent(
+                            text=chunk_content,
+                            output_type=OutputType.STREAM_CHUNK,
+                            timestamp=False,
+                        )
+                    )
+
+                # 实时检测重复输出（包括推理内容）
+                total_len = len(response) + len(reasoning_content)
+                if total_len - last_repeating_check_len >= repeating_check_interval:
+                    last_repeating_check_len = total_len
+                    combined_text = reasoning_content + response
+                    is_repeating, _, _, _ = is_repeating_text(combined_text)
+                    if is_repeating:
+                        PrettyOutput.auto_print("⚠ 检测到模型输出陷入重复，将自动重试")
+                        return "", "", 0.0
+
+                if max_output > 0 and len(response) >= max_output:
+                    append_session_history(message, response)
+                    return response, reasoning_content, first_token_time
+                if check_interrupt():
+                    append_session_history(message, response)
+                    return response, reasoning_content, first_token_time
+        except Exception as e:
+            # 发生异常时，打印错误信息并返回已收集的内容
+            PrettyOutput.auto_print(f"⚠️ 流式输出异常: {e}")
+            append_session_history(message, response)
+            return response, reasoning_content, first_token_time
+
+        console.print()
+        end_time = time.time()
+        duration = end_time - start_time
+        response_tokens = (
+            get_context_token_count(response)
+            + get_context_token_count(reasoning_content)
+            if get_context_token_count is not None
+            else 0
+        )
+
+        generation_time = (
+            duration - first_token_time if duration > first_token_time else duration
+        )
+        tokens_per_second = (
+            response_tokens / generation_time if generation_time > 0 else 0
+        )
+        console.print(
+            f"✓ 对话完成耗时: {duration:.2f}秒 | 首token: {first_token_time:.2f}秒 | 速度: {tokens_per_second:.1f} tokens/s"
+        )
+
+        # 发送流式结束事件
+        emit_output(
+            OutputEvent(
+                text="",
+                output_type=OutputType.STREAM_END,
+                timestamp=False,
+                context={
+                    "duration": duration,
+                    "first_token_time": first_token_time,
+                    "tokens": response_tokens,
+                    "tokens_per_second": tokens_per_second,
+                },
+            )
+        )
+
+        return response, reasoning_content, first_token_time
+
+
+class OutputWatchdogPaused:
+    """上下文管理器：作用域内暂停无输出看门狗（Jarvis agent 兼容层）。"""
+
+    def __enter__(self) -> "OutputWatchdogPaused":
+        return self
+
+    def __exit__(self, exc_type: Any, exc: Any, tb: Any) -> None:
+        return None
+
+
+@contextmanager
+def status_spinner(
+    message: str,
+    *,
+    spinner: str = "dots",
+    console: Optional[Any] = None,
+    **status_kwargs: Any,
+) -> Iterator[Any]:
+    """Rich Status 行；与 Jarvis agent 模块兼容。"""
+    from rich.status import Status
+
+    from jarvis.jarvis_utils.globals import console as default_console
+
+    cons = console if console is not None else default_console
+    with OutputWatchdogPaused():
+        with Status(message, spinner=spinner, console=cons, **status_kwargs) as st:
+            yield st

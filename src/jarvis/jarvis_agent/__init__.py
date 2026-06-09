@@ -2136,7 +2136,7 @@ class Agent:
                     self.pin_content = user_input
 
             # 如果是CodeAgent实例，则跳过注册，由CodeAgent.run自行管理
-            if not isinstance(self, CodeAgent):
+            if CodeAgent is None or not isinstance(self, CodeAgent):
                 set_current_agent(self.name, self)  # 标记agent开始运行
             non_interactive_note = ""
             if getattr(self, "non_interactive", False):
@@ -2214,7 +2214,7 @@ class Agent:
             return self._main_loop()
 
         finally:
-            if not isinstance(self, CodeAgent):
+            if CodeAgent is None or not isinstance(self, CodeAgent):
                 clear_current_agent()
 
     def analysis(self, satisfaction_feedback: str = "") -> None:

@@ -14,22 +14,16 @@ from typing import List
 from typing import Optional
 from typing import Tuple
 
-import yaml
+import yaml  # type: ignore[import-untyped]
 
 from jarvis.jarvis_utils.config import get_data_dir, read_text_file
 
 # Lint工具对应的自动修复命令映射（lint工具名 -> 自动修复命令模板）
 # 用于在发现lint告警时，提示用户可用的自动修复工具
-#
-# 注意：mypy 默认未启用（误报多且无自动修复），如需启用请在项目级
-# .jarvis/lint_tools.yaml 中添加，例如：
-#   ".py":
-#     - "ruff check {file_path}"
-#     - "mypy {file_path}"
 LINT_AUTO_FIX_COMMANDS: Dict[str, List[str]] = {
     # Python
     "ruff": ["ruff check --fix {file_path}", "ruff format {file_path}"],
-    "mypy": [],  # mypy没有自动修复功能
+    "ty": [],  # ty没有自动修复功能
     "pylint": [],  # pylint没有自动修复功能
     "flake8": [],  # flake8没有自动修复功能
     # JavaScript/TypeScript
@@ -68,32 +62,37 @@ LINT_AUTO_FIX_COMMANDS: Dict[str, List[str]] = {
 # - {config}: 配置文件路径（可选）
 LINT_COMMAND_TEMPLATES_BY_FILE: Dict[str, List[str]] = {
     # C/C++
-    ".c": ["clang-tidy {file_path}"],
-    ".cpp": ["clang-tidy {file_path}"],
-    ".cc": ["clang-tidy {file_path}"],
-    ".cxx": ["clang-tidy {file_path}"],
-    ".h": ["clang-tidy {file_path}"],
-    ".hpp": ["clang-tidy {file_path}"],
-    ".hxx": ["clang-tidy {file_path}"],
-    ".inl": ["clang-tidy {file_path}"],
-    ".ipp": ["clang-tidy {file_path}"],
+    ".c": ["clang-tidy --checks=* {file_path}"],
+    ".cpp": ["clang-tidy --checks=* {file_path}"],
+    ".cc": ["clang-tidy --checks=* {file_path}"],
+    ".cxx": ["clang-tidy --checks=* {file_path}"],
+    ".h": ["clang-tidy --checks=* {file_path}"],
+    ".hpp": ["clang-tidy --checks=* {file_path}"],
+    ".hxx": ["clang-tidy --checks=* {file_path}"],
+    ".inl": ["clang-tidy --checks=* {file_path}"],
+    ".ipp": ["clang-tidy --checks=* {file_path}"],
     # Go
     ".go": ["go vet {file_path}"],
     # Python
     ".py": [
         "ruff check {file_path}",
+        "ty check {file_path}",
     ],
     ".pyw": [
         "ruff check {file_path}",
+        "ty check {file_path}",
     ],
     ".pyi": [
         "ruff check {file_path}",
+        "ty check {file_path}",
     ],
     ".pyx": [
         "ruff check {file_path}",
+        "ty check {file_path}",
     ],
     ".pxd": [
         "ruff check {file_path}",
+        "ty check {file_path}",
     ],
     # Rust
     ".rs": ["cargo clippy --message-format=short"],
@@ -184,6 +183,7 @@ LINT_COMMAND_TEMPLATES_BY_FILE: Dict[str, List[str]] = {
     ".bashrc": ["shellcheck {file_path}"],
     ".bash_profile": ["shellcheck {file_path}"],
     ".zshrc": ["shellcheck {file_path}"],
+    ".gitignore": ["git-lint {file_path}"],
     ".editorconfig": ["editorconfig-checker {file_path}"],
     ".eslintrc": ["eslint {file_path}"],
     ".prettierrc": ["prettier --check {file_path}"],

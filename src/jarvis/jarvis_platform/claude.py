@@ -6,14 +6,15 @@ from typing import Optional
 from typing import Generator
 from typing import List
 from typing import Tuple
+from typing import Union
 
 from anthropic import Anthropic
 from anthropic.types import MessageParam
 
 from jarvis.jarvis_platform.base import BasePlatform
-from jarvis.jarvis_utils.config import is_immediate_abort
-from jarvis.jarvis_utils.globals import get_interrupt
+from jarvis.jarvis_platform.content_types import ContentBlock
 from jarvis.jarvis_utils.output import PrettyOutput
+import jarvis.jarvis_utils.globals as jglobals
 
 
 class ClaudeModel(BasePlatform):
@@ -58,45 +59,63 @@ class ClaudeModel(BasePlatform):
             self.api_key = os.getenv("ANTHROPIC_API_KEY")
             self.base_url = os.getenv("ANTHROPIC_BASE_URL")
 
+        # 如果设置了代理节点，将 base_url 转为 Gateway 代理 URL
+        if jglobals.proxy_node and jglobals.master_url and self.base_url:
+            # 将原始 base_url 作为目标 URL，拼接为代理格式
+            # 注意：需要添加 /api/node/{node_id}/ 前缀以匹配 FastAPI 路由
+            self.base_url = f"{jglobals.master_url}/api/node/{jglobals.proxy_node}/http_proxy/{self.base_url}"
+
+            # 在代理模式下，添加 X-Jarvis-Token 头用于 Gateway 认证
+            # 从环境变量获取 Jarvis Token（由 Agent 启动时设置）
+            jarvis_token = os.getenv("JARVIS_AUTH_TOKEN")
+            if jarvis_token:
+                # Anthropic SDK 支持通过 http_client 或额外参数传递自定义头
+                # 这里保存到实例变量，在请求时使用
+                self._jarvis_token = jarvis_token
+
         # 只有当 llm_config 不为空但其中没有 anthropic_api_key，且环境变量也没有设置时，才打印警告
         # 如果 llm_config 为空字典，说明可能是配置还未加载完成，不打印警告（避免第一轮误报）
         if not self.api_key and llm_config:
-            PrettyOutput.auto_print("⚠️ ANTHROPIC_API_KEY 未设置")
-
+            PrettyOutput.auto_print(
+                "⚠️ 未找到 Anthropic API Key，请在 llm_config 中设置 anthropic_api_key 或设置 ANTHROPIC_API_KEY 环境变量"
+            )
         # model_name 已在基类 BasePlatform.__init__ 中根据 platform_type 设置
 
         # 初始化 Anthropic 客户端
         self.client = None
         try:
-            if self.base_url:
-                self.client = Anthropic(api_key=self.api_key, base_url=self.base_url)
-            else:
-                self.client = Anthropic(api_key=self.api_key)
-        except Exception as e:
-            PrettyOutput.auto_print(f"⚠️ 初始化 Anthropic 客户端失败: {e}")
+            # 准备默认请求头
+            default_headers = {}
 
+            # 在代理模式下，添加 X-Jarvis-Token 头用于 Gateway 认证
+            if hasattr(self, "_jarvis_token") and self._jarvis_token:
+                default_headers["X-Jarvis-Token"] = self._jarvis_token
+
+            if self.base_url:
+                if default_headers:
+                    self.client = Anthropic(
+                        api_key=self.api_key,
+                        base_url=self.base_url,
+                        default_headers=default_headers,
+                    )
+                else:
+                    self.client = Anthropic(
+                        api_key=self.api_key, base_url=self.base_url
+                    )
+            else:
+                if default_headers:
+                    self.client = Anthropic(
+                        api_key=self.api_key, default_headers=default_headers
+                    )
+                else:
+                    self.client = Anthropic(api_key=self.api_key)
+        except Exception as e:
+            PrettyOutput.auto_print(f"⚠️ Anthropic 客户端初始化失败: {e}")
         # 消息历史
-        self.messages: List[Dict[str, str]] = []
+        self.messages: List[Dict[str, Any]] = []
         self.system_message = ""
 
-    def set_platform_type(self, platform_type: str) -> None:
-        """切换 cheap/normal/smart 后同步 Anthropic 凭证与 Client。"""
-        super().set_platform_type(platform_type)
-        llm_config = self._llm_config or {}
-        if llm_config:
-            if "anthropic_api_key" in llm_config:
-                self.api_key = llm_config.get("anthropic_api_key")
-            if "anthropic_base_url" in llm_config:
-                self.base_url = llm_config.get("anthropic_base_url")
-        try:
-            if self.base_url:
-                self.client = Anthropic(api_key=self.api_key, base_url=self.base_url)
-            else:
-                self.client = Anthropic(api_key=self.api_key)
-        except Exception as e:
-            PrettyOutput.auto_print(f"⚠️ 切换档位后重建 Anthropic 客户端失败: {e}")
-
-    def set_messages(self, messages: List[Dict[str, str]]) -> None:
+    def set_messages(self, messages: List[Dict[str, Any]]) -> None:
         """替换对话历史
 
         参数:
@@ -111,7 +130,17 @@ class ClaudeModel(BasePlatform):
         # 如果消息列表包含系统消息，更新 system_message 属性
         for msg in messages:
             if msg.get("role") == "system":
-                self.system_message = msg.get("content", "")
+                content = msg.get("content", "")
+                # 多模态消息的 content 可能是 list，提取文本部分
+                if isinstance(content, list):
+                    text_parts = [
+                        block.get("text", "")
+                        for block in content
+                        if isinstance(block, dict) and block.get("type") == "text"
+                    ]
+                    self.system_message = " ".join(text_parts)
+                else:
+                    self.system_message = content
                 break
 
         # 计算 conversation_turn：统计非 system 消息中的 user 消息数量
@@ -120,11 +149,11 @@ class ClaudeModel(BasePlatform):
             1 for msg in non_system_messages if msg.get("role") == "user"
         )
 
-    def get_messages(self) -> List[Dict[str, str]]:
+    def get_messages(self) -> List[Dict[str, Any]]:
         """获取对话历史
 
         返回:
-            List[Dict[str, str]]: 对话历史列表，每个元素包含 role 和 content
+            List[Dict[str, Any]]: 对话历史列表，每个元素包含 role 和 content
         """
         return self.messages
 
@@ -155,7 +184,7 @@ class ClaudeModel(BasePlatform):
                 PrettyOutput.auto_print("✅ 成功从API获取模型列表")
                 return models
             else:
-                PrettyOutput.auto_print("⚠️ API响应中没有模型数据")
+                PrettyOutput.auto_print("⚠️ 未从API获取到模型列表")
                 return []
         except AttributeError:
             # models API 不存在或不支持
@@ -188,15 +217,19 @@ class ClaudeModel(BasePlatform):
         self.system_message = message
         self.messages.append({"role": "system", "content": self.system_message})
 
-    def chat(self, message: str) -> Generator[str, None, None]:
+    def chat(
+        self, message: Union[str, List[ContentBlock]]
+    ) -> Generator[Tuple[str, str], None, None]:
         """
         执行对话并返回生成器
 
         参数:
-            message: 用户输入的消息内容
+            message: 用户输入的消息内容，支持纯文本(str)或多模态内容(List[ContentBlock])
 
         返回:
-            Generator[str, None, None]: 生成器，逐块返回AI响应内容
+            Generator[Tuple[str, str], None, None]: 生成器，逐块返回 (类型, 内容) 元组
+            类型: "reason" 表示推理过程，"content" 表示正文内容
+            注意: Claude 模型没有 reasoning_content，所有内容都是 content 类型
 
         异常:
             当API调用失败时会抛出异常并打印错误信息
@@ -225,7 +258,69 @@ class ClaudeModel(BasePlatform):
                     anthropic_messages.append({"role": "assistant", "content": content})
 
             # 添加当前用户消息
-            anthropic_messages.append({"role": "user", "content": message})
+            # 处理多模态消息
+            if isinstance(message, str):
+                user_message_content = message
+            else:
+                # 检查多模态支持，如果不支持则降级为纯文本
+                if not self.supports_multimodal():
+                    PrettyOutput.auto_print(
+                        "⚠️ 当前模型不支持多模态输入，已自动降级为纯文本模式"
+                    )
+                    # 只保留文本内容
+                    text_parts = [
+                        block["text"] for block in message if block["type"] == "text"
+                    ]
+                    user_message_content = (
+                        "\n".join(text_parts) if text_parts else "[多模态内容已跳过]"
+                    )
+                else:
+                    # 将 List[ContentBlock] 转换为 Claude API 期望的格式
+                    user_message_content = []
+                    for block in message:
+                        if block["type"] == "text":
+                            user_message_content.append(
+                                {"type": "text", "text": block["text"]}
+                            )
+                        elif block["type"] == "image_url":
+                            # Claude API 期望 image 类型，并且需要 source 字段
+                            # 这里假设 image_url 是 base64 编码的数据 URL 或普通 URL
+                            # 如果是普通 URL，可能需要先下载并转换为 base64
+                            # 这里简化处理，假设是 base64 数据 URL
+                            image_url_data = block["image_url"]
+                            if isinstance(image_url_data, str):
+                                # 如果是数据 URL (data:image/jpeg;base64,...)
+                                if image_url_data.startswith("data:image"):
+                                    # 解析数据 URL
+                                    header, data = image_url_data.split(",", 1)
+                                    media_type = header.split(":")[1].split(";")[0]
+                                    user_message_content.append(
+                                        {
+                                            "type": "image",
+                                            "source": {
+                                                "type": "base64",
+                                                "media_type": media_type,
+                                                "data": data,
+                                            },
+                                        }
+                                    )
+                                else:
+                                    # 如果是普通 URL，暂时转换为文本描述
+                                    # 实际实现可能需要下载图片并转换为 base64
+                                    user_message_content.append(
+                                        {
+                                            "type": "text",
+                                            "text": f"[Image URL: {image_url_data}]",
+                                        }
+                                    )
+                            elif isinstance(image_url_data, dict):
+                                # 如果已经是 dict 格式，假设符合 Claude API 格式
+                                user_message_content.append(image_url_data)
+                    else:
+                        # 未知类型，忽略或报错
+                        pass
+
+            anthropic_messages.append({"role": "user", "content": user_message_content})
 
             # 累计完整响应
             accumulated_response = ""
@@ -259,15 +354,15 @@ class ClaudeModel(BasePlatform):
             with self.client.messages.stream(**stream_kwargs) as stream:  # type: ignore
                 full_response = ""
                 for text in stream.text_stream:
-                    if is_immediate_abort() and get_interrupt():
-                        break
                     full_response += text
                     accumulated_response += text
-                    yield text
+                    yield ("content", text)
 
             # 将响应添加到消息历史
             if accumulated_response:
-                self.messages.append({"role": "user", "content": message})
+                # 将多模态消息转换为字符串表示形式存储在历史中
+                user_content = message if isinstance(message, str) else "[多模态消息]"
+                self.messages.append({"role": "user", "content": user_content})
                 self.messages.append(
                     {"role": "assistant", "content": accumulated_response}
                 )
@@ -279,62 +374,6 @@ class ClaudeModel(BasePlatform):
             if len(self.messages) > messages_before_user:
                 self.messages = self.messages[:messages_before_user]
             raise Exception(f"Chat failed: {str(e)}")
-
-    def chat_non_stream(self, message: str) -> str:
-        """非流式对话（用于流式失败降级兜底）。"""
-        if not self.client:
-            raise Exception("Anthropic client not initialized")
-
-        messages_before_user = len(self.messages)
-        try:
-            anthropic_messages: List[MessageParam] = []
-            system_content = None
-            for msg in self.messages:
-                role = msg.get("role")
-                content = msg.get("content")
-                if role == "system" and content:
-                    system_content = content
-                    self.system_message = content
-                elif role == "user" and content:
-                    anthropic_messages.append({"role": "user", "content": content})
-                elif role == "assistant" and content:
-                    anthropic_messages.append({"role": "assistant", "content": content})
-
-            anthropic_messages.append({"role": "user", "content": message})
-
-            system_param = None
-            if system_content:
-                system_param = [{"type": "text", "text": system_content}]
-
-            create_kwargs: Dict[str, Any] = {
-                "model": self.model_name,
-                "messages": anthropic_messages,
-                "max_tokens": 4096,
-            }
-            if system_param:
-                create_kwargs["system"] = system_param
-
-            resp = self.client.messages.create(**create_kwargs)  # type: ignore[arg-type]
-
-            text_parts: List[str] = []
-            try:
-                for block in getattr(resp, "content", []) or []:
-                    t = getattr(block, "text", None)
-                    if t:
-                        text_parts.append(str(t))
-            except Exception:
-                pass
-            content = "".join(text_parts).strip()
-            if not content:
-                raise Exception("No response from model (non-stream)")
-
-            self.messages.append({"role": "user", "content": message})
-            self.messages.append({"role": "assistant", "content": content})
-            return content
-        except Exception as e:
-            if len(self.messages) > messages_before_user:
-                self.messages = self.messages[:messages_before_user]
-            raise Exception(f"Non-stream chat failed: {str(e)}")
 
     def name(self) -> str:
         """
@@ -390,7 +429,7 @@ class ClaudeModel(BasePlatform):
 
         # 如果非system消息少于等于10条，无法裁剪
         if len(non_system_messages) <= 10:
-            PrettyOutput.auto_print("⚠️ 警告：非system消息不足10条，无法裁剪")
+            PrettyOutput.auto_print("⚠️ 非系统消息数量不足，无法裁剪")
             return False
 
         # 丢弃开头的10条非system消息
@@ -408,9 +447,7 @@ class ClaudeModel(BasePlatform):
             )
             return True
         else:
-            PrettyOutput.auto_print(
-                f"⚠️ 警告：已裁剪{trimmed_count}条消息，但仍无剩余token"
-            )
+            PrettyOutput.auto_print(f"⚠️ 裁剪失败：剩余token {remaining_tokens} 不足")
             return False
 
     @classmethod

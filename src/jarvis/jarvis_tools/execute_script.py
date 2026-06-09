@@ -1,14 +1,33 @@
 # -*- coding: utf-8 -*-
+import base64
 import os
 import re
+import select
+import subprocess
 import sys
 import tempfile
+import threading
 import time
+import uuid
+from datetime import datetime
+from datetime import timezone
+from abc import ABC
+from abc import abstractmethod
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+from typing import Callable
 from typing import Dict
+from typing import cast
 from typing import List
+from typing import Optional
+from typing import Tuple
+from typing import Union
 
+from jarvis.jarvis_utils.globals import clear_script_pid
+from jarvis.jarvis_utils.globals import get_interrupt
+from jarvis.jarvis_utils.globals import set_interrupt
+from jarvis.jarvis_utils.globals import set_script_pid
 from jarvis.jarvis_utils.output import PrettyOutput
 
 # 匹配 ANSI/终端转义序列
@@ -26,6 +45,89 @@ _OSC_PAYLOAD_ORPHAN = re.compile(
 )
 
 
+class ExecutionStreamPublisher(ABC):
+    """脚本执行流式消息发布器抽象。"""
+
+    @abstractmethod
+    def publish(
+        self, message: Dict[str, Any], session_id: Optional[str] = None
+    ) -> None:
+        raise NotImplementedError
+
+
+class NullExecutionStreamPublisher(ExecutionStreamPublisher):
+    """默认空发布器，保持原有行为。"""
+
+    def publish(
+        self, message: Dict[str, Any], session_id: Optional[str] = None
+    ) -> None:
+        del message, session_id
+
+
+class GatewayExecutionStreamPublisher(ExecutionStreamPublisher):
+    """将执行流事件转发到 Gateway。"""
+
+    def __init__(self, gateway: Any) -> None:
+        self._gateway = gateway
+
+    def publish(
+        self, message: Dict[str, Any], session_id: Optional[str] = None
+    ) -> None:
+        if self._gateway is None:
+            return
+        try:
+            from jarvis.jarvis_gateway.events import GatewayExecutionEvent
+        except Exception:
+            return
+
+        event_type = (
+            message.get("message_type") or message.get("type") or "execution_event"
+        )
+        try:
+            event = GatewayExecutionEvent(
+                event_type=str(event_type),
+                payload=dict(message),
+                timestamp=message.get("timestamp"),
+            )
+            self._gateway.publish_execution_event(event, session_id=session_id)
+        except Exception:
+            return
+
+
+@dataclass(frozen=True)
+class ExecutionRequest:
+    interpreter: str
+    script_content: str
+    execution_mode: str
+    session_id: Optional[str] = None
+    stream_publisher: Optional[ExecutionStreamPublisher] = None
+    execution_id: Optional[str] = None
+    input_callback: Optional[Callable[[float], Optional[str]]] = None
+    resize_callback: Optional[Callable[[], Optional[Tuple[int, int]]]] = None
+
+
+class ExecutionBackend(ABC):
+    """脚本执行后端抽象。"""
+
+    @abstractmethod
+    def execute(self, tool: Any, request: ExecutionRequest) -> Dict[str, Any]:
+        raise NotImplementedError
+
+
+class CapturedExecutionBackend(ExecutionBackend):
+    """标准结果模式后端，保持现有 stdout/stderr 返回结构。"""
+
+    def execute(self, tool: Any, request: ExecutionRequest) -> Dict[str, Any]:
+        return cast(Dict[str, Any], tool._execute_script_captured(request))
+
+
+class VirtualTTYExecutionBackend(ExecutionBackend):
+    """交互流/TTY 模式后端。"""
+
+    def execute(self, tool: Any, request: ExecutionRequest) -> Dict[str, Any]:
+        return cast(Dict[str, Any], tool._execute_script_interactive(request))
+
+
 class ScriptTool:
     """Combined script execution tool
 
@@ -33,7 +135,7 @@ class ScriptTool:
     """
 
     name = "execute_script"
-    description = "执行脚本并返回结果，支持任意解释器。Windows 默认使用 powershell，Unix 默认使用 bash。为了避免输出过多内容，建议使用 rg、grep、Select-String 等命令过滤和限制输出长度。\n\n示例用法（Unix/Linux）：\n• 查找日志中的错误：interpreter='bash', script_content='grep -i \"error\" /var/log/app.log'\n• 查看文件开头20行：interpreter='bash', script_content='head -n 20 large_file.txt'\n• 搜索代码中的函数定义：interpreter='bash', script_content=\"rg '^def ' src/\"\n\n示例用法（Windows）：\n• 查找文件中的错误：interpreter='powershell', script_content='Select-String -Pattern \"error\" -Path .\\app.log'\n• 查看目录列表：interpreter='powershell', script_content='Get-ChildItem | Select-Object -First 20'\n• 执行 Python 脚本：interpreter='python', script_content='print(\"hello\")'"
+    description = "执行脚本并返回结果，支持任意解释器。Windows 默认使用 powershell，Unix 默认使用 bash。为了避免输出过多内容，建议使用 grep、Select-String 等命令过滤和限制输出长度。\n\n示例用法（Unix/Linux）：\n• 查找日志中的错误：interpreter='bash', script_content='grep -i \"error\" /var/log/app.log'\n• 查看文件开头20行：interpreter='bash', script_content='head -n 20 large_file.txt'\n• 搜索代码中的函数定义：interpreter='bash', script_content=\"grep -rn '^def ' src/\"\n\n示例用法（Windows）：\n• 查找文件中的错误：interpreter='powershell', script_content='Select-String -Pattern \"error\" -Path .\\app.log'\n• 查看目录列表：interpreter='powershell', script_content='Get-ChildItem | Select-Object -First 20'\n• 执行 Python 脚本：interpreter='python', script_content='print(\"hello\")'"
     parameters = {
         "type": "object",
         "properties": {
@@ -43,7 +145,7 @@ class ScriptTool:
             },
             "script_content": {
                 "type": "string",
-                "description": "要执行的脚本内容。为了避免输出过多，建议使用过滤命令：\n例如：\n• grep -i 'error' filename  # 查找包含'error'的行\n• rg 'pattern' filename     # 使用ripgrep查找模式\n• tail -n 50 filename       # 显示文件最后50行\n• head -n 20 filename       # 显示文件前20行\n• command | head -n 100     # 限制命令输出前100行",
+                "description": "要执行的脚本内容。为了避免输出过多，建议使用过滤命令：\n例如：\n• grep -i 'error' filename  # 查找包含'error'的行\n• grep -rn 'pattern' filename     # 搜索文件内容\n• tail -n 50 filename       # 显示文件最后50行\n• head -n 20 filename       # 显示文件前20行\n• command | head -n 100     # 限制命令输出前100行",
             },
         },
         "required": ["script_content"],
@@ -83,6 +185,11 @@ class ScriptTool:
     def _is_windows() -> bool:
         """检测是否为 Windows 系统（Windows 没有 script 命令）"""
         return sys.platform == "win32"
+
+    @staticmethod
+    def _is_macos() -> bool:
+        """检测是否为 macOS 系统（macOS 的 script 命令语法与 Linux 不同）"""
+        return sys.platform == "darwin"
 
     def _get_windows_command(
         self, interpreter: str, script_path: str, extension: str
@@ -127,68 +234,198 @@ class ScriptTool:
         return s
 
     @staticmethod
-    def _apply_no_pager_env(env: Dict[str, str]) -> Dict[str, str]:
-        """避免 git diff/log 等进入 pager（less）阻塞，需要用户按 q 才能退出。"""
-        try:
-            e = dict(env or {})
-        except Exception:
-            e = {}
-        # 通用 pager 控制
-        e.setdefault("PAGER", "cat")
-        e.setdefault("GIT_PAGER", "cat")
-        # 避免 less 的初始化与等待（即便仍被触发也尽量不中断）
-        e.setdefault("LESS", "FRX")
-        # 某些环境还会读取 LV（less wrapper），这里不强行覆盖
-        return e
+    def _get_event_timestamp() -> str:
+        return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+
+    def _publish_stream_message(
+        self,
+        publisher: Optional[ExecutionStreamPublisher],
+        chunk: Union[bytes, str],
+        *,
+        stream: str,
+        session_id: Optional[str],
+        execution_id: Optional[str] = None,
+        sequence: Optional[int] = None,
+    ) -> None:
+        if not publisher or not chunk:
+            return
+        # 使用 base64 编码传输二进制数据
+        # 支持 bytes 和 str 输入
+        if isinstance(chunk, str):
+            chunk_bytes = chunk.encode("utf-8", errors="replace")
+        else:
+            chunk_bytes = chunk
+        chunk_b64 = base64.b64encode(chunk_bytes).decode("utf-8")
+        publisher.publish(
+            {
+                "type": "tool_stream",
+                "message_type": "tool_stream",
+                "tool": self.name,
+                "stream": stream,
+                "chunk": chunk_b64,
+                "encoded": True,  # 标记数据已编码
+                "execution_id": execution_id,
+                "sequence": sequence,
+                "timestamp": self._get_event_timestamp(),
+            },
+            session_id=session_id,
+        )
+
+    def _publish_execution_event(
+        self,
+        publisher: Optional[ExecutionStreamPublisher],
+        *,
+        message_type: str,
+        session_id: Optional[str],
+        execution_id: Optional[str],
+        stream: str = "tty",
+        chunk: str = "",
+        sequence: Optional[int] = None,
+        exit_code: Optional[int] = None,
+        reason: Optional[str] = None,
+    ) -> None:
+        if not publisher:
+            return
+        publisher.publish(
+            {
+                "type": message_type,
+                "message_type": message_type,
+                "tool": self.name,
+                "stream": stream,
+                "chunk": chunk,
+                "execution_id": execution_id,
+                "sequence": sequence,
+                "exit_code": exit_code,
+                "reason": reason,
+                "timestamp": self._get_event_timestamp(),
+            },
+            session_id=session_id,
+        )
 
     def _execute_on_windows_interactive_pty(
-        self, argv: List[str], env: Dict[str, str], get_timeout: Any
+        self,
+        argv: List[str],
+        env: Dict[str, str],
+        get_timeout: Any,
+        stream_publisher: Optional[ExecutionStreamPublisher] = None,
+        session_id: Optional[str] = None,
+        execution_id: Optional[str] = None,
+        input_callback: Optional[Callable[[float], Optional[str]]] = None,
+        resize_callback: Optional[Callable[[], Optional[Tuple[int, int]]]] = None,
     ) -> Dict[str, Any]:
         """使用 pywinpty (ConPTY) 实现：用户可交互 + 可捕获输出，类似 Unix script 命令"""
         from winpty import PtyProcess
-
-        import threading
 
         captured: List[str] = []
         capture_lock = threading.Lock()
         read_done = threading.Event()
         exc_holder: List[BaseException] = []
+        sequence_lock = threading.Lock()
+        sequence = 0
+
+        def next_sequence() -> int:
+            nonlocal sequence
+            with sequence_lock:
+                sequence += 1
+                return sequence
+
+        def publish_input_chunk(chunk: str) -> None:
+            if not chunk:
+                return
+            proc.write(chunk)
+            self._publish_execution_event(
+                stream_publisher,
+                message_type="tool_input",
+                session_id=session_id,
+                execution_id=execution_id,
+                stream="stdin",
+                chunk=chunk,
+                sequence=next_sequence(),
+            )
+
+        def apply_resize(rows: int, cols: int) -> None:
+            if rows <= 0 or cols <= 0:
+                return
+            set_size = getattr(proc, "set_size", None)
+            if not callable(set_size):
+                return
+            try:
+                set_size(cols, rows)
+            except TypeError:
+                try:
+                    set_size(rows, cols)
+                except Exception:
+                    pass
+            except Exception:
+                pass
+
+        def poll_resize() -> None:
+            if resize_callback is None:
+                return
+            try:
+                size = resize_callback()
+            except Exception as exc:
+                exc_holder.append(exc)
+                return
+            if not size:
+                return
+            rows, cols = size
+            apply_resize(rows, cols)
 
         def reader(pty_proc: Any) -> None:
             try:
                 while pty_proc.isalive():
+                    # 检查是否收到中断信号
+                    if get_interrupt() > 0:
+                        break
+                    poll_resize()
                     try:
                         data = pty_proc.read(4096)
                         if data:
-                            text = self._strip_ansi(
-                                self._decode_windows_output(
-                                    data if isinstance(data, bytes) else data.encode()
-                                )
+                            raw_text = self._decode_windows_output(
+                                data if isinstance(data, bytes) else data.encode()
                             )
-                            with capture_lock:
-                                captured.append(text)
-                            sys.stdout.write(text)
+                            if not raw_text:
+                                continue
+                            display_text = self._strip_ansi(raw_text)
+                            if display_text:
+                                with capture_lock:
+                                    captured.append(display_text)
+                            self._publish_stream_message(
+                                stream_publisher,
+                                raw_text,
+                                stream="stdout",
+                                session_id=session_id,
+                                execution_id=execution_id,
+                                sequence=next_sequence(),
+                            )
+                            sys.stdout.write(raw_text)
                             sys.stdout.flush()
                     except (EOFError, OSError):
                         break
-                # 进程结束后，再尝试多次读取剩余数据（包括 OSC 残留）
-                # ConPTY 可能在进程退出后仍输出 OSC 序列
                 for _ in range(3):
                     try:
                         remaining_data = pty_proc.read(4096)
                         if remaining_data:
-                            text = self._strip_ansi(
-                                self._decode_windows_output(
-                                    remaining_data
-                                    if isinstance(remaining_data, bytes)
-                                    else remaining_data.encode()
-                                )
+                            raw_text = self._decode_windows_output(
+                                remaining_data
+                                if isinstance(remaining_data, bytes)
+                                else remaining_data.encode()
                             )
-                            # 只输出非空内容，避免输出清理后的空行
-                            if text.strip():
+                            display_text = self._strip_ansi(raw_text)
+                            if display_text.strip():
                                 with capture_lock:
-                                    captured.append(text)
-                                sys.stdout.write(text)
+                                    captured.append(display_text)
+                            if raw_text:
+                                self._publish_stream_message(
+                                    stream_publisher,
+                                    raw_text,
+                                    stream="stdout",
+                                    session_id=session_id,
+                                    execution_id=execution_id,
+                                    sequence=next_sequence(),
+                                )
+                                sys.stdout.write(raw_text)
                                 sys.stdout.flush()
                         else:
                             break
@@ -201,6 +438,8 @@ class ScriptTool:
 
         try:
             proc = PtyProcess.spawn(argv, cwd=os.getcwd(), env=env)
+            # 设置默认 tty 大小，避免无前端时输出被截断
+            apply_resize(100, 300)
         except Exception as e:
             PrettyOutput.auto_print(f"❌ PTY 启动失败: {str(e)}")
             return {
@@ -209,19 +448,41 @@ class ScriptTool:
                 "stderr": str(e),
             }
 
+        self._publish_execution_event(
+            stream_publisher,
+            message_type="tool_stream_start",
+            session_id=session_id,
+            execution_id=execution_id,
+            stream="stdout",
+            sequence=next_sequence(),
+        )
+
         reader_t = threading.Thread(target=reader, args=(proc,), daemon=True)
         reader_t.start()
 
         def stdin_forward() -> None:
             """使用 msvcrt.kbhit 轮询而非 readline 阻塞，确保脚本结束后能及时退出，不抢占后续 stdin"""
             try:
+                if input_callback is not None:
+                    while proc.isalive():
+                        poll_resize()
+                        try:
+                            chunk = input_callback(0.1)
+                        except Exception as e:
+                            exc_holder.append(e)
+                            break
+                        if chunk:
+                            publish_input_chunk(chunk)
+                    return
+
                 import msvcrt
 
                 while proc.isalive():
+                    poll_resize()
                     if msvcrt.kbhit():  # type: ignore[attr-defined]
                         try:
-                            ch = msvcrt.getwch()  # type: ignore[attr-defined]
-                            proc.write(ch)
+                            input_char = msvcrt.getwch()  # type: ignore[attr-defined]
+                            publish_input_chunk(input_char)
                         except (EOFError, OSError, UnicodeEncodeError):
                             break
                     else:
@@ -233,14 +494,17 @@ class ScriptTool:
         stdin_t.start()
 
         try:
-            timeout = get_timeout()
-            reader_t.join(timeout=timeout)
-            if reader_t.is_alive():
-                for m in ("terminate", "kill"):
-                    fn = getattr(proc, m, None)
-                    if callable(fn):
+            timeout = get_timeout() if callable(get_timeout) else None
+            if timeout is None:
+                reader_t.join()
+            else:
+                reader_t.join(timeout=timeout)
+            if timeout is not None and reader_t.is_alive():
+                for method_name in ("terminate", "kill"):
+                    terminate_method = getattr(proc, method_name, None)
+                    if callable(terminate_method):
                         try:
-                            fn()
+                            terminate_method()
                             break
                         except Exception:
                             pass
@@ -249,20 +513,44 @@ class ScriptTool:
                 except Exception:
                     pass
                 read_done.wait(timeout=2)
+                self._publish_execution_event(
+                    stream_publisher,
+                    message_type="tool_stream_end",
+                    session_id=session_id,
+                    execution_id=execution_id,
+                    stream="stdout",
+                    sequence=next_sequence(),
+                    exit_code=getattr(proc, "exitstatus", None)
+                    or getattr(proc, "returncode", None)
+                    or -1,
+                    reason="timeout",
+                )
                 return {
                     "success": False,
                     "stdout": "".join(captured),
                     "stderr": f"执行超时（超过{timeout}秒），进程已被终止。",
                 }
         except Exception as e:
-            for m in ("terminate", "kill"):
-                fn = getattr(proc, m, None)
-                if callable(fn):
+            for method_name in ("terminate", "kill"):
+                terminate_method = getattr(proc, method_name, None)
+                if callable(terminate_method):
                     try:
-                        fn()
+                        terminate_method()
                         break
                     except Exception:
                         pass
+            self._publish_execution_event(
+                stream_publisher,
+                message_type="tool_stream_end",
+                session_id=session_id,
+                execution_id=execution_id,
+                stream="stdout",
+                sequence=next_sequence(),
+                exit_code=getattr(proc, "exitstatus", None)
+                or getattr(proc, "returncode", None)
+                or -1,
+                reason="error",
+            )
             return {
                 "success": False,
                 "stdout": "".join(captured),
@@ -275,11 +563,409 @@ class ScriptTool:
         read_done.wait(timeout=2)
         output = "".join(captured).strip()
         if exc_holder:
+            self._publish_execution_event(
+                stream_publisher,
+                message_type="tool_stream_end",
+                session_id=session_id,
+                execution_id=execution_id,
+                stream="stdout",
+                sequence=next_sequence(),
+                exit_code=exit_code,
+                reason="error",
+            )
             return {
                 "success": False,
                 "stdout": output,
                 "stderr": str(exc_holder[0]),
             }
+        self._publish_execution_event(
+            stream_publisher,
+            message_type="tool_stream_end",
+            session_id=session_id,
+            execution_id=execution_id,
+            stream="stdout",
+            sequence=next_sequence(),
+            exit_code=exit_code,
+            reason="completed" if exit_code == 0 else "error",
+        )
+        return {
+            "success": exit_code == 0,
+            "stdout": output,
+            "stderr": "" if exit_code == 0 else f"退出码: {exit_code}",
+        }
+
+    def _execute_on_unix_interactive_pty(
+        self,
+        argv: List[str],
+        env: Dict[str, str],
+        get_timeout: Any,
+        stream_publisher: Optional[ExecutionStreamPublisher] = None,
+        session_id: Optional[str] = None,
+        execution_id: Optional[str] = None,
+        input_callback: Optional[Callable[[float], Optional[str]]] = None,
+        resize_callback: Optional[Callable[[], Optional[Tuple[int, int]]]] = None,
+    ) -> Dict[str, Any]:
+        import fcntl
+        import pty
+        import struct
+        import termios
+
+        captured: List[str] = []
+        captured_lock = threading.Lock()
+        raw_captured: List[bytes] = []
+        raw_captured_lock = threading.Lock()
+        stop_event = threading.Event()
+        exc_holder: List[BaseException] = []
+        sequence_lock = threading.Lock()
+        sequence = 0
+
+        def next_sequence() -> int:
+            nonlocal sequence
+            with sequence_lock:
+                sequence += 1
+                return sequence
+
+        master_fd, slave_fd = pty.openpty()
+        old_stdin_attrs = None
+        stdin_fd: Optional[int] = None
+        stdin_is_tty = False
+        if hasattr(sys.stdin, "fileno"):
+            try:
+                stdin_fd = sys.stdin.fileno()
+                stdin_is_tty = os.isatty(stdin_fd)
+            except Exception:
+                stdin_fd = None
+                stdin_is_tty = False
+
+        def apply_resize(rows: int, cols: int) -> None:
+            if rows <= 0 or cols <= 0:
+                return
+            try:
+                fcntl.ioctl(
+                    master_fd,
+                    termios.TIOCSWINSZ,
+                    struct.pack("HHHH", rows, cols, 0, 0),
+                )
+            except Exception:
+                pass
+
+        def poll_resize() -> None:
+            if resize_callback is None:
+                return
+            try:
+                size = resize_callback()
+            except Exception as exc:
+                exc_holder.append(exc)
+                return
+            if not size:
+                return
+            rows, cols = size
+            apply_resize(rows, cols)
+
+        # 设置默认 tty 大小，避免无前端时输出被截断
+        apply_resize(100, 300)
+
+        def reader(proc: subprocess.Popen[Any]) -> None:
+            try:
+                while not stop_event.is_set():
+                    # 检查是否收到中断信号
+                    if get_interrupt() > 0:
+                        break
+                    poll_resize()
+                    if proc.poll() is not None:
+                        ready, _, _ = select.select([master_fd], [], [], 0.1)
+                        if not ready:
+                            break
+                    else:
+                        ready, _, _ = select.select([master_fd], [], [], 0.1)
+                    if not ready:
+                        continue
+                    try:
+                        data = os.read(master_fd, 4096)
+                    except OSError:
+                        break
+                    if not data:
+                        break
+                    # 直接传递原始 bytes 数据给 _publish_stream_message
+                    self._publish_stream_message(
+                        stream_publisher,
+                        data,
+                        stream="tty",
+                        session_id=session_id,
+                        execution_id=execution_id,
+                        sequence=next_sequence(),
+                    )
+                    # 保存原始字节数据用于后续 pyte 处理
+                    with raw_captured_lock:
+                        raw_captured.append(data)
+                    # 对于本地输出，仍然需要解码
+                    raw_text = data.decode("utf-8", errors="replace")
+                    if not raw_text:
+                        continue
+                    display_text = self._strip_ansi(raw_text)
+                    if display_text:
+                        with captured_lock:
+                            captured.append(display_text)
+                    sys.stdout.write(raw_text)
+                    sys.stdout.flush()
+            except Exception as e:
+                exc_holder.append(e)
+            finally:
+                stop_event.set()
+
+        def write_input_chunk(chunk: str) -> None:
+            if not chunk:
+                return
+            try:
+                os.write(master_fd, chunk.encode("utf-8", errors="ignore"))
+                self._publish_execution_event(
+                    stream_publisher,
+                    message_type="tool_input",
+                    session_id=session_id,
+                    execution_id=execution_id,
+                    stream="stdin",
+                    chunk=chunk,
+                    sequence=next_sequence(),
+                )
+            except OSError:
+                stop_event.set()
+
+        def stdin_forward(proc: subprocess.Popen[Any]) -> None:
+            try:
+                if input_callback is not None:
+                    while not stop_event.is_set() and proc.poll() is None:
+                        poll_resize()
+                        try:
+                            chunk = input_callback(0.1)
+                        except Exception as e:
+                            exc_holder.append(e)
+                            break
+                        if chunk:
+                            write_input_chunk(chunk)
+                    return
+
+                if stdin_fd is None:
+                    return
+
+                if stdin_is_tty:
+                    import termios
+                    import tty
+
+                    try:
+                        old_attrs = termios.tcgetattr(stdin_fd)
+                        termios.tcsetattr(stdin_fd, termios.TCSADRAIN, old_attrs)
+                    except Exception:
+                        old_attrs = None
+                    if old_attrs is not None:
+                        nonlocal old_stdin_attrs
+                        old_stdin_attrs = old_attrs
+                        tty.setraw(stdin_fd)
+
+                while not stop_event.is_set() and proc.poll() is None:
+                    poll_resize()
+                    try:
+                        ready, _, _ = select.select([stdin_fd], [], [], 0.1)
+                    except Exception:
+                        break
+                    if not ready:
+                        continue
+                    try:
+                        data = os.read(stdin_fd, 1024)
+                    except OSError:
+                        break
+                    if not data:
+                        break
+                    write_input_chunk(data.decode("utf-8", errors="ignore"))
+            except Exception as e:
+                exc_holder.append(e)
+            finally:
+                if (
+                    stdin_is_tty
+                    and stdin_fd is not None
+                    and old_stdin_attrs is not None
+                ):
+                    try:
+                        import termios
+
+                        termios.tcsetattr(stdin_fd, termios.TCSADRAIN, old_stdin_attrs)
+                    except Exception:
+                        pass
+
+        try:
+            proc = subprocess.Popen(
+                argv,
+                stdin=slave_fd,
+                stdout=slave_fd,
+                stderr=slave_fd,
+                cwd=os.getcwd(),
+                env=env,
+                start_new_session=True,
+                close_fds=True,
+            )
+            set_script_pid(proc.pid)
+        except Exception as e:
+            os.close(master_fd)
+            os.close(slave_fd)
+            PrettyOutput.auto_print(f"❌ Unix PTY 启动失败: {str(e)}")
+            return {"success": False, "stdout": "", "stderr": str(e)}
+        finally:
+            try:
+                os.close(slave_fd)
+            except Exception:
+                pass
+
+        self._publish_execution_event(
+            stream_publisher,
+            message_type="tool_stream_start",
+            session_id=session_id,
+            execution_id=execution_id,
+            stream="tty",
+            sequence=next_sequence(),
+        )
+
+        reader_t = threading.Thread(target=reader, args=(proc,), daemon=True)
+        stdin_t = threading.Thread(target=stdin_forward, args=(proc,), daemon=True)
+        reader_t.start()
+        stdin_t.start()
+
+        timeout = get_timeout() if callable(get_timeout) else None
+        timed_out = False
+        try:
+            # 使用轮询方式检查中断，而不是直接调用 wait
+            start_time = time.time()
+            if timeout is None:
+                while proc.poll() is None:
+                    # 检查是否收到中断信号
+                    if get_interrupt() > 0:
+                        proc.terminate()
+                        try:
+                            proc.wait(timeout=2)
+                        except subprocess.TimeoutExpired:
+                            proc.kill()
+                            proc.wait()
+                        clear_script_pid()
+                        set_interrupt(False)
+                        return {
+                            "success": False,
+                            "stdout": "",
+                            "stderr": "执行被用户中断。",
+                        }
+                    time.sleep(0.1)
+            else:
+                while proc.poll() is None:
+                    # 检查是否超时
+                    elapsed = time.time() - start_time
+                    if elapsed >= timeout:
+                        raise subprocess.TimeoutExpired(argv, timeout)
+                    # 检查是否收到中断信号
+                    if get_interrupt() > 0:
+                        proc.terminate()
+                        try:
+                            proc.wait(timeout=2)
+                        except subprocess.TimeoutExpired:
+                            proc.kill()
+                            proc.wait()
+                        clear_script_pid()
+                        set_interrupt(False)
+                        return {
+                            "success": False,
+                            "stdout": "",
+                            "stderr": "执行被用户中断。",
+                        }
+                    time.sleep(0.1)
+            # 进程已结束，获取输出（已经在reader线程中捕获）
+        except subprocess.TimeoutExpired:
+            timed_out = True
+            stop_event.set()
+            try:
+                proc.terminate()
+                proc.wait(timeout=2)
+            except Exception:
+                try:
+                    proc.kill()
+                    proc.wait(timeout=2)
+                except Exception:
+                    pass
+        except Exception as e:
+            exc_holder.append(e)
+            stop_event.set()
+            try:
+                proc.terminate()
+            except Exception:
+                pass
+
+        stop_event.set()
+        reader_t.join(timeout=2)
+        stdin_t.join(timeout=2)
+        try:
+            os.close(master_fd)
+        except Exception:
+            pass
+
+        # 使用 pyte 处理原始字节数据，得到正确的显示输出（处理控制字符）
+        try:
+            import pyte
+
+            raw_data = b"".join(raw_captured)
+            screen = pyte.Screen(300, 100000)
+            stream = pyte.ByteStream(screen)
+            stream.feed(raw_data)
+            # 清理每行右侧空格，并过滤空行
+            cleaned_lines: List[str] = []
+            for y in range(screen.lines):
+                line = screen.buffer[y]
+                stripped = "".join(char.data for char in line.values()).rstrip()
+                if stripped:
+                    cleaned_lines.append(stripped)
+            output = "\n".join(cleaned_lines).strip()
+        except Exception:
+            # 如果 pyte 处理失败，回退到原来的逻辑
+            output = "".join(captured).strip()
+        exit_code = proc.returncode if proc.returncode is not None else -1
+        clear_script_pid()
+        if timed_out:
+            self._publish_execution_event(
+                stream_publisher,
+                message_type="tool_stream_end",
+                session_id=session_id,
+                execution_id=execution_id,
+                stream="tty",
+                sequence=next_sequence(),
+                exit_code=exit_code,
+                reason="timeout",
+            )
+            return {
+                "success": False,
+                "stdout": output,
+                "stderr": f"执行超时（超过{timeout}秒），进程已被终止。",
+            }
+        if exc_holder:
+            self._publish_execution_event(
+                stream_publisher,
+                message_type="tool_stream_end",
+                session_id=session_id,
+                execution_id=execution_id,
+                stream="tty",
+                sequence=next_sequence(),
+                exit_code=exit_code,
+                reason="error",
+            )
+            return {
+                "success": False,
+                "stdout": output,
+                "stderr": str(exc_holder[0]),
+            }
+
+        self._publish_execution_event(
+            stream_publisher,
+            message_type="tool_stream_end",
+            session_id=session_id,
+            execution_id=execution_id,
+            stream="tty",
+            sequence=next_sequence(),
+            exit_code=exit_code,
+            reason="completed" if exit_code == 0 else "error",
+        )
         return {
             "success": exit_code == 0,
             "stdout": output,
@@ -293,6 +979,11 @@ class ScriptTool:
         extension: str,
         is_non_interactive: bool,
         get_timeout: Any,
+        stream_publisher: Optional[ExecutionStreamPublisher] = None,
+        session_id: Optional[str] = None,
+        execution_id: Optional[str] = None,
+        input_callback: Optional[Callable[[float], Optional[str]]] = None,
+        resize_callback: Optional[Callable[[], Optional[Tuple[int, int]]]] = None,
     ) -> Dict[str, Any]:
         """Windows 平台执行脚本（使用 subprocess，无 script 命令）
 
@@ -302,7 +993,7 @@ class ScriptTool:
         import subprocess
 
         cmd = self._get_windows_command(interpreter, script_path, extension)
-        env = self._apply_no_pager_env(os.environ.copy())
+        env = os.environ.copy()
         if interpreter in ("python", "python2", "python3"):
             env["PYTHONIOENCODING"] = "utf-8"
         try:
@@ -316,9 +1007,37 @@ class ScriptTool:
                     cwd=os.getcwd(),
                     env=env,
                 )
+                set_script_pid(proc.pid)
                 try:
-                    stdout_bytes, stderr_bytes = proc.communicate(timeout=get_timeout())
+                    # 使用轮询方式检查中断，而不是直接调用 communicate
+                    import time
+
+                    start_time = time.time()
+                    timeout_val = get_timeout()
+                    while proc.poll() is None:
+                        # 检查是否收到中断信号
+                        if get_interrupt() > 0:
+                            proc.terminate()
+                            try:
+                                proc.wait(timeout=2)
+                            except subprocess.TimeoutExpired:
+                                proc.kill()
+                                proc.wait()
+                            clear_script_pid()
+                            return {
+                                "success": False,
+                                "stdout": "",
+                                "stderr": "执行被用户中断。",
+                            }
+                        # 短暂等待后继续检查
+                        elapsed = time.time() - start_time
+                        if timeout_val and elapsed >= timeout_val:
+                            raise subprocess.TimeoutExpired(cmd, timeout_val)
+                        time.sleep(0.1)
+                    # 进程已结束，获取输出
+                    stdout_bytes, stderr_bytes = proc.communicate()
                 except subprocess.TimeoutExpired:
+                    clear_script_pid()
                     try:
                         proc.terminate()
                         proc.wait(timeout=2)
@@ -342,6 +1061,7 @@ class ScriptTool:
                 output = (
                     stdout_str + ("\n" + stderr_str if stderr_str else "")
                 ).strip()
+                clear_script_pid()
                 return {
                     "success": proc.returncode == 0,
                     "stdout": output,
@@ -352,7 +1072,12 @@ class ScriptTool:
                 return self._execute_on_windows_interactive_pty(
                     argv=cmd,
                     env=env,
-                    get_timeout=get_timeout,
+                    get_timeout=None,
+                    stream_publisher=stream_publisher,
+                    session_id=session_id,
+                    execution_id=execution_id,
+                    input_callback=input_callback,
+                    resize_callback=resize_callback,
                 )
         except FileNotFoundError as e:
             PrettyOutput.auto_print(f"❌ {str(e)}")
@@ -390,23 +1115,38 @@ class ScriptTool:
                 cleaned.append(stripped)
         return "\n".join(cleaned[1:-1])
 
-    def _execute_script_with_interpreter(
-        self, interpreter: str, script_content: str
+    def _select_backend(self, execution_mode: str) -> ExecutionBackend:
+        normalized_mode = (execution_mode or "auto").strip().lower()
+        if normalized_mode == "interactive":
+            return VirtualTTYExecutionBackend()
+        if normalized_mode == "captured":
+            return CapturedExecutionBackend()
+
+        from jarvis.jarvis_utils.config import is_non_interactive
+
+        return (
+            CapturedExecutionBackend()
+            if is_non_interactive()
+            else VirtualTTYExecutionBackend()
+        )
+
+    def _execute_script_captured(self, request: ExecutionRequest) -> Dict[str, Any]:
+        return self._execute_script_with_interpreter_internal(
+            request, force_non_interactive=True
+        )
+
+    def _execute_script_interactive(self, request: ExecutionRequest) -> Dict[str, Any]:
+        return self._execute_script_with_interpreter_internal(
+            request, force_non_interactive=False
+        )
+
+    def _execute_script_with_interpreter_internal(
+        self, request: ExecutionRequest, force_non_interactive: bool
     ) -> Dict[str, Any]:
-        """Execute a script with the specified interpreter
-
-        Args:
-            interpreter: The interpreter to use (any valid interpreter command)
-            script_content: Content of the script
-
-        Returns:
-            Dictionary with execution results
-        """
+        interpreter = request.interpreter
+        script_content = request.script_content
         try:
-            # Get file extension for the interpreter
             extension = self.INTERPRETER_EXTENSIONS.get(interpreter, "script")
-
-            # Create temporary script file
             script_path = os.path.join(
                 tempfile.gettempdir(),
                 f"jarvis_{interpreter.replace('/', '_')}_{os.getpid()}.{extension}",
@@ -415,117 +1155,133 @@ class ScriptTool:
                 tempfile.gettempdir(), f"jarvis_output_{os.getpid()}.log"
             )
             try:
-                # PowerShell 需 UTF-8 BOM 才能正确识别中文；Python 等用 UTF-8 即可
                 enc = "utf-8-sig" if interpreter in ("powershell", "pwsh") else "utf-8"
                 with open(script_path, "w", encoding=enc, errors="ignore") as f:
                     f.write(script_content)
 
-                # 脚本内容不再整块打印，仅写入历史供 Ctrl+R 查看，减少无关信息干扰
-                from jarvis.jarvis_utils import globals as jarvis_globals
+                from jarvis.jarvis_utils.output import PrettyOutput
 
-                _max_script_display_lines = 40
-                script_lines = script_content.splitlines()
-                script_line_count = len(script_lines)
-                if script_line_count > _max_script_display_lines:
-                    _title = f"执行脚本 ({interpreter})"
-                    PrettyOutput.push_truncated_to_history(
-                        script_content,
-                        _title,
-                        trigger_context="脚本内容",
-                        purpose="待执行脚本全文，供核对",
-                    )
-                    jarvis_globals.last_truncated_full_content = script_content
-                    jarvis_globals.last_truncated_title = _title
-                else:
-                    jarvis_globals.last_truncated_full_content = None
-                    jarvis_globals.last_truncated_title = None
-
-                import subprocess
+                PrettyOutput.print_script_panel(
+                    content=script_content,
+                    title=f"📜 执行脚本 ({interpreter})",
+                    lang=interpreter,
+                )
 
                 from jarvis.jarvis_utils.config import get_script_execution_timeout
-                from jarvis.jarvis_utils.config import is_non_interactive
 
                 if self._is_windows():
-                    # Windows 没有 script 命令，使用 subprocess 直接捕获输出
                     return self._execute_on_windows(
                         interpreter=interpreter,
                         script_path=script_path,
                         extension=extension,
-                        is_non_interactive=is_non_interactive(),
+                        is_non_interactive=force_non_interactive,
                         get_timeout=get_script_execution_timeout,
+                        stream_publisher=request.stream_publisher,
+                        session_id=request.session_id,
+                        execution_id=request.execution_id,
+                        input_callback=request.input_callback,
+                        resize_callback=request.resize_callback,
                     )
-                else:
-                    # Unix/Linux: 使用 script 命令捕获 stdout 和 stderr
-                    env = self._apply_no_pager_env(os.environ.copy())
-                    tee_command = (
-                        f"script -q -c '{interpreter} {script_path}' {output_file}"
-                    )
+
+                if force_non_interactive:
+                    if self._is_macos():
+                        tee_command = (
+                            f"script -q {output_file} {interpreter} {script_path}"
+                        )
+                    else:
+                        tee_command = (
+                            f"script -q -c '{interpreter} {script_path}' {output_file}"
+                        )
                     timed_out = False
-                    if is_non_interactive():
-                        proc = None
-                        try:
-                            proc = subprocess.Popen(tee_command, shell=True, env=env)
-                            try:
-                                proc.wait(timeout=get_script_execution_timeout())
-                            except subprocess.TimeoutExpired:
-                                timed_out = True
+                    proc = None
+                    import time
+
+                    start_time = time.time()
+                    timeout_val = get_script_execution_timeout()
+
+                    try:
+                        proc = subprocess.Popen(tee_command, shell=True)  # nosec B602
+                        set_script_pid(proc.pid)
+                        # 使用轮询方式检查中断，而不是直接调用 wait
+                        while proc.poll() is None:
+                            # 检查是否收到中断信号
+                            if get_interrupt() > 0:
+                                proc.terminate()
                                 try:
-                                    proc.terminate()
                                     proc.wait(timeout=2)
                                 except subprocess.TimeoutExpired:
-                                    try:
-                                        proc.kill()
-                                        proc.wait()
-                                    except Exception:
-                                        pass
-                                except Exception:
-                                    try:
-                                        proc.kill()
-                                        proc.wait()
-                                    except Exception:
-                                        pass
-                        except Exception as e:
-                            if proc is not None:
-                                try:
-                                    proc.terminate()
-                                    proc.wait(timeout=1)
-                                except Exception:
-                                    try:
-                                        proc.kill()
-                                        proc.wait()
-                                    except Exception:
-                                        pass
-                            PrettyOutput.auto_print(f"❌ {str(e)}")
+                                    proc.kill()
+                                    proc.wait()
+                                clear_script_pid()
+                                return {
+                                    "success": False,
+                                    "stdout": "",
+                                    "stderr": "执行被用户中断。",
+                                }
+                            # 短暂等待后继续检查
+                            elapsed = time.time() - start_time
+                            if timeout_val and elapsed >= timeout_val:
+                                timed_out = True
+                                break
+                            time.sleep(0.1)
+                    except Exception:
+                        timed_out = True
+                        try:
+                            proc.terminate()
+                            proc.wait(timeout=2)
+                        except subprocess.TimeoutExpired:
                             try:
-                                output = self.get_display_output(output_file)
-                            except Exception as ee:
-                                output = f"读取输出文件失败: {str(ee)}"
-                            return {
-                                "success": False,
-                                "stdout": output,
-                                "stderr": f"执行脚本失败: {str(e)}",
-                            }
-                        finally:
-                            if proc is not None:
+                                proc.kill()
+                                proc.wait()
+                            except Exception:
+                                pass
+                        except Exception:
+                            try:
+                                proc.kill()
+                                proc.wait()
+                            except Exception:
+                                pass
+                    except Exception as e:
+                        if proc is not None:
+                            try:
+                                proc.terminate()
+                                proc.wait(timeout=1)
+                            except Exception:
                                 try:
-                                    if proc.stdin:
-                                        proc.stdin.close()
-                                    if proc.stdout:
-                                        proc.stdout.close()
-                                    if proc.stderr:
-                                        proc.stderr.close()
+                                    proc.kill()
+                                    proc.wait()
                                 except Exception:
                                     pass
-                    else:
-                        # 交互模式也使用 subprocess，以便注入 env（禁用 pager）
-                        subprocess.run(tee_command, shell=True, env=env, check=False)
+                        PrettyOutput.auto_print(f"❌ {str(e)}")
+                        try:
+                            output = self.get_display_output(output_file)
+                        except Exception as ee:
+                            output = f"读取输出文件失败: {str(ee)}"
+                        clear_script_pid()
+                        return {
+                            "success": False,
+                            "stdout": output,
+                            "stderr": f"执行脚本失败: {str(e)}",
+                        }
+                    finally:
+                        if proc is not None:
+                            try:
+                                if proc.stdin:
+                                    proc.stdin.close()
+                                if proc.stdout:
+                                    proc.stdout.close()
+                                if proc.stderr:
+                                    proc.stderr.close()
+                            except Exception:
+                                pass
+                        clear_script_pid()
 
                     try:
                         output = self.get_display_output(output_file)
                     except Exception as e:
                         output = f"读取输出文件失败: {str(e)}"
 
-                    if is_non_interactive() and timed_out:
+                    if timed_out:
                         return {
                             "success": False,
                             "stdout": output,
@@ -537,14 +1293,54 @@ class ScriptTool:
                         "stderr": "",
                     }
 
+                env = os.environ.copy()
+                # 设置 TERM 环境变量，避免 "terminal is not fully functional" 警告
+                env["TERM"] = "xterm-256color"
+                if interpreter in ("python", "python2", "python3"):
+                    env["PYTHONIOENCODING"] = "utf-8"
+                argv = [interpreter, script_path]
+                if interpreter in ("python", "python2", "python3"):
+                    argv = [interpreter, "-u", script_path]
+                return self._execute_on_unix_interactive_pty(
+                    argv=argv,
+                    env=env,
+                    get_timeout=None,
+                    stream_publisher=request.stream_publisher,
+                    session_id=request.session_id,
+                    execution_id=request.execution_id,
+                    input_callback=request.input_callback,
+                    resize_callback=request.resize_callback,
+                )
             finally:
-                # Clean up temporary files
                 Path(script_path).unlink(missing_ok=True)
                 Path(output_file).unlink(missing_ok=True)
-
         except Exception as e:
             PrettyOutput.auto_print(f"❌ {str(e)}")
             return {"success": False, "stdout": "", "stderr": str(e)}
+
+    def _execute_script_with_interpreter(
+        self,
+        interpreter: str,
+        script_content: str,
+        execution_mode: str = "auto",
+        session_id: Optional[str] = None,
+        stream_publisher: Optional[ExecutionStreamPublisher] = None,
+        execution_id: Optional[str] = None,
+        input_callback: Optional[Callable[[float], Optional[str]]] = None,
+        resize_callback: Optional[Callable[[], Optional[Tuple[int, int]]]] = None,
+    ) -> Dict[str, Any]:
+        request = ExecutionRequest(
+            interpreter=interpreter,
+            script_content=script_content,
+            execution_mode=execution_mode,
+            session_id=session_id,
+            stream_publisher=stream_publisher,
+            execution_id=execution_id,
+            input_callback=input_callback,
+            resize_callback=resize_callback,
+        )
+        backend = self._select_backend(execution_mode)
+        return backend.execute(self, request)
 
     def execute(self, args: Dict[str, Any]) -> Dict[str, Any]:
         """Execute script based on interpreter and content
@@ -568,9 +1364,76 @@ class ScriptTool:
             interpreter = args.get(
                 "interpreter", "powershell" if self._is_windows() else "bash"
             )
+            execution_mode = str(args.get("execution_mode", "auto"))
+            session_id = args.get("session_id")
+            stream_publisher = args.get("stream_publisher")
+            execution_id = args.get("execution_id")
+            input_callback = args.get("input_callback")
+            resize_callback = args.get("resize_callback")
+            gateway = None
+
+            if stream_publisher is None:
+                try:
+                    from jarvis.jarvis_gateway.manager import get_current_gateway
+
+                    gateway = get_current_gateway()
+                except Exception:
+                    gateway = None
+                if gateway is not None:
+                    stream_publisher = GatewayExecutionStreamPublisher(gateway)
+            if stream_publisher is not None and not isinstance(
+                stream_publisher, ExecutionStreamPublisher
+            ):
+                return {
+                    "success": False,
+                    "stdout": "",
+                    "stderr": "stream_publisher must implement ExecutionStreamPublisher",
+                }
+            if input_callback is not None and not callable(input_callback):
+                return {
+                    "success": False,
+                    "stdout": "",
+                    "stderr": "input_callback must be callable",
+                }
+            if resize_callback is not None and not callable(resize_callback):
+                return {
+                    "success": False,
+                    "stdout": "",
+                    "stderr": "resize_callback must be callable",
+                }
+
+            execution_id_value = (
+                execution_id if isinstance(execution_id, str) else uuid.uuid4().hex
+            )
+            if input_callback is None or resize_callback is None:
+                if gateway is None:
+                    try:
+                        from jarvis.jarvis_gateway.manager import get_current_gateway
+
+                        gateway = get_current_gateway()
+                    except Exception:
+                        gateway = None
+                if gateway is not None:
+                    if input_callback is None:
+                        input_callback = gateway.get_execution_input_callback(
+                            execution_id_value
+                        )
+                    if resize_callback is None:
+                        resize_callback = gateway.get_execution_resize_callback(
+                            execution_id_value
+                        )
 
             # Execute the script with the specified interpreter
-            return self._execute_script_with_interpreter(interpreter, script_content)
+            return self._execute_script_with_interpreter(
+                interpreter,
+                script_content,
+                execution_mode=execution_mode,
+                session_id=session_id if isinstance(session_id, str) else None,
+                stream_publisher=stream_publisher,
+                execution_id=execution_id_value,
+                input_callback=input_callback,
+                resize_callback=resize_callback,
+            )
 
         except Exception as e:
             PrettyOutput.auto_print(f"❌ {str(e)}")

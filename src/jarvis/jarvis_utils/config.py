@@ -1493,3 +1493,71 @@ def get_diff_large_file_threshold() -> int:
         int: 大文件阈值，默认为 300
     """
     return 300
+
+# --- merged from Jarvis_sky ---
+
+def get_gateway_auth_config() -> Dict[str, Any]:
+    """
+    获取 Gateway 认证配置。
+
+    环境变量优先级高于配置文件：
+    - 如果设置了环境变量 JARVIS_GATEWAY_PASSWORD，则使用环境变量中的密码
+    - 如果环境变量未设置，则使用配置文件中的 gateway_auth 配置
+
+    返回:
+        Dict[str, Any]: Gateway 认证配置字典，包含 enable, password, allow_unset 等字段
+    """
+    # 先从配置文件读取
+    config = GLOBAL_CONFIG_DATA.get("gateway_auth", {})
+    if not isinstance(config, dict):
+        config = {}
+
+    result = dict(config)
+
+    # 环境变量优先：如果设置了 JARVIS_GATEWAY_PASSWORD，覆盖配置文件中的密码
+    env_password = os.environ.get("JARVIS_GATEWAY_PASSWORD")
+    if env_password:
+        result["password"] = env_password
+        result["enable"] = True
+        result["allow_unset"] = False
+
+    return result
+
+
+# ==============================================================================
+# Web Search Configuration
+# ==============================================================================
+
+def get_submit_keys() -> List[str]:
+    """
+    获取多行输入的提交快捷键列表。
+
+    返回:
+        List[str]: 提交快捷键列表，固定为 ["c-d"]（Ctrl+D）
+    """
+    return ["c-d"]
+
+def is_enable_quick_mode() -> bool:
+    """
+    获取是否启用极速模式。
+
+    当启用时，CodeAgent 将跳过任务分类、规则自动加载、上下文推荐、方法论加载等步骤，直接处理用户请求。
+    默认关闭，可通过配置文件设置 enable_quick_mode: true 启用。
+    命令行参数 -q/--quick 也会启用此模式。
+
+    返回：
+        bool: 如果启用极速模式则返回True，默认为False
+    """
+    return bool(GLOBAL_CONFIG_DATA.get("enable_quick_mode", False))
+
+def is_enable_request_classification() -> bool:
+    """
+    获取是否启用需求分类功能。
+
+    当启用时，CodeAgent 首次运行会对用户需求进行分类，并根据分类结果加载对应的系统提示词。
+    默认启用，可通过配置文件设置 enable_request_classification: false 禁用。
+
+    返回：
+        bool: 如果启用需求分类则返回True，默认为True
+    """
+    return bool(GLOBAL_CONFIG_DATA.get("enable_request_classification", True))
