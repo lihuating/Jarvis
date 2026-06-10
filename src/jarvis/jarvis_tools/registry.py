@@ -337,10 +337,9 @@ class ToolRegistry(OutputHandlerProtocol):
             
             # 缓存有效，直接加载
             self.tools = _tools_cache[cache_key].copy()
-            # 恢复内置工具名称
+            # 恢复内置工具名称（从缓存元数据中读取）
             self._builtin_tool_names = set(
-                name for name in self.tools.keys() 
-                if any(name in _tools_cache[cache_key])
+                _tools_cache.get("__builtin_tool_names__", set())
             )
             return True
         except Exception:
@@ -352,6 +351,8 @@ class ToolRegistry(OutputHandlerProtocol):
             # 保存工具到缓存
             cache_key = "all_tools"
             _tools_cache[cache_key] = self.tools.copy()
+            # 保存内置工具名称集合，供缓存恢复时使用
+            _tools_cache["__builtin_tool_names__"] = self._builtin_tool_names.copy()
             
             # 保存目录哈希
             builtin_dir = str(Path(__file__).parent)
